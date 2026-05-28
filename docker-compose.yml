@@ -1,0 +1,23 @@
+services:
+  rsshub:
+    image: diygod/rsshub
+    restart: unless-stopped
+    ports:
+      - "1200:1200"
+    environment:
+      - NODE_ENV=production
+      - CACHE_TYPE=memory
+
+  market-radar:
+    image: python:3.10-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "20026:20026"
+    environment:
+      - RSSHUB_BASE_URL=http://rsshub:1200
+    depends_on:
+      - rsshub
+    command: >
+      bash -c "pip install -r requirements.txt -q && streamlit run app.py"

@@ -1,0 +1,46 @@
+# 数据库
+db/market.db
+
+# 本地环境变量
+.env.local
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# Node (RSSHub 本地开发残留)
+node_modules/
+package-lock.json
+
+# 截图 / 临时图片
+*.png
+*.jpg
+*.jpeg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# 日志
+*.log
