@@ -20,6 +20,8 @@ from fetcher.sector_heat import fetch_zt_pool, fetch_dt_pool, fetch_concept_heat
 from fetcher.global_news import fetch_cls_red, fetch_em, fetch_ths, fetch_wscn, fetch_yicai, fetch_jin10, fetch_gelonghui
 from fetcher.research import fetch as fetch_research
 from db.storage import cleanup_old_data
+from fetcher.realtime_quote import fetch_realtime_snapshot
+from quant.daily_compute import run_daily_compute
 
 
 def _in_trade_hours() -> bool:
@@ -47,6 +49,11 @@ def _guarded_concept_heat():
         fetch_concept_heat()
 
 
+def _guarded_realtime_quote():
+    if _in_trade_hours():
+        fetch_realtime_snapshot()
+
+
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -62,11 +69,13 @@ def start_scheduler() -> None:
     scheduler.add_job(fetch_cninfo, "interval", minutes=30)
     scheduler.add_job(fetch_research, "interval", minutes=30)
     scheduler.add_job(_guarded_sector_flow, "interval", minutes=15)
-    scheduler.add_job(fetch_lhb, "cron", hour=17, minute=5)
+    scheduler.add_job(fetch_lhb, "cron", hour=17, minute=30)
     scheduler.add_job(_guarded_zt_pool, "interval", minutes=5)
     scheduler.add_job(_guarded_dt_pool, "interval", minutes=5)
     scheduler.add_job(_guarded_concept_heat, "interval", minutes=5)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=0)
+    scheduler.add_job(_guarded_realtime_quote, "interval", seconds=30)
+    scheduler.add_job(run_daily_compute, "cron", hour=9, minute=0)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
@@ -85,5 +94,9 @@ def start_scheduler() -> None:
                     fn()
                 except Exception:
                     pass
+            try:
+                fetch_realtime_snapshot()
+            except Exception:
+                pass
 
     threading.Thread(target=_initial_fetch, daemon=True).start()

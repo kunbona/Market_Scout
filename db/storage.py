@@ -122,6 +122,79 @@ CREATE TABLE IF NOT EXISTS research_report (
     qtype        INTEGER DEFAULT 0,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS market_pulse (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time  TEXT,
+    zt_count    INTEGER,
+    dt_count    INTEGER,
+    zb_count    INTEGER,
+    zt_dt_ratio REAL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS market_emotion (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date           TEXT UNIQUE,
+    zt_total             INTEGER,
+    dt_total             INTEGER,
+    zb_total             INTEGER,
+    max_lianzban         INTEGER,
+    zt_yesterday_premium REAL,
+    zb_rate              REAL
+);
+
+CREATE TABLE IF NOT EXISTS sector_zt_density (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date   TEXT,
+    industry     TEXT,
+    zt_count     INTEGER,
+    zt_density   REAL,
+    max_lianzban INTEGER,
+    UNIQUE(trade_date, industry)
+);
+
+CREATE TABLE IF NOT EXISTS volume_breakout (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT,
+    stock_code TEXT,
+    stock_name TEXT,
+    industry   TEXT,
+    ratio_5_20 REAL,
+    amount_5d  REAL,
+    UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS chip_status (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date     TEXT,
+    stock_code     TEXT,
+    cost_50        REAL,
+    win_rate       REAL,
+    overhead_ratio REAL,
+    UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS lianzban_chain (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date   TEXT,
+    stock_code   TEXT,
+    stock_name   TEXT,
+    industry     TEXT,
+    lianzban_cnt INTEGER,
+    is_zb        BOOLEAN,
+    UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS research_activity (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date      TEXT,
+    stock_code      TEXT,
+    stock_name      TEXT,
+    org_count_5d    INTEGER,
+    last_visit_date TEXT,
+    UNIQUE(trade_date, stock_code)
+);
         """)
 
 
@@ -393,13 +466,175 @@ def get_agent_context() -> dict:
 
 def cleanup_old_data() -> None:
     now = datetime.now()
-    cls_cutoff = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-    sector_cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_7d  = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_30d = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_60d = (now - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_90d = (now - timedelta(days=90)).strftime("%Y-%m-%d")
 
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM cls_news WHERE created_at < ?", (cls_cutoff,))
-        conn.execute("DELETE FROM sector_flow WHERE fetch_time < ?", (sector_cutoff,))
+        # 7 days
+        conn.execute("DELETE FROM cls_news WHERE created_at < ?", (cutoff_7d,))
+        # 30 days
+        conn.execute("DELETE FROM sector_flow WHERE fetch_time < ?", (cutoff_30d,))
+        conn.execute("DELETE FROM market_pulse WHERE created_at < ?", (cutoff_30d,))
+        # 60 days
+        conn.execute("DELETE FROM agent_summary WHERE created_at < ?", (cutoff_60d,))
+        # 90 days (trade_date columns, stored as TEXT 'YYYY-MM-DD')
+        conn.execute("DELETE FROM market_emotion WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM sector_zt_density WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM volume_breakout WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM chip_status WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM lianzban_chain WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM research_activity WHERE trade_date < ?", (cutoff_90d,))
 
+
+# ── market_pulse ──────────────────────────────────────────────────────────────
+
+def insert_market_pulse(fetch_time: str, zt_count: int, dt_count: int, zb_count: int, zt_dt_ratio: float) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO market_pulse (fetch_time, zt_count, dt_count, zb_count, zt_dt_ratio) VALUES (?,?,?,?,?)",
+            (fetch_time, zt_count, dt_count, zb_count, zt_dt_ratio),
+        )
+
+
+def get_market_pulse_latest(n: int = 60) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM market_pulse ORDER BY created_at DESC LIMIT ?", (n,)
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── market_emotion ────────────────────────────────────────────────────────────
+
+def upsert_market_emotion(trade_date: str, zt_total: int, dt_total: int, zb_total: int,
+                          max_lianzban: int, zt_yesterday_premium: float, zb_rate: float) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO market_emotion "
+            "(trade_date, zt_total, dt_total, zb_total, max_lianzban, zt_yesterday_premium, zb_rate) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (trade_date, zt_total, dt_total, zb_total, max_lianzban, zt_yesterday_premium, zb_rate),
+        )
+
+
+def get_market_emotion(days: int = 30) -> list[dict]:
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM market_emotion WHERE trade_date >= ? ORDER BY trade_date DESC",
+            (cutoff,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── sector_zt_density ─────────────────────────────────────────────────────────
+
+def insert_sector_zt_density(trade_date: str, industry: str, zt_count: int,
+                              zt_density: float, max_lianzban: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO sector_zt_density "
+            "(trade_date, industry, zt_count, zt_density, max_lianzban) VALUES (?,?,?,?,?)",
+            (trade_date, industry, zt_count, zt_density, max_lianzban),
+        )
+
+
+def get_sector_zt_density(trade_date: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM sector_zt_density WHERE trade_date = ? ORDER BY zt_density DESC",
+            (trade_date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── volume_breakout ───────────────────────────────────────────────────────────
+
+def insert_volume_breakout(trade_date: str, stock_code: str, stock_name: str,
+                            industry: str, ratio_5_20: float, amount_5d: float) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO volume_breakout "
+            "(trade_date, stock_code, stock_name, industry, ratio_5_20, amount_5d) VALUES (?,?,?,?,?,?)",
+            (trade_date, stock_code, stock_name, industry, ratio_5_20, amount_5d),
+        )
+
+
+def get_volume_breakout(trade_date: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM volume_breakout WHERE trade_date = ? ORDER BY ratio_5_20 DESC",
+            (trade_date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── chip_status ───────────────────────────────────────────────────────────────
+
+def insert_chip_status(trade_date: str, stock_code: str, cost_50: float,
+                        win_rate: float, overhead_ratio: float) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO chip_status "
+            "(trade_date, stock_code, cost_50, win_rate, overhead_ratio) VALUES (?,?,?,?,?)",
+            (trade_date, stock_code, cost_50, win_rate, overhead_ratio),
+        )
+
+
+def get_chip_status(trade_date: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM chip_status WHERE trade_date = ? ORDER BY win_rate DESC",
+            (trade_date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── lianzban_chain ────────────────────────────────────────────────────────────
+
+def insert_lianzban_chain(trade_date: str, stock_code: str, stock_name: str,
+                           industry: str, lianzban_cnt: int, is_zb: bool) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO lianzban_chain "
+            "(trade_date, stock_code, stock_name, industry, lianzban_cnt, is_zb) VALUES (?,?,?,?,?,?)",
+            (trade_date, stock_code, stock_name, industry, lianzban_cnt, is_zb),
+        )
+
+
+def get_lianzban_chain(trade_date: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM lianzban_chain WHERE trade_date = ? ORDER BY lianzban_cnt DESC",
+            (trade_date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── research_activity ─────────────────────────────────────────────────────────
+
+def insert_research_activity(trade_date: str, stock_code: str, stock_name: str,
+                               org_count_5d: int, last_visit_date: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO research_activity "
+            "(trade_date, stock_code, stock_name, org_count_5d, last_visit_date) VALUES (?,?,?,?,?)",
+            (trade_date, stock_code, stock_name, org_count_5d, last_visit_date),
+        )
+
+
+def get_research_activity(trade_date: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM research_activity WHERE trade_date = ? ORDER BY org_count_5d DESC",
+            (trade_date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── Module init ───────────────────────────────────────────────────────────────
 
 with sqlite3.connect(DB_PATH) as _conn:
     init_db()

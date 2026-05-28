@@ -710,11 +710,26 @@ for qt, ql in QTYPE_LABELS.items():
 research_html = f'<div class="col-wrap"><div class="col-header" style="--accent:#8b5cf6"><span class="col-header-badge" style="background:#8b5cf6">研究报告</span></div>{rc_sections}</div>'
 
 # ── 5. 组合成 panel tab 系统 ──
+# 市场情绪仪表盘（V3 实现，当前预留接口）
+emotion_html = (
+    '<div class="col-wrap">'
+    '<div class="col-header" style="--accent:#10b981">'
+    '<span class="col-header-badge" style="background:#10b981">市场情绪</span>'
+    '<span class="col-header-sub">V3 · 开发中</span>'
+    '</div>'
+    '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px">'
+    '市场情绪仪表盘将在 V3 版本实装<br><br>'
+    '计划内容：涨停密度热力图 · 板块共振指数 · 炸板率趋势 · 个股候选 Agent'
+    '</div>'
+    '</div>'
+)
+
 panels = [
     ("0", "财经快讯", "#ef4444", news_html),
     ("1", "政策动态", "#3b82f6", policy_html),
     ("2", "市场数据", "#d97706", data_html),
     ("3", "研究报告", "#8b5cf6", research_html),
+    ("4", "市场情绪", "#10b981", emotion_html),
 ]
 
 panel_bar = '<div class="panel-tab-bar">' + ''.join(
@@ -801,6 +816,7 @@ a:visited{color:inherit!important}
 #rc-tab-1:checked ~ .rc-tab-contents .rc-tab-content[data-tab="1"]{display:block}
 #rc-tab-2:checked ~ .rc-tab-contents .rc-tab-content[data-tab="2"]{display:block}
 #rc-tab-3:checked ~ .rc-tab-contents .rc-tab-content[data-tab="3"]{display:block}
+#panel-4:checked ~ .panel-contents .panel-content[data-panel="4"] { display: block; }
 .pc-date{font-size:10px;color:#9ca3af;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;margin-bottom:6px;display:block}
 .pc-title,.pc-title a,a.pc-title{display:block;font-size:12.5px;color:#000!important;line-height:1.6;cursor:pointer}
 .pc-title:hover,a.pc-title:hover{color:#2563eb!important}
