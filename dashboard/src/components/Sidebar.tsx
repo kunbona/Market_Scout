@@ -2,14 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import { BarChart3, FileText, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
 
 interface FetchResult { name: string; ok: boolean; error?: string; }
-interface FetchState { status: 'idle' | 'running' | 'done'; results: FetchResult[]; ts: string; }
+interface FetchState { status: 'idle' | 'running' | 'done' | 'auto'; results: FetchResult[]; ts: string; auto_ts: string; auto_task: string; }
 
 export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setActiveTab: (tab: string) => void }) {
   const [currentTime, setCurrentTime] = useState(() =>
     new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   );
-  const [fetchState, setFetchState] = useState<FetchState>({ status: 'idle', results: [], ts: '' });
+  const [fetchState, setFetchState] = useState<FetchState>({ status: 'idle', results: [], ts: '', auto_ts: '', auto_task: '' });
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const bgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 实时时钟
   useEffect(() => {
@@ -32,7 +33,26 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
         if (s.status === 'running') startPoll();
       })
       .catch(() => {});
-    return () => stopPoll();
+
+    // 常驻后台轮询，每 3s 同步一次自动抓取状态
+    bgPollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch('/api/fetch-all-status');
+        const j = await r.json();
+        if (j.success) {
+          setFetchState(prev => {
+            // 手动抓取进行中时由 pollRef 管，不用 bgPoll 覆盖
+            if (prev.status === 'running' && j.data.status !== 'running') return prev;
+            return j.data;
+          });
+        }
+      } catch { /* ignore */ }
+    }, 3000);
+
+    return () => {
+      stopPoll();
+      if (bgPollRef.current) { clearInterval(bgPollRef.current); bgPollRef.current = null; }
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -47,7 +67,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
           if (j.data.status === 'done') stopPoll();
         }
       } catch { /* ignore */ }
-    }, 1500);
+    }, 800);
   };
 
   const handleFetch = async () => {
@@ -55,7 +75,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
       const r = await fetch('/api/fetch-all', { method: 'POST' });
       const j = await r.json();
       if (j.success && j.data.started) {
-        setFetchState({ status: 'running', results: [], ts: '' });
+        setFetchState(prev => ({ ...prev, status: 'running', results: [], ts: '' }));
         startPoll();
       }
     } catch { /* ignore */ }
@@ -72,10 +92,11 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
 
   const isRunning = fetchState.status === 'running';
   const isDone    = fetchState.status === 'done';
+  const isAuto    = fetchState.status === 'auto';
   const failed    = fetchState.results.filter(r => !r.ok).length;
   const done      = fetchState.results.filter(r => r.ok).length;
 
-  // 最新一条已完成/进行中的任务名
+  // 最新一条已完成/进行中的任务名（手动抓取）
   const currentTask = isRunning && fetchState.results.length > 0
     ? fetchState.results[fetchState.results.length - 1].name
     : null;
@@ -85,9 +106,21 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
     ? `抓取中 ${done}/${done + (20 - done)}…`
     : isDone
     ? fetchState.ts ? `${fetchState.ts} 更新` : '已完成'
+    : isAuto
+    ? fetchState.auto_task ? `自动更新: ${fetchState.auto_task}` : '自动更新中…'
+    : fetchState.auto_ts
+    ? `自动更新 ${fetchState.auto_ts}`
     : '就绪';
-  const syncColor = isDone && failed === 0 ? 'text-green-600' : isDone && failed > 0 ? 'text-amber-600' : isRunning ? 'text-blue-600' : 'text-green-600';
-  const dotColor  = isDone && failed === 0 ? 'bg-green-500' : isDone && failed > 0 ? 'bg-amber-500' : isRunning ? 'bg-blue-500' : 'bg-green-500';
+  const syncColor = isDone && failed === 0 ? 'text-green-600'
+    : isDone && failed > 0 ? 'text-amber-600'
+    : isRunning ? 'text-blue-600'
+    : isAuto ? 'text-blue-500'
+    : 'text-green-600';
+  const dotColor = isDone && failed === 0 ? 'bg-green-500'
+    : isDone && failed > 0 ? 'bg-amber-500'
+    : isRunning ? 'bg-blue-500'
+    : isAuto ? 'bg-blue-400'
+    : 'bg-green-500';
 
   return (
     <div className="w-72 bg-white h-screen flex flex-col relative overflow-hidden border-r border-gray-200/80 shadow-xl">
@@ -173,7 +206,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
             <span className="text-xs font-semibold text-gray-900 font-mono">{currentTime}</span>
           </div>
           <div className="mt-1.5 flex items-center gap-1.5">
-            <div className={`w-1.5 h-1.5 rounded-full ${dotColor} ${isRunning ? 'animate-pulse' : ''}`} />
+            <div className={`w-1.5 h-1.5 rounded-full ${dotColor} ${(isRunning || isAuto) ? 'animate-pulse' : ''}`} />
             <span className={`text-xs font-medium ${syncColor}`}>{syncLabel}</span>
           </div>
         </div>

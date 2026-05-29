@@ -12,6 +12,7 @@ if _env_file.exists():
             import os; os.environ.setdefault(_k.strip(), _v.strip())
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
 
 from fetcher.cls_news import fetch as fetch_cls
 from fetcher.policy_rss import fetch as fetch_policy, fetch_cninfo
@@ -26,84 +27,84 @@ from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, f
 from quant.daily_compute import run_daily_compute
 
 
+def _auto_run(name: str, fn) -> None:
+    """执行自动抓取任务，同步更新共享状态。手动抓取进行中时跳过状态更新。"""
+    from datetime import datetime as _dt
+    with _fetch_lock:
+        if _fetch_state["status"] == "running":
+            # 手动抓取优先，不覆盖其状态
+            pass
+        else:
+            _fetch_state["status"] = "auto"
+            _fetch_state["auto_task"] = name
+    try:
+        fn()
+    except Exception:
+        pass
+    finally:
+        with _fetch_lock:
+            if _fetch_state["status"] == "auto":
+                _fetch_state["auto_ts"] = _dt.now().strftime("%H:%M:%S")
+                _fetch_state["auto_task"] = ""
+                _fetch_state["status"] = "idle"
+
+
 def _in_trade_hours() -> bool:
     now = datetime.now().time()
     return time(9, 15) <= now <= time(15, 5)
 
 
 def _guarded_sector_flow():
-    if _in_trade_hours():
-        fetch_sector_flow()
-
+    if _in_trade_hours(): _auto_run("行业资金流", fetch_sector_flow)
 
 def _guarded_zt_pool():
-    if _in_trade_hours():
-        fetch_zt_pool()
-
+    if _in_trade_hours(): _auto_run("涨停池", fetch_zt_pool)
 
 def _guarded_dt_pool():
-    if _in_trade_hours():
-        fetch_dt_pool()
-
+    if _in_trade_hours(): _auto_run("跌停池", fetch_dt_pool)
 
 def _guarded_concept_heat():
-    if _in_trade_hours():
-        fetch_concept_heat()
-
+    if _in_trade_hours(): _auto_run("概念热度", fetch_concept_heat)
 
 def _guarded_realtime_quote():
-    if _in_trade_hours():
-        fetch_realtime_snapshot()
-
+    if _in_trade_hours(): _auto_run("实时行情", fetch_realtime_snapshot)
 
 def _guarded_concept_flow():
-    if _in_trade_hours():
-        fetch_concept_flow()
-
+    if _in_trade_hours(): _auto_run("概念资金流", fetch_concept_flow)
 
 def _guarded_zbgc_pool():
-    if _in_trade_hours():
-        fetch_zbgc_pool()
-
+    if _in_trade_hours(): _auto_run("炸板池", fetch_zbgc_pool)
 
 def _guarded_strong_pool():
-    if _in_trade_hours():
-        fetch_strong_pool()
-
+    if _in_trade_hours(): _auto_run("强势股", fetch_strong_pool)
 
 def _guarded_hot_rank_up():
-    if _in_trade_hours():
-        fetch_hot_rank_up()
-
+    if _in_trade_hours(): _auto_run("人气飙升", fetch_hot_rank_up)
 
 def _guarded_northbound():
-    if _in_trade_hours():
-        fetch_northbound_flow()
-
+    if _in_trade_hours(): _auto_run("北向资金", fetch_northbound_flow)
 
 def _guarded_xq_hot():
-    fetch_xq_hot()
-
+    _auto_run("雪球热度", fetch_xq_hot)
 
 def _guarded_big_deal():
-    if _in_trade_hours():
-        fetch_big_deal()
+    if _in_trade_hours(): _auto_run("大单异动", fetch_big_deal)
 
 
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
-    scheduler.add_job(fetch_cls, "interval", minutes=5)
-    scheduler.add_job(fetch_cls_red, "interval", minutes=5)
-    scheduler.add_job(fetch_em, "interval", minutes=5)
-    scheduler.add_job(fetch_ths, "interval", minutes=5)
-    scheduler.add_job(fetch_wscn, "interval", minutes=5)
-    scheduler.add_job(fetch_yicai, "interval", minutes=5)
-    scheduler.add_job(fetch_jin10,     "interval", minutes=5)
-    scheduler.add_job(fetch_gelonghui, "interval", minutes=5)
-    scheduler.add_job(fetch_policy, "interval", minutes=30)
-    scheduler.add_job(fetch_cninfo, "interval", minutes=30)
-    scheduler.add_job(fetch_research, "interval", minutes=30)
+    scheduler.add_job(lambda: _auto_run("财联社快讯",  fetch_cls),        "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("财联社红电报", fetch_cls_red),    "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("东方财富快讯", fetch_em),         "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("同花顺快讯",  fetch_ths),         "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("华尔街见闻",  fetch_wscn),        "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("第一财经",    fetch_yicai),       "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("金十数据",    fetch_jin10),       "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("格隆汇",      fetch_gelonghui),   "interval", minutes=5)
+    scheduler.add_job(lambda: _auto_run("政策 RSS",    fetch_policy),      "interval", minutes=30)
+    scheduler.add_job(lambda: _auto_run("巨潮公告",    fetch_cninfo),      "interval", minutes=30)
+    scheduler.add_job(lambda: _auto_run("研究报告",    fetch_research),    "interval", minutes=30)
     scheduler.add_job(_guarded_sector_flow, "interval", minutes=15)
     scheduler.add_job(fetch_lhb, "cron", hour=17, minute=30)
     scheduler.add_job(_guarded_zt_pool, "interval", minutes=5)
@@ -126,24 +127,37 @@ def start_scheduler() -> None:
     import threading
 
     def _initial_fetch():
-        for fn in [fetch_cls, fetch_cls_red, fetch_em, fetch_ths, fetch_wscn, fetch_yicai, fetch_jin10, fetch_gelonghui, fetch_policy, fetch_cninfo, fetch_research]:
-            try:
-                fn()
-            except Exception:
-                pass
+        news_tasks = [
+            ("财联社快讯",  fetch_cls),
+            ("财联社红电报", fetch_cls_red),
+            ("东方财富快讯", fetch_em),
+            ("同花顺快讯",  fetch_ths),
+            ("华尔街见闻",  fetch_wscn),
+            ("第一财经",    fetch_yicai),
+            ("金十数据",    fetch_jin10),
+            ("格隆汇",      fetch_gelonghui),
+            ("政策 RSS",    fetch_policy),
+            ("巨潮公告",    fetch_cninfo),
+            ("研究报告",    fetch_research),
+        ]
+        for name, fn in news_tasks:
+            _auto_run(name, fn)
         if _in_trade_hours():
-            for fn in [fetch_sector_flow, fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_concept_flow, fetch_zbgc_pool, fetch_strong_pool, fetch_hot_rank_up, fetch_northbound_flow, fetch_big_deal]:
-                try:
-                    fn()
-                except Exception:
-                    pass
-            try:
-                fetch_realtime_snapshot()
-            except Exception:
-                pass
-        try:
-            fetch_xq_hot()
-        except Exception:
-            pass
+            trade_tasks = [
+                ("行业资金流", fetch_sector_flow),
+                ("涨停池",     fetch_zt_pool),
+                ("跌停池",     fetch_dt_pool),
+                ("概念热度",   fetch_concept_heat),
+                ("概念资金流", fetch_concept_flow),
+                ("炸板池",     fetch_zbgc_pool),
+                ("强势股",     fetch_strong_pool),
+                ("人气飙升",   fetch_hot_rank_up),
+                ("北向资金",   fetch_northbound_flow),
+                ("大单异动",   fetch_big_deal),
+                ("实时行情",   fetch_realtime_snapshot),
+            ]
+            for name, fn in trade_tasks:
+                _auto_run(name, fn)
+        _auto_run("雪球热度", fetch_xq_hot)
 
     threading.Thread(target=_initial_fetch, daemon=True).start()

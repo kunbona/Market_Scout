@@ -703,8 +703,7 @@ def api_big_deal():
 # Manual fetch trigger
 # ---------------------------------------------------------------------------
 
-_fetch_state: dict = {"status": "idle", "results": [], "ts": ""}
-_fetch_lock = __import__("threading").Lock()
+from fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
 
 
 def _run_fetch_all():
@@ -727,7 +726,7 @@ def _run_fetch_all():
             fetch_northbound_flow, fetch_hot_rank_up, fetch_xq_hot,
             fetch_big_deal,
         )
-        from fetcher.concept_flow import fetch as fetch_concept_flow
+        from fetcher.concept_flow import fetch_concept_flow
         from fetcher.realtime_quote import fetch_realtime_snapshot
     except Exception as e:
         with _fetch_lock:
@@ -755,13 +754,8 @@ def _run_fetch_all():
         ("雪球热度",          fetch_xq_hot),
         ("大单异动",          fetch_big_deal),
         ("市场实时脉冲",      fetch_realtime_snapshot),
+        ("概念资金流",        fetch_concept_flow),
     ]
-
-    # concept_flow 可能不在同名模块，单独尝试
-    try:
-        tasks.append(("概念资金流", fetch_concept_flow))
-    except Exception:
-        pass
 
     results = []
     for name, fn in tasks:
