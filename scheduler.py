@@ -22,7 +22,7 @@ from fetcher.research import fetch as fetch_research
 from db.storage import cleanup_old_data
 from fetcher.realtime_quote import fetch_realtime_snapshot
 from fetcher.concept_flow import fetch_concept_flow
-from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow
+from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, fetch_xq_hot
 from quant.daily_compute import run_daily_compute
 
 
@@ -81,6 +81,10 @@ def _guarded_northbound():
         fetch_northbound_flow()
 
 
+def _guarded_xq_hot():
+    fetch_xq_hot()
+
+
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -108,6 +112,7 @@ def start_scheduler() -> None:
     scheduler.add_job(_guarded_strong_pool, "interval", minutes=15)
     scheduler.add_job(_guarded_hot_rank_up, "interval", minutes=30)
     scheduler.add_job(_guarded_northbound,  "interval", minutes=15)
+    scheduler.add_job(_guarded_xq_hot, "interval", minutes=63)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
@@ -130,5 +135,9 @@ def start_scheduler() -> None:
                 fetch_realtime_snapshot()
             except Exception:
                 pass
+        try:
+            fetch_xq_hot()
+        except Exception:
+            pass
 
     threading.Thread(target=_initial_fetch, daemon=True).start()

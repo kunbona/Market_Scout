@@ -13,6 +13,7 @@ from db.storage import (
     get_concept_zt_density,
     get_sector_flow_accel,
     get_volume_breakout,
+    get_lianzban_chain,
     get_research_activity,
     get_call_auction_stats,
     get_latest_emotion_date,
@@ -23,6 +24,7 @@ from db.storage import (
     get_market_pulse_latest,
     get_hot_rank_up_latest,
     get_northbound_flow_latest,
+    get_xq_hot_latest,
 )
 
 st.set_page_config(page_title="Market Radar", layout="wide", initial_sidebar_state="collapsed")
@@ -486,6 +488,22 @@ def _hot_rank_up():
 def _northbound():
     return get_northbound_flow_latest()
 
+@st.cache_data(ttl=3600)
+def _xq_hot():
+    return get_xq_hot_latest(25)
+
+@st.cache_data(ttl=300)
+def _lianzban_chain(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_lianzban_chain(d)
+
+@st.cache_data(ttl=300)
+def _volume_breakout(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_volume_breakout(d)
+
 def _t(s):
     s = (s or "").strip()
     if len(s) >= 16: return f"{s[5:10]} {s[11:16]}"
@@ -519,6 +537,7 @@ zbgc   = _zbgc()
 strong = _strong()
 hot_up  = _hot_rank_up()
 nb_flow = _northbound()
+xq_hot  = _xq_hot()
 now_str = datetime.now().strftime("%H:%M")
 
 top1_name, top1_pct, total_str, total_cls, p0 = "—", "—", "—", "n", 0
@@ -848,6 +867,31 @@ if cf:
         f'</div>'
     )
 
+if xq_hot:
+    fetch_t = xq_hot[0].get("fetch_time","")[:16] if xq_hot else ""
+    xq_rows = ""
+    for r in xq_hot[:20]:
+        rank   = int(r.get("rank") or 0)
+        code   = _e(str(r.get("stock_code","")).replace("SZ","").replace("SH",""))
+        name   = _e(str(r.get("stock_name","") or ""))
+        follow = r.get("follow_cnt")
+        fol_s  = f'{int(follow/1000)}k' if follow and follow >= 1000 else (str(int(follow)) if follow else "")
+        xq_rows += (
+            f'<div class="wr">'
+            f'<span class="wr-rank">{rank}</span>'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-val" style="color:#6b7280">{fol_s}</span>'
+            f'</div>'
+        )
+    rt_col1 += (
+        f'<div class="widget">'
+        f'<div class="widget-header"><span class="src-dot" style="background:#22c55e"></span>'
+        f'雪球关注热度<span class="widget-header-count">{fetch_t}</span></div>'
+        f'{xq_rows}'
+        f'</div>'
+    )
+
 realtime_section = (
     '<div style="border-bottom:1px solid #e2e4ea;margin-bottom:0">'
     '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:10px 14px 6px">实时行情</div>'
@@ -933,6 +977,8 @@ try:
     _mc_dist = _market_cap_dist(_latest_date) if _latest_date else {}
     _ad = _advance_decline(_latest_date) if _latest_date else {}
     _pulse = _market_pulse()
+    _lc = _lianzban_chain(_latest_date) if _latest_date else []    # 连板链条明细
+    _vb = _volume_breakout(_latest_date) if _latest_date else []   # 成交额异动
 
     # ── KPI 卡片行（8卡：原4 + 涨/跌家数、成交额/MA20、换手中位、市值偏好）──
     zt_total = _em.get("zt_total", "—")
@@ -1115,6 +1161,60 @@ try:
         _sfa_rows += f'<div class="wr"><span class="wr-name">{industry}</span><span class="wr-val" style="color:{acc_color}">{acc_str}</span></div>'
     _sfa_full = f'<div style="padding:0 0 8px"><div class="widget-header"><span class="src-dot" style="background:#f97316"></span>机构资金加速度<span class="widget-header-count">3d/20d，按行业</span></div>{_sfa_rows if _sfa_rows else "<div style=padding:16px;color:#9ca3af>暂无数据</div>"}</div>'
 
+    # ── 连板链条明细 widget ──
+    _lc_rows = ""
+    for r in [x for x in (_lc or []) if (x.get("lianzban_cnt") or 0) >= 2][:15]:
+        code      = _e(str(r.get("stock_code", "")).replace("sz", "").replace("sh", "").upper())
+        name      = _e(str(r.get("stock_name", "") or ""))
+        cnt       = int(r.get("lianzban_cnt") or 0)
+        is_zb     = bool(r.get("is_zb"))
+        ind       = _e(str(r.get("industry", "") or ""))
+        cnt_color = "#ef4444" if cnt >= 4 else ("#3b82f6" if cnt >= 3 else "#6b7280")
+        zb_tag    = '<span style="color:#ef4444;font-size:10px">炸</span>' if is_zb else ""
+        _lc_rows += (
+            f'<div class="wr">'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-badge" style="background:#f3f4f6;color:{cnt_color};font-weight:700">{cnt}板</span>'
+            f'{zb_tag}'
+            f'<span class="wr-tag">{ind}</span>'
+            f'</div>'
+        )
+    _lc_inner = (
+        f'<div class="widget">'
+        f'<div class="widget-header"><span class="src-dot" style="background:#8b5cf6"></span>'
+        f'连板链条<span class="widget-header-count">2板+明细</span></div>'
+        f'{_lc_rows if _lc_rows else "<div style=padding:16px;color:#9ca3af;font-size:12px>暂无数据</div>"}'
+        f'</div>'
+    )
+
+    # ── 成交额异动 widget ──
+    _vb_rows = ""
+    for r in (_vb or [])[:15]:
+        code        = _e(str(r.get("stock_code", "")).replace("sz", "").replace("sh", "").upper())
+        name        = _e(str(r.get("stock_name", "") or ""))
+        ratio       = float(r.get("ratio_5_20") or 0)
+        amt         = float(r.get("amount_5d") or 0)
+        ind         = _e(str(r.get("industry", "") or ""))
+        amt_yi      = amt / 1e8
+        ratio_color = "#ef4444" if ratio >= 3 else ("#f59e0b" if ratio >= 2 else "#6b7280")
+        _vb_rows += (
+            f'<div class="wr">'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-val" style="color:{ratio_color}">{ratio:.1f}x</span>'
+            f'<span class="wr-tag">{amt_yi:.2f}亿</span>'
+            f'<span class="wr-tag">{ind}</span>'
+            f'</div>'
+        )
+    _vb_inner = (
+        f'<div class="widget">'
+        f'<div class="widget-header"><span class="src-dot" style="background:#f97316"></span>'
+        f'成交异动<span class="widget-header-count">5d/20d放量</span></div>'
+        f'{_vb_rows if _vb_rows else "<div style=padding:16px;color:#9ca3af;font-size:12px>暂无数据</div>"}'
+        f'</div>'
+    )
+
     emotion_section = (
         '<div style="border-top:1px solid #e2e4ea;padding:0">'
         '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:12px 14px 6px">市场情绪（基于本地日线）</div>'
@@ -1128,6 +1228,11 @@ try:
         f'<div class="panel-3col-col">{_to_inner}</div>'
         f'<div class="panel-3col-col">{_mc_inner}</div>'
         f'<div class="panel-3col-col">{_sfa_full}</div>'
+        '</div>'
+        + '<div class="panel-3col" style="padding:0">'
+        f'<div class="panel-3col-col">{_lc_inner}</div>'
+        f'<div class="panel-3col-col">{_vb_inner}</div>'
+        f'<div class="panel-3col-col"></div>'
         '</div>'
         + '</div>'
     )

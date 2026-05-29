@@ -369,6 +369,17 @@ CREATE TABLE IF NOT EXISTS northbound_flow (
     net_inflow   REAL,
     UNIQUE(fetch_time, channel)
 );
+
+CREATE TABLE IF NOT EXISTS xq_hot (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time  TEXT,
+    rank        INTEGER,
+    stock_code  TEXT,
+    stock_name  TEXT,
+    follow_cnt  REAL,
+    price       REAL
+);
+CREATE INDEX IF NOT EXISTS idx_xq_hot_time ON xq_hot(fetch_time);
         """)
 
 
@@ -679,6 +690,7 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM strong_pool WHERE trade_date < ?", (cutoff_7d_date,))
         conn.execute("DELETE FROM hot_rank_up WHERE fetch_time < ?", (cutoff_7d,))
         conn.execute("DELETE FROM northbound_flow WHERE fetch_time < ?", (cutoff_30d,))
+        conn.execute("DELETE FROM xq_hot WHERE fetch_time < ?", (cutoff_7d,))
 
 
 # ── market_pulse ──────────────────────────────────────────────────────────────
@@ -764,7 +776,7 @@ def insert_volume_breakout(trade_date: str, stock_code: str, stock_name: str,
 def get_volume_breakout(trade_date: str) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            "SELECT * FROM volume_breakout WHERE trade_date = ? ORDER BY ratio_5_20 DESC",
+            "SELECT * FROM volume_breakout WHERE trade_date = ? ORDER BY ratio_5_20 DESC LIMIT 50",
             (trade_date,),
         )
         return _rows_to_dicts(cur)
@@ -806,7 +818,7 @@ def insert_lianzban_chain(trade_date: str, stock_code: str, stock_name: str,
 def get_lianzban_chain(trade_date: str) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            "SELECT * FROM lianzban_chain WHERE trade_date = ? ORDER BY lianzban_cnt DESC",
+            "SELECT * FROM lianzban_chain WHERE trade_date = ? AND lianzban_cnt <= 30 ORDER BY lianzban_cnt DESC",
             (trade_date,),
         )
         return _rows_to_dicts(cur)
@@ -1141,6 +1153,31 @@ def get_northbound_flow_latest() -> list[dict]:
         cur = conn.execute(
             "SELECT * FROM northbound_flow WHERE fetch_time=? ORDER BY direction,channel",
             (row[0],),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── xq_hot ────────────────────────────────────────────────────────────────────
+
+def insert_xq_hot(fetch_time, rank, stock_code, stock_name, follow_cnt, price):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO xq_hot (fetch_time,rank,stock_code,stock_name,follow_cnt,price) VALUES (?,?,?,?,?,?)",
+            (fetch_time, rank, stock_code, stock_name, follow_cnt, price),
+        )
+
+
+def get_xq_hot_latest(top_n=30) -> list[dict]:
+    """返回最新一批，按 rank 升序"""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT fetch_time FROM xq_hot ORDER BY fetch_time DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM xq_hot WHERE fetch_time=? ORDER BY rank ASC LIMIT ?",
+            (row[0], top_n),
         )
         return _rows_to_dicts(cur)
 

@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 import akshare as ak
-from db.storage import insert_hot_rank_up, insert_northbound_flow
+from db.storage import insert_hot_rank_up, insert_northbound_flow, insert_xq_hot
 
 logger = logging.getLogger(__name__)
 
@@ -54,3 +54,26 @@ def fetch_northbound_flow() -> None:
         logger.info("[market_sentiment] northbound_flow 写入 %d 条", len(df))
     except Exception as e:
         logger.warning("[market_sentiment] fetch_northbound_flow failed: %s", e)
+
+
+def fetch_xq_hot(top_n=50) -> None:
+    """雪球关注热度，每次约 50 秒，建议 1 小时调度一次"""
+    try:
+        fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df = ak.stock_hot_tweet_xq()
+        if df is None or df.empty:
+            return
+        col_code  = next((c for c in df.columns if "代码" in c), None)
+        col_name  = next((c for c in df.columns if "简称" in c or "名称" in c), None)
+        col_follow = next((c for c in df.columns if "关注" in c), None)
+        col_price = next((c for c in df.columns if "价" in c), None)
+        for rank, (_, row) in enumerate(df.head(top_n).iterrows(), start=1):
+            def _s(c): return str(row[c]).strip() if c else ""
+            def _f(c):
+                try: return float(row[c]) if c else None
+                except: return None
+            insert_xq_hot(fetch_time, rank, _s(col_code), _s(col_name),
+                          _f(col_follow), _f(col_price))
+        logger.info("[market_sentiment] xq_hot 写入 top %d 条", top_n)
+    except Exception as e:
+        logger.warning("[market_sentiment] fetch_xq_hot failed: %s", e)
