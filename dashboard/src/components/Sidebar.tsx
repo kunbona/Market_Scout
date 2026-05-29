@@ -1,0 +1,184 @@
+import { useState, useEffect, useRef } from 'react';
+import { BarChart3, FileText, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
+
+interface FetchResult { name: string; ok: boolean; error?: string; }
+interface FetchState { status: 'idle' | 'running' | 'done'; results: FetchResult[]; ts: string; }
+
+export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setActiveTab: (tab: string) => void }) {
+  const [currentTime, setCurrentTime] = useState(() =>
+    new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  );
+  const [fetchState, setFetchState] = useState<FetchState>({ status: 'idle', results: [], ts: '' });
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 实时时钟
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  // 组件挂载时恢复抓取进度（页面刷新或切 tab 后回来）
+  useEffect(() => {
+    fetch('/api/fetch-all-status')
+      .then(r => r.json())
+      .then(j => {
+        if (!j.success) return;
+        const s: FetchState = j.data;
+        setFetchState(s);
+        if (s.status === 'running') startPoll();
+      })
+      .catch(() => {});
+    return () => stopPoll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startPoll = () => {
+    stopPoll();
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch('/api/fetch-all-status');
+        const j = await r.json();
+        if (j.success) {
+          setFetchState(j.data);
+          if (j.data.status === 'done') stopPoll();
+        }
+      } catch { /* ignore */ }
+    }, 1500);
+  };
+
+  const handleFetch = async () => {
+    try {
+      const r = await fetch('/api/fetch-all', { method: 'POST' });
+      const j = await r.json();
+      if (j.success && j.data.started) {
+        setFetchState({ status: 'running', results: [], ts: '' });
+        startPoll();
+      }
+    } catch { /* ignore */ }
+  };
+
+  const menuItems = [
+    { id: 'market',      icon: TrendingUp, label: '市场数据' },
+    { id: 'news',        icon: FileText,   label: '财经快讯' },
+    { id: 'policy',      icon: BarChart3,  label: '政策动态' },
+    { id: 'research',    icon: FileText,   label: '研究报告' },
+    { id: 'ai-analysis', icon: Sparkles,   label: 'AI智能分析' },
+    { id: 'settings',    icon: Settings,   label: '设置' },
+  ];
+
+  const isRunning = fetchState.status === 'running';
+  const isDone    = fetchState.status === 'done';
+  const failed    = fetchState.results.filter(r => !r.ok).length;
+  const done      = fetchState.results.filter(r => r.ok).length;
+
+  // 最新一条已完成/进行中的任务名
+  const currentTask = isRunning && fetchState.results.length > 0
+    ? fetchState.results[fetchState.results.length - 1].name
+    : null;
+
+  // 同步状态指示
+  const syncLabel = isRunning
+    ? `抓取中 ${done}/${done + (20 - done)}…`
+    : isDone
+    ? fetchState.ts ? `${fetchState.ts} 更新` : '已完成'
+    : '就绪';
+  const syncColor = isDone && failed === 0 ? 'text-green-600' : isDone && failed > 0 ? 'text-amber-600' : isRunning ? 'text-blue-600' : 'text-green-600';
+  const dotColor  = isDone && failed === 0 ? 'bg-green-500' : isDone && failed > 0 ? 'bg-amber-500' : isRunning ? 'bg-blue-500' : 'bg-green-500';
+
+  return (
+    <div className="w-72 bg-white h-screen flex flex-col relative overflow-hidden border-r border-gray-200/80 shadow-xl">
+      {/* Background decoration */}
+      <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-blue-500/5 to-purple-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-0 left-0 w-64 h-64 bg-gradient-to-br from-pink-500/5 to-orange-500/5 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Logo */}
+      <div className="p-6 border-b border-gray-200/80 relative z-10">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30">
+            <Sparkles className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-xl font-semibold text-gray-900">DataHub</h1>
+            <p className="text-xs text-gray-500">智能数据中心</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 p-4 relative z-10 overflow-y-auto">
+        {menuItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className={`nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1.5 text-sm font-medium ${
+                activeTab === item.id
+                  ? 'nav-item-active bg-gradient-to-r from-blue-500 to-purple-600 text-white'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Icon className={`w-4 h-4 flex-shrink-0 ${activeTab === item.id ? 'text-white' : 'text-gray-400'}`} />
+              <span>{item.label}</span>
+              {activeTab === item.id && (
+                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white/70" />
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* 底部：同步状态 + 手动抓取按钮 */}
+      <div className="p-4 border-t border-gray-100 relative z-10 space-y-2.5">
+
+        {/* 手动抓取按钮 */}
+        <button
+          onClick={handleFetch}
+          disabled={isRunning}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium
+                     bg-gradient-to-r from-blue-500 to-purple-600 text-white
+                     hover:from-blue-600 hover:to-purple-700
+                     disabled:opacity-60 disabled:cursor-not-allowed
+                     shadow-[0_2px_8px_rgba(99,102,241,.30)]"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRunning ? 'animate-spin' : ''}`} />
+          {isRunning ? '数据抓取中...' : '立即抓取数据'}
+        </button>
+
+        {/* 进度/结果 */}
+        {(isRunning || isDone) && (
+          <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs space-y-1">
+            {isRunning && currentTask && (
+              <p className="text-blue-600 truncate">▶ {currentTask}</p>
+            )}
+            {isDone && (
+              <div className="flex items-center gap-1.5">
+                {failed === 0
+                  ? <><CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" /><span className="text-green-600">全部完成（{done} 项）</span></>
+                  : <><XCircle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" /><span className="text-amber-600">{done} 成功 / {failed} 失败</span></>
+                }
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 时间状态卡片 */}
+        <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-500">当前时间</span>
+            <span className="text-xs font-semibold text-gray-900 font-mono">{currentTime}</span>
+          </div>
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <div className={`w-1.5 h-1.5 rounded-full ${dotColor} ${isRunning ? 'animate-pulse' : ''}`} />
+            <span className={`text-xs font-medium ${syncColor}`}>{syncLabel}</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}

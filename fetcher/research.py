@@ -18,10 +18,14 @@ QTYPES = [0, 1, 2, 3]
 _TZ_BEIJING = pytz.timezone("Asia/Shanghai")
 
 
-def _report_url(info_code: str) -> str:
+def _report_url(info_code: str, encode_url: str = "") -> str:
     if not info_code:
         return ""
-    return f"https://data.eastmoney.com/report/zw_research_report.jshtml?infocode={info_code}"
+    # 优先用 encodeUrl 构造直接 PDF 链接（dfcfw.com 可直接访问）
+    # jshtml 链接已 404，不再使用
+    if encode_url:
+        return f"https://pdf.dfcfw.com/pdf/H3_{encode_url}_1.pdf"
+    return ""
 
 
 def _today_beijing() -> str:
@@ -90,7 +94,8 @@ def fetch(days_back: int = 0) -> None:
                     rating       = str(item.get("emRatingName", "") or item.get("sRatingName", "") or "")
                     aim_price    = str(item.get("indvAimPriceT", "") or item.get("indvAimPriceL", "") or "")
                     info_code    = str(item.get("infoCode", "") or "")
-                    report_url   = _report_url(info_code)
+                    encode_url   = str(item.get("encodeUrl", "") or "")
+                    report_url   = _report_url(info_code, encode_url)
                     if not title:
                         continue
                     insert_research_report(

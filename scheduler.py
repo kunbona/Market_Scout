@@ -22,7 +22,7 @@ from fetcher.research import fetch as fetch_research
 from db.storage import cleanup_old_data
 from fetcher.realtime_quote import fetch_realtime_snapshot
 from fetcher.concept_flow import fetch_concept_flow
-from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, fetch_xq_hot
+from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, fetch_xq_hot, fetch_big_deal
 from quant.daily_compute import run_daily_compute
 
 
@@ -85,6 +85,11 @@ def _guarded_xq_hot():
     fetch_xq_hot()
 
 
+def _guarded_big_deal():
+    if _in_trade_hours():
+        fetch_big_deal()
+
+
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -113,6 +118,7 @@ def start_scheduler() -> None:
     scheduler.add_job(_guarded_hot_rank_up, "interval", minutes=30)
     scheduler.add_job(_guarded_northbound,  "interval", minutes=15)
     scheduler.add_job(_guarded_xq_hot, "interval", minutes=63)
+    scheduler.add_job(_guarded_big_deal, "interval", minutes=3)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
@@ -126,7 +132,7 @@ def start_scheduler() -> None:
             except Exception:
                 pass
         if _in_trade_hours():
-            for fn in [fetch_sector_flow, fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_concept_flow, fetch_zbgc_pool, fetch_strong_pool, fetch_hot_rank_up, fetch_northbound_flow]:
+            for fn in [fetch_sector_flow, fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_concept_flow, fetch_zbgc_pool, fetch_strong_pool, fetch_hot_rank_up, fetch_northbound_flow, fetch_big_deal]:
                 try:
                     fn()
                 except Exception:

@@ -380,6 +380,21 @@ CREATE TABLE IF NOT EXISTS xq_hot (
     price       REAL
 );
 CREATE INDEX IF NOT EXISTS idx_xq_hot_time ON xq_hot(fetch_time);
+
+CREATE TABLE IF NOT EXISTS big_deal (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time  TEXT,
+    deal_time   TEXT,
+    stock_code  TEXT,
+    stock_name  TEXT,
+    price       REAL,
+    volume      INTEGER,
+    amount      REAL,
+    deal_type   TEXT,
+    change_pct  REAL,
+    change_amt  REAL,
+    UNIQUE(deal_time, stock_code, amount)
+);
         """)
 
 
@@ -498,30 +513,44 @@ def get_cls_news(limit=50) -> list[dict]:
         return _rows_to_dicts(cur)
 
 
-def get_cls_news_by_source(source: str, limit: int = 50) -> list[dict]:
+def get_cls_news_by_source(source: str, limit: int = 50, offset: int = 0) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            "SELECT * FROM cls_news WHERE source = ? ORDER BY pub_time DESC LIMIT ?",
-            (source, limit),
+            "SELECT * FROM cls_news WHERE source = ? ORDER BY pub_time DESC LIMIT ? OFFSET ?",
+            (source, limit, offset),
         )
         return _rows_to_dicts(cur)
 
 
-def get_policy_news(limit=20) -> list[dict]:
+def count_cls_news_by_source(source: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        return conn.execute(
+            "SELECT count(*) FROM cls_news WHERE source = ?", (source,)
+        ).fetchone()[0]
+
+
+def get_policy_news(limit=20, offset: int = 0) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            "SELECT * FROM policy_news ORDER BY pub_time DESC LIMIT ?", (limit,)
+            "SELECT * FROM policy_news ORDER BY pub_time DESC LIMIT ? OFFSET ?", (limit, offset)
         )
         return _rows_to_dicts(cur)
 
 
-def get_policy_news_by_source(source: str, limit: int = 50) -> list[dict]:
+def get_policy_news_by_source(source: str, limit: int = 50, offset: int = 0) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            "SELECT * FROM policy_news WHERE source = ? ORDER BY pub_time DESC LIMIT ?",
-            (source, limit),
+            "SELECT * FROM policy_news WHERE source = ? ORDER BY pub_time DESC LIMIT ? OFFSET ?",
+            (source, limit, offset),
         )
         return _rows_to_dicts(cur)
+
+
+def count_policy_news_by_source(source: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        return conn.execute(
+            "SELECT count(*) FROM policy_news WHERE source = ?", (source,)
+        ).fetchone()[0]
 
 
 def get_sector_flow_latest(source_type="industry") -> list[dict]:
@@ -691,6 +720,7 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM hot_rank_up WHERE fetch_time < ?", (cutoff_7d,))
         conn.execute("DELETE FROM northbound_flow WHERE fetch_time < ?", (cutoff_30d,))
         conn.execute("DELETE FROM xq_hot WHERE fetch_time < ?", (cutoff_7d,))
+        conn.execute("DELETE FROM big_deal WHERE fetch_time < ?", (cutoff_7d,))
 
 
 # ── market_pulse ──────────────────────────────────────────────────────────────
@@ -767,7 +797,7 @@ def insert_volume_breakout(trade_date: str, stock_code: str, stock_name: str,
                             industry: str, ratio_5_20: float, amount_5d: float) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO volume_breakout "
+            "INSERT OR REPLACE INTO volume_breakout "
             "(trade_date, stock_code, stock_name, industry, ratio_5_20, amount_5d) VALUES (?,?,?,?,?,?)",
             (trade_date, stock_code, stock_name, industry, ratio_5_20, amount_5d),
         )
@@ -809,7 +839,7 @@ def insert_lianzban_chain(trade_date: str, stock_code: str, stock_name: str,
                            industry: str, lianzban_cnt: int, is_zb: bool) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO lianzban_chain "
+            "INSERT OR REPLACE INTO lianzban_chain "
             "(trade_date, stock_code, stock_name, industry, lianzban_cnt, is_zb) VALUES (?,?,?,?,?,?)",
             (trade_date, stock_code, stock_name, industry, lianzban_cnt, is_zb),
         )
@@ -1178,6 +1208,27 @@ def get_xq_hot_latest(top_n=30) -> list[dict]:
         cur = conn.execute(
             "SELECT * FROM xq_hot WHERE fetch_time=? ORDER BY rank ASC LIMIT ?",
             (row[0], top_n),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── big_deal ──────────────────────────────────────────────────────────────────
+
+def insert_big_deal(fetch_time: str, deal_time: str, stock_code: str, stock_name: str,
+                    price: float, volume: int, amount: float, deal_type: str,
+                    change_pct: float = None, change_amt: float = None) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO big_deal "
+            "(fetch_time, deal_time, stock_code, stock_name, price, volume, amount, deal_type, change_pct, change_amt) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (fetch_time, deal_time, stock_code, stock_name, price, volume, amount, deal_type, change_pct, change_amt),
+        )
+
+def get_big_deal_latest(limit: int = 50) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM big_deal ORDER BY deal_time DESC, id DESC LIMIT ?", (limit,)
         )
         return _rows_to_dicts(cur)
 

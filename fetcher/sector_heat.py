@@ -61,21 +61,24 @@ def fetch_zt_pool() -> None:
 
 
 def fetch_dt_pool() -> None:
+    # stock_dt_pool_em 已废弃，改用 stock_zt_pool_dtgc_em（跌停股池）
     try:
         trade_date = date.today().strftime("%Y%m%d")
         db_date = date.today().strftime("%Y-%m-%d")
-        df = ak.stock_dt_pool_em(date=trade_date)
+        df = ak.stock_zt_pool_dtgc_em(date=trade_date)
+        if df is None or df.empty:
+            return
 
-        col_code = next((c for c in df.columns if "代码" in c), None)
-        col_name = next((c for c in df.columns if "名称" in c), None)
-        col_time = next((c for c in df.columns if "首次" in c or "封板" in c or "时间" in c), None)
-        col_sector = next((c for c in df.columns if "行业" in c or "板块" in c or "概念" in c), None)
+        col_code   = next((c for c in df.columns if "代码" in c), None)
+        col_name   = next((c for c in df.columns if "名称" in c), None)
+        col_time   = next((c for c in df.columns if "最后封板" in c or "首次" in c or "时间" in c), None)
+        col_sector = next((c for c in df.columns if "行业" in c or "板块" in c), None)
 
         for _, row in df.iterrows():
-            stock_code = str(row[col_code]).strip() if col_code else ""
-            stock_name = str(row[col_name]).strip() if col_name else ""
+            stock_code    = str(row[col_code]).strip() if col_code else ""
+            stock_name    = str(row[col_name]).strip() if col_name else ""
             first_dt_time = str(row[col_time]).strip() if col_time else ""
-            sector = str(row[col_sector]).strip() if col_sector else ""
+            sector        = str(row[col_sector]).strip() if col_sector else ""
             insert_dt_pool(db_date, stock_code, stock_name, first_dt_time, sector)
     except Exception as e:
         logger.warning(f"[sector_heat] fetch_dt_pool failed: {e}")

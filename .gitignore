@@ -39,8 +39,17 @@ package-lock.json
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
 
 # 日志
 *.log
+
+# React 构建产物（部署时重新 build）
+dashboard/dist/
+dashboard/.vite/
+
+# Claude Code 本地配置
+.claude/
+
+# pnpm
+dashboard/node_modules/
+dashboard/pnpm-lock.yaml

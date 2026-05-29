@@ -1,0 +1,191 @@
+@import "tailwindcss";
+
+/* ─── 全局字体 ─────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  /* 数值/代码用等宽字体，防止数字跳动 */
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+
+  /* ── Elevation 阴影层级 ── */
+  --shadow-xs:  0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
+  --shadow-sm:  0 1px 3px rgba(0,0,0,.08), 0 2px 6px rgba(0,0,0,.06);
+  --shadow-md:  0 4px 12px rgba(0,0,0,.08), 0 2px 6px rgba(0,0,0,.06);
+  --shadow-lg:  0 8px 24px rgba(0,0,0,.10), 0 4px 10px rgba(0,0,0,.06);
+  --shadow-xl:  0 16px 40px rgba(0,0,0,.12), 0 6px 16px rgba(0,0,0,.08);
+  --shadow-focus: 0 0 0 3px rgba(99,102,241,.25);
+
+  /* ── 交互动画 ── */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);   /* 弹性，用于按压反馈 */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);         /* 快出，用于进入动画 */
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);          /* 平滑，用于状态切换 */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+}
+
+/* ─── 全局基线 ───────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+/* 数字、金额、代码使用等宽字体，数据对齐不跳动 */
+.font-mono,
+[class*="font-mono"],
+td,
+.tabular-nums { font-family: var(--font-mono) !important; font-variant-numeric: tabular-nums; }
+
+/* ─── 卡片交互 ─────────────────────────────────────────────
+   press: active:scale-[0.985] 带 spring easing，有按下感
+   hover: 上浮 + 阴影增深，体现 elevation 变化
+   ────────────────────────────────────────────────────────── */
+.card-hover {
+  position: relative;
+  z-index: 0;
+  cursor: pointer;
+  transition:
+    transform var(--duration-base) var(--ease-spring),
+    box-shadow var(--duration-base) var(--ease-in-out),
+    border-color var(--duration-fast) ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px) scale(1.01);
+  box-shadow: var(--shadow-xl);
+  z-index: 10;
+  border-color: rgb(203 213 225) !important;  /* gray-300 */
+}
+.card-hover:active {
+  transform: scale(0.985) translateY(0);
+  box-shadow: var(--shadow-sm);
+  transition-duration: var(--duration-fast);
+}
+
+/* ─── 行级悬停（列表行，不做 scale 避免撑开高度）──────────── */
+.row-hover {
+  cursor: pointer;
+  transition: background-color var(--duration-fast) ease;
+}
+.row-hover:hover  { background-color: rgb(248 250 252); }  /* gray-50 */
+.row-hover:active { background-color: rgb(241 245 249); }  /* gray-100 */
+
+/* ─── 按钮通用增强 ─────────────────────────────────────────
+   所有 <button> 自动获得 press 感 + 焦点环
+   ────────────────────────────────────────────────────────── */
+button {
+  cursor: pointer;
+  transition:
+    transform var(--duration-fast) var(--ease-spring),
+    box-shadow var(--duration-fast) var(--ease-in-out),
+    background-color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease,
+    opacity var(--duration-fast) ease;
+}
+button:active:not(:disabled) {
+  transform: scale(0.95);
+  transition-duration: 80ms;
+}
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* ─── 渐变按钮（主操作：计算/保存/刷新）增强光泽感 ─────── */
+.btn-primary {
+  position: relative;
+  overflow: hidden;
+}
+.btn-primary::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,.15) 0%, transparent 60%);
+  pointer-events: none;
+  border-radius: inherit;
+}
+.btn-primary:hover::before { opacity: 0.8; }
+.btn-primary:active { transform: scale(0.96); }
+
+/* ─── KPI 卡片特化 ──────────────────────────────────────── */
+.kpi-card {
+  position: relative;
+}
+
+/* ─── Widget 卡片容器（市场数据各模块）─────────────────────── */
+.widget-card {
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--duration-base) var(--ease-in-out);
+}
+.widget-card:hover { box-shadow: var(--shadow-md); }
+
+/* ─── FilterTab 胶囊按钮活跃态增强光泽 ──────────────────────  */
+.tab-active-glow {
+  box-shadow: 0 2px 12px rgba(99,102,241,.35), 0 1px 3px rgba(99,102,241,.25);
+}
+
+/* ─── Sidebar 菜单项 ──────────────────────────────────────── */
+.nav-item {
+  transition:
+    background-color var(--duration-fast) ease,
+    transform var(--duration-fast) var(--ease-spring),
+    box-shadow var(--duration-fast) ease;
+}
+.nav-item:hover:not(.nav-item-active) {
+  background-color: rgba(0,0,0,.04);
+}
+.nav-item:active { transform: scale(0.97); }
+.nav-item-active {
+  box-shadow: 0 2px 10px rgba(99,102,241,.30);
+}
+
+/* ─── 翻页按钮 ───────────────────────────────────────────── */
+.page-btn {
+  transition:
+    background-color var(--duration-fast) ease,
+    transform var(--duration-fast) var(--ease-spring),
+    box-shadow var(--duration-fast) ease;
+}
+.page-btn:hover:not(:disabled) {
+  background-color: rgb(248 250 252);
+  box-shadow: var(--shadow-xs);
+}
+.page-btn:active:not(:disabled) { transform: scale(0.92); }
+
+/* ─── 输入框焦点增强 ──────────────────────────────────────── */
+input:focus, textarea:focus {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-color: rgb(99 102 241) !important;
+  transition: box-shadow var(--duration-fast) ease, border-color var(--duration-fast) ease;
+}
+
+/* ─── 数据行进入动画（列表渲染时依次淡入）─────────────────── */
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-in {
+  animation: fadeSlideIn var(--duration-slow) var(--ease-out) both;
+}
+
+/* ─── 骨架屏动画增强 ──────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* ─── prefers-reduced-motion：关闭所有动画 ───────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

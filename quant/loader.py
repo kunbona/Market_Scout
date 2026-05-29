@@ -7,13 +7,15 @@ quant/loader.py — 本地量价数据读取工具
 """
 
 import logging
+import os as _os
 from pathlib import Path
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-DATA_ROOT = Path("/mnt/ssd_1T/runist/data/Quant_Data")
+_data_root_env = _os.environ.get("QUANT_DATA_ROOT", "").strip()
+DATA_ROOT = Path(_data_root_env) if _data_root_env else None
 
 # ── 列名映射：CSV 中文列名 → 标准英文列名 ──────────────────────────────────────
 

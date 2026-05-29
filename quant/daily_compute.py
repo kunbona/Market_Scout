@@ -86,13 +86,15 @@ def _load_name_map(trade_date: str) -> dict:
         name_map = {}
         for csv_file in trading_dir.glob("*.csv"):
             try:
-                row = pd.read_csv(
+                df_tmp = pd.read_csv(
                     csv_file, encoding="GBK", skiprows=1,
-                    usecols=["股票代码", "股票名称"], nrows=1,
+                    usecols=["股票代码", "股票名称"],
                 )
-                if not row.empty:
-                    code = str(row.iloc[0]["股票代码"]).strip()
-                    name = str(row.iloc[0]["股票名称"]).strip()
+                if not df_tmp.empty:
+                    # 取最后一行（最新数据），名称最准确
+                    last = df_tmp.iloc[-1]
+                    code = str(last["股票代码"]).strip()
+                    name = str(last["股票名称"]).strip()
                     name_map[code] = name
             except Exception:
                 pass
@@ -315,16 +317,17 @@ def compute_volume_breakout(trade_date: str) -> None:
         amount_5d = float(row["amount_mean_5"])
 
         # 获取股票名称
+        # 取最后一行名称（最新），避免 N/C 前缀旧名
         stock_name = ""
         csv_path = trading_dir / f"{code}.csv"
         if csv_path.exists():
             try:
-                name_row = pd.read_csv(
+                name_df = pd.read_csv(
                     csv_path, encoding="GBK", skiprows=1,
-                    usecols=["股票名称"], nrows=1,
+                    usecols=["股票名称"],
                 )
-                if not name_row.empty:
-                    stock_name = str(name_row.iloc[0]["股票名称"]).strip()
+                if not name_df.empty:
+                    stock_name = str(name_df.iloc[-1]["股票名称"]).strip()
             except Exception:
                 pass
 
@@ -437,17 +440,17 @@ def compute_lianzban_chain(trade_date: str) -> None:
         is_zb = bool(row["是否炸板"] == 1) if "是否炸板" in row.index else False
         industry = industry_map.get(code, "未知")
 
-        # 获取股票名称
+        # 获取股票名称：读取最后一行（最新），避免取到 N/C 前缀的上市初始名
         stock_name = ""
         csv_path = trading_dir / f"{code}.csv"
         if csv_path.exists():
             try:
-                name_row = pd.read_csv(
+                name_df = pd.read_csv(
                     csv_path, encoding="GBK", skiprows=1,
-                    usecols=["股票名称"], nrows=1,
+                    usecols=["股票名称"],
                 )
-                if not name_row.empty:
-                    stock_name = str(name_row.iloc[0]["股票名称"]).strip()
+                if not name_df.empty:
+                    stock_name = str(name_df.iloc[-1]["股票名称"]).strip()
             except Exception:
                 pass
 

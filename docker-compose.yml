@@ -17,7 +17,8 @@ services:
       - "20026:20026"
     environment:
       - RSSHUB_BASE_URL=http://rsshub:1200
+      - FLASK_PORT=20026
     depends_on:
       - rsshub
     command: >
-      bash -c "pip install -r requirements.txt -q && streamlit run app.py"
+      bash -c "pip install -r requirements.txt -q && python server.py"

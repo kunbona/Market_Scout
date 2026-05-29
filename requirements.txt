@@ -1,7 +1,7 @@
 akshare>=1.16.14
-streamlit>=1.35.0
 feedparser>=6.0.11
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 apscheduler>=3.10.4
 pandas>=2.0.0
+waitress>=3.0.0
