@@ -18,6 +18,23 @@ from quant.loader import DATA_ROOT, get_factor_slice
 logger = logging.getLogger(__name__)
 
 
+# ── 辅助：前一交易日 ─────────────────────────────────────────────────────────────
+
+def _prev_trade_date(trade_date: str) -> str:
+    """获取 trade_date 的前一个交易日（从涨停相关因子.parquet 的日期列表推断）"""
+    try:
+        df = pd.read_parquet(
+            DATA_ROOT / "factors" / "stock" / "daily" / "涨停相关因子.parquet",
+            columns=["trade_date"],
+        )
+        dates = sorted(df["trade_date"].astype(str).unique())
+        idx = dates.index(trade_date) if trade_date in dates else -1
+        return dates[idx - 1] if idx > 0 else ""
+    except Exception as e:
+        logger.warning("[daily_compute] _prev_trade_date 失败: %s", e)
+        return ""
+
+
 # ── 辅助：加载申万行业映射 ────────────────────────────────────────────────────
 
 def _load_industry_map(trade_date: str) -> dict:
@@ -105,14 +122,33 @@ def compute_market_emotion(trade_date: str) -> None:
 
     zt_total = int(df["收盘涨停"].sum())
     zb_total = int(df["是否炸板"].sum())
-    max_lianzban = int(df["连板次数"].max()) if "连板次数" in df.columns else 0
+    # 修复2：过滤异常连板次数（历史脏数据可能出现 1597 等不可能值）
+    max_lianzban = int(df["连板次数"][df["连板次数"] <= 30].max()) if "连板次数" in df.columns else 0
 
-    # 昨日涨停今日溢价：需要跨两日联表计算，字段复杂，暂设 None
+    # 修复3：昨日涨停今日溢价
     zt_yesterday_premium = None
+    try:
+        prev_date = _prev_trade_date(trade_date)
+        if prev_date:
+            df_prev = get_factor_slice("涨停相关因子", prev_date)
+            yesterday_zt_codes = set(df_prev[df_prev["收盘涨停"] == 1]["code"].tolist())
+            if yesterday_zt_codes:
+                df_ret = get_factor_slice("涨跌幅相关因子", trade_date)
+                if not df_ret.empty and "pct_chg_1" in df_ret.columns:
+                    mask = df_ret["code"].isin(yesterday_zt_codes)
+                    prem_vals = df_ret.loc[mask, "pct_chg_1"].dropna()
+                    if len(prem_vals) > 0:
+                        zt_yesterday_premium = float(prem_vals.mean())
+    except Exception as e:
+        logger.warning("[daily_compute] zt_yesterday_premium 计算失败: %s", e)
 
-    # 跌停数：涨停相关因子 parquet 中无跌停字段
-    # TODO: 可从 涨跌幅相关因子.parquet 中筛选 pct_chg_1 <= -0.099 (跌停近似)
+    # 修复1：跌停数从涨跌幅相关因子读取（pct_chg_1 <= -0.099 近似跌停）
     dt_total = 0
+    try:
+        df_ret = get_factor_slice("涨跌幅相关因子", trade_date)
+        dt_total = int((df_ret["pct_chg_1"] <= -0.099).sum()) if "pct_chg_1" in df_ret.columns else 0
+    except Exception as e:
+        logger.warning("[daily_compute] dt_total 计算失败: %s", e)
 
     zb_rate = zb_total / (zt_total + zb_total) if (zt_total + zb_total) > 0 else 0.0
 
@@ -161,7 +197,11 @@ def compute_sector_zt_density(trade_date: str) -> None:
     for industry in total_per_ind.index:
         total = int(total_per_ind[industry])
         zt_cnt = int(zt_per_ind[industry])
-        max_lb = int(max_lb_per_ind.get(industry, 0)) if not max_lb_per_ind.empty else 0
+        # 修复2：过滤异常连板次数再取 max
+        max_lb = 0
+        if not max_lb_per_ind.empty and industry in max_lb_per_ind.index:
+            raw_max = max_lb_per_ind[industry]
+            max_lb = int(raw_max) if raw_max <= 30 else 0
         density = zt_cnt / total if total > 0 else 0.0
 
         insert_sector_zt_density(trade_date, industry, zt_cnt, density, max_lb)
@@ -173,21 +213,63 @@ def compute_sector_zt_density(trade_date: str) -> None:
 
 def compute_sector_flow_acceleration(trade_date: str) -> None:
     """
-    TODO: 按申万行业聚合资金流，计算 3日均值 / 20日均值 (inst_inflow_3d_vs_20d)。
+    按申万行业聚合机构净买入占比，计算 3日均值 / 20日均值 作为加速度指标。
 
-    当前跳过实现，原因:
-      - 资金流相关因子.parquet 字段为「机构净买入占比」等截面值，
-        非累计额度，需要跨日聚合后才能计算加速度。
-      - 跨多日读取 parquet 性能代价较高，需要设计增量缓存方案后再实现。
-
-    依赖: 资金流相关因子.parquet 字段: 机构净买入占比, 大户净买入占比, 等
-    写入目标: 暂无独立表，未来可扩展 sector_flow_acceleration 表。
+    数据来源: 资金流相关因子.parquet 字段: 机构净买入占比
+    联表: 申万行业.parquet
+    写入: sector_flow_accel 表（insert_sector_flow_accel）
     """
-    # TODO: 实现板块资金流加速度计算
-    #   1. 读取 trade_date 前 20 个交易日的资金流截面
-    #   2. 按申万一级行业聚合「机构净买入占比」均值
-    #   3. 计算 mean_3d / mean_20d 作为加速度指标
-    pass
+    from db.storage import insert_sector_flow_accel
+
+    try:
+        # 加载全量资金流数据，筛选最近 25 个交易日（覆盖 20 日窗口）
+        flow_path = DATA_ROOT / "factors" / "stock" / "daily" / "资金流相关因子.parquet"
+        df_flow = pd.read_parquet(flow_path, columns=["trade_date", "code", "机构净买入占比"])
+        df_flow["trade_date"] = df_flow["trade_date"].astype(str)
+
+        # 取 trade_date 及之前 25 个交易日
+        all_dates = sorted(df_flow["trade_date"].unique())
+        if trade_date not in all_dates:
+            logger.warning("[daily_compute] sector_flow_acceleration: %s 无资金流数据", trade_date)
+            return
+        td_idx = all_dates.index(trade_date)
+        window_dates = all_dates[max(0, td_idx - 24): td_idx + 1]  # 最多 25 天
+        df_flow = df_flow[df_flow["trade_date"].isin(window_dates)].copy()
+
+        # 联表行业
+        industry_map = _load_industry_map(trade_date)
+        if not industry_map:
+            logger.warning("[daily_compute] sector_flow_acceleration: 行业映射为空，跳过")
+            return
+        df_flow["industry"] = df_flow["code"].map(industry_map)
+        df_flow = df_flow.dropna(subset=["industry"])
+
+        # 按 (trade_date, industry) 聚合机构净买入占比均值
+        daily_ind = (
+            df_flow.groupby(["trade_date", "industry"])["机构净买入占比"]
+            .mean()
+            .reset_index()
+            .rename(columns={"机构净买入占比": "inst_mean"})
+        )
+
+        # 取近3日和近20日窗口日期
+        dates_3d = window_dates[-3:]
+        dates_20d = window_dates[-20:]
+
+        industries = daily_ind["industry"].unique()
+        written = 0
+        for ind in industries:
+            ind_df = daily_ind[daily_ind["industry"] == ind]
+            inst_3d = float(ind_df[ind_df["trade_date"].isin(dates_3d)]["inst_mean"].mean())
+            inst_20d = float(ind_df[ind_df["trade_date"].isin(dates_20d)]["inst_mean"].mean())
+            accel = inst_3d / inst_20d if inst_20d != 0 else 0.0
+            insert_sector_flow_accel(trade_date, ind, inst_3d, inst_20d, accel)
+            written += 1
+
+        logger.info("[daily_compute] sector_flow_acceleration %s: %d 个行业写入", trade_date, written)
+
+    except Exception as e:
+        logger.error("[daily_compute] sector_flow_acceleration 失败: %s", e)
 
 
 # ── 任务4：成交额异动 ─────────────────────────────────────────────────────────
@@ -446,6 +528,409 @@ def compute_research_activity(trade_date: str) -> None:
     logger.info("[daily_compute] research_activity %s: %d 只股票写入", trade_date, inserted)
 
 
+# ── 新任务1：连板梯队分布 + 晋级率 ──────────────────────────────────────────────
+
+def compute_lianzban_stats(trade_date: str) -> None:
+    """
+    计算连板梯队分布（各板数量）和晋级率（N→N+1），写入 lianzban_stats 表。
+
+    数据来源: 涨停相关因子.parquet，需今日和昨日两天截面。
+    晋级率: 昨日N板股票中，今日连板次数升至N+1的比例。
+    """
+    try:
+        from db.storage import upsert_lianzban_stats
+
+        df_today = get_factor_slice("涨停相关因子", trade_date)
+        if df_today.empty:
+            logger.warning("[daily_compute] lianzban_stats: %s 无数据", trade_date)
+            return
+
+        # 今日各梯队数量（连板次数异常值 > 30 排除）
+        lb_today = df_today[df_today["连板次数"] <= 30]
+        tier_1 = int((lb_today["连板次数"] == 1).sum())
+        tier_2 = int((lb_today["连板次数"] == 2).sum())
+        tier_3 = int((lb_today["连板次数"] == 3).sum())
+        tier_4plus = int((lb_today["连板次数"] >= 4).sum())
+
+        # 昨日截面用于计算晋级率
+        advance_1to2 = advance_2to3 = advance_3to4 = 0.0
+        prev_date = _prev_trade_date(trade_date)
+        if prev_date:
+            df_prev = get_factor_slice("涨停相关因子", prev_date)
+            if not df_prev.empty:
+                df_prev = df_prev[df_prev["连板次数"] <= 30]
+
+                # 今日以 code 为索引方便查找
+                today_lb_map = dict(zip(df_today["code"], df_today["连板次数"]))
+
+                for n, attr in [(1, "advance_1to2"), (2, "advance_2to3"), (3, "advance_3to4")]:
+                    prev_n_codes = set(df_prev[df_prev["连板次数"] == n]["code"].tolist())
+                    if prev_n_codes:
+                        advanced = sum(
+                            1 for c in prev_n_codes
+                            if today_lb_map.get(c, 0) == n + 1
+                        )
+                        val = advanced / len(prev_n_codes)
+                    else:
+                        val = 0.0
+                    if attr == "advance_1to2":
+                        advance_1to2 = val
+                    elif attr == "advance_2to3":
+                        advance_2to3 = val
+                    else:
+                        advance_3to4 = val
+
+        upsert_lianzban_stats(
+            trade_date, tier_1, tier_2, tier_3, tier_4plus,
+            advance_1to2, advance_2to3, advance_3to4,
+        )
+        logger.info(
+            "[daily_compute] lianzban_stats %s: 1板=%d 2板=%d 3板=%d 4板+=%d "
+            "晋级率=%.2f/%.2f/%.2f",
+            trade_date, tier_1, tier_2, tier_3, tier_4plus,
+            advance_1to2, advance_2to3, advance_3to4,
+        )
+    except Exception as e:
+        logger.error("[daily_compute] lianzban_stats 失败: %s", e)
+
+
+# ── 新任务2：概念涨停密度 ─────────────────────────────────────────────────────
+
+def compute_concept_zt_density(trade_date: str) -> None:
+    """
+    统计今日涨停股票所属概念的涨停数量，写入 concept_zt_density 表。
+
+    数据来源:
+      - 涨停相关因子.parquet: 今日涨停股（收盘涨停==1）
+      - stock-popular-concept-detail/{code}.csv: 字段 所属概念（逗号分隔）
+    只读涨停股的概念文件，不全量扫描。
+    """
+    try:
+        from db.storage import insert_concept_zt_density
+
+        df_zt = get_factor_slice("涨停相关因子", trade_date)
+        if df_zt.empty:
+            logger.warning("[daily_compute] concept_zt_density: %s 无数据", trade_date)
+            return
+
+        zt_codes = df_zt[df_zt["收盘涨停"] == 1]["code"].tolist()
+        if not zt_codes:
+            logger.info("[daily_compute] concept_zt_density %s: 无涨停股", trade_date)
+            return
+
+        concept_dir = DATA_ROOT / "stock-popular-concept-detail"
+        if not concept_dir.exists():
+            logger.warning("[daily_compute] concept_zt_density: 概念目录不存在")
+            return
+
+        # 统计每个概念下涨停股数量
+        concept_zt_count: dict[str, int] = {}
+        read_count = 0
+        for code in zt_codes:
+            csv_path = concept_dir / f"{code}.csv"
+            if not csv_path.exists():
+                continue
+            try:
+                df_c = pd.read_csv(csv_path, encoding="gbk", skiprows=1,
+                                   usecols=["交易日期", "所属概念"])
+                if df_c.empty:
+                    continue
+                # 优先取 trade_date 当日行，若无则取最新行
+                df_c["交易日期"] = df_c["交易日期"].astype(str)
+                day_rows = df_c[df_c["交易日期"] == trade_date]
+                target_row = day_rows.iloc[-1] if not day_rows.empty else df_c.iloc[-1]
+                concept_val = target_row["所属概念"]
+                if pd.isna(concept_val):
+                    continue
+                concepts = [c.strip() for c in str(concept_val).replace(",", "、").split("、") if c.strip()]
+                for c in concepts:
+                    concept_zt_count[c] = concept_zt_count.get(c, 0) + 1
+                read_count += 1
+            except Exception:
+                pass
+
+        written = 0
+        for concept, cnt in concept_zt_count.items():
+            insert_concept_zt_density(trade_date, concept, cnt)
+            written += 1
+
+        logger.info(
+            "[daily_compute] concept_zt_density %s: 读取%d只涨停股，写入%d个概念",
+            trade_date, read_count, written,
+        )
+    except Exception as e:
+        logger.error("[daily_compute] concept_zt_density 失败: %s", e)
+
+
+# ── 新任务3：集合竞价委比 ─────────────────────────────────────────────────────
+
+def compute_call_auction_stats(trade_date: str) -> None:
+    """
+    计算今日涨停池股票的集合竞价委比，写入 call_auction_stats 表。
+
+    数据来源: stock-call-auction-data/{code}.csv
+      字段: 交易日期, 买1量~买5量, 卖1量~卖5量, 集合竞价成交额
+    委比 = (买1~5量之和 - 卖1~5量之和) / (买1~5量之和 + 卖1~5量之和)
+    只处理今日涨停池股票（不全量计算）。
+    """
+    try:
+        from db.storage import get_zt_pool, insert_call_auction_stats
+
+        zt_rows = get_zt_pool(trade_date)
+        if not zt_rows:
+            logger.info("[daily_compute] call_auction_stats %s: 涨停池为空", trade_date)
+            return
+
+        auction_dir = DATA_ROOT / "stock-call-auction-data"
+        if not auction_dir.exists():
+            logger.warning("[daily_compute] call_auction_stats: 竞价数据目录不存在")
+            return
+
+        # 字段名（已通过探索确认）
+        buy_cols = ["买1量", "买2量", "买3量", "买4量", "买5量"]
+        sell_cols = ["卖1量", "卖2量", "卖3量", "卖4量", "卖5量"]
+
+        inserted = 0
+        for row in zt_rows:
+            code = row["stock_code"]
+            stock_name = row.get("stock_name", "")
+            csv_path = auction_dir / f"{code}.csv"
+            if not csv_path.exists():
+                continue
+            try:
+                df = pd.read_csv(csv_path, encoding="gbk", skiprows=1,
+                                 usecols=["交易日期"] + buy_cols + sell_cols + ["集合竞价成交额"])
+                df["交易日期"] = df["交易日期"].astype(str)
+                day_df = df[df["交易日期"] == trade_date]
+                if day_df.empty:
+                    continue
+
+                r = day_df.iloc[-1]  # 取当日最后一条（竞价快照）
+                buy_vol = sum(float(r[c]) for c in buy_cols if c in r.index and pd.notna(r[c]))
+                sell_vol = sum(float(r[c]) for c in sell_cols if c in r.index and pd.notna(r[c]))
+                total_vol = buy_vol + sell_vol
+                auction_ratio = (buy_vol - sell_vol) / total_vol if total_vol > 0 else 0.0
+                auction_amount = float(r["集合竞价成交额"]) if "集合竞价成交额" in r.index and pd.notna(r["集合竞价成交额"]) else 0.0
+
+                insert_call_auction_stats(trade_date, code, stock_name, auction_ratio, auction_amount)
+                inserted += 1
+            except Exception as e:
+                logger.warning("[daily_compute] call_auction_stats %s 读取失败: %s", code, e)
+
+        logger.info("[daily_compute] call_auction_stats %s: %d 只股票写入", trade_date, inserted)
+    except Exception as e:
+        logger.error("[daily_compute] call_auction_stats 失败: %s", e)
+
+
+# ── 补充任务1：涨停池换手率分层 ──────────────────────────────────────────────
+
+def compute_turnover_stats(trade_date: str) -> None:
+    """
+    计算当日涨停股的换手率分层，写入 turnover_stats 表。
+
+    数据来源: 股票预处理数据.parquet 中 amount（元）和 circ_mv（元）。
+    换手率 = amount / circ_mv * 100（%）
+    分层规则（换手率 %）:
+      低换手: < 5%   → 主力锁仓 / 一字板
+      中换手: 5-20%  → 正常分歧换手
+      高换手: ≥ 20%  → 充分换手，游资接力偏好
+    """
+    try:
+        from db.storage import upsert_turnover_stats
+
+        df_zt = get_factor_slice("涨停相关因子", trade_date)
+        if df_zt.empty:
+            logger.warning("[daily_compute] turnover_stats: %s 无数据", trade_date)
+            return
+
+        zt_codes = set(df_zt[df_zt["收盘涨停"] == 1]["code"].tolist())
+        if not zt_codes:
+            logger.info("[daily_compute] turnover_stats %s: 无涨停股", trade_date)
+            return
+
+        preproc_path = DATA_ROOT / "stg_cache" / "预处理数据" / "股票预处理数据.parquet"
+        if not preproc_path.exists():
+            logger.warning("[daily_compute] turnover_stats: 预处理数据不存在")
+            return
+
+        df = pd.read_parquet(preproc_path, columns=["trade_date", "code", "amount", "circ_mv"])
+        df["trade_date"] = df["trade_date"].astype(str)
+        df_day = df[df["trade_date"] == trade_date]
+        if df_day.empty:
+            logger.info("[daily_compute] turnover_stats %s: 预处理数据无当日记录", trade_date)
+            return
+
+        df_zt_day = df_day[df_day["code"].isin(zt_codes)].copy()
+        df_zt_day = df_zt_day.dropna(subset=["amount", "circ_mv"])
+        df_zt_day = df_zt_day[df_zt_day["circ_mv"] > 0]
+        # amount 和 circ_mv 均为元，换手率 = amount/circ_mv * 100
+        turnover_vals = (df_zt_day["amount"] / df_zt_day["circ_mv"] * 100).tolist()
+
+        if not turnover_vals:
+            logger.info("[daily_compute] turnover_stats %s: 未读到换手率数据", trade_date)
+            return
+
+        import numpy as np
+        arr = np.array(turnover_vals)
+        low_count = int((arr < 5).sum())
+        mid_count = int(((arr >= 5) & (arr < 20)).sum())
+        high_count = int((arr >= 20).sum())
+        median_to = float(np.median(arr))
+        avg_to = float(arr.mean())
+
+        upsert_turnover_stats(trade_date, low_count, mid_count, high_count, median_to, avg_to)
+        logger.info(
+            "[daily_compute] turnover_stats %s: 低=%d 中=%d 高=%d 中位=%.1f%% 均值=%.1f%%",
+            trade_date, low_count, mid_count, high_count, median_to, avg_to,
+        )
+    except Exception as e:
+        logger.error("[daily_compute] turnover_stats 失败: %s", e)
+
+
+# ── 补充任务2：涨停股流通市值分布 ─────────────────────────────────────────────
+
+def compute_market_cap_dist(trade_date: str) -> None:
+    """
+    计算当日涨停股的流通市值分布，写入 market_cap_dist 表。
+
+    数据来源: 涨停相关因子.parquet（涨停股列表）+ 股票预处理数据.parquet（circ_mv）
+    分桶规则（亿元）:
+      小盘: < 50 亿   → 空间龙/妖股
+      中盘: 50-300 亿  → 游资主战场
+      大盘: ≥ 300 亿  → 机构/指数权重
+    """
+    try:
+        from db.storage import upsert_market_cap_dist
+
+        df_zt = get_factor_slice("涨停相关因子", trade_date)
+        if df_zt.empty:
+            logger.warning("[daily_compute] market_cap_dist: %s 无数据", trade_date)
+            return
+
+        zt_codes = set(df_zt[df_zt["收盘涨停"] == 1]["code"].tolist())
+        if not zt_codes:
+            logger.info("[daily_compute] market_cap_dist %s: 无涨停股", trade_date)
+            return
+
+        # 从预处理数据读 circ_mv（单位：万元，需换算成亿元）
+        preproc_path = DATA_ROOT / "stg_cache" / "预处理数据" / "股票预处理数据.parquet"
+        if not preproc_path.exists():
+            logger.warning("[daily_compute] market_cap_dist: 预处理数据不存在")
+            return
+
+        df_mv = pd.read_parquet(
+            preproc_path,
+            columns=["trade_date", "code", "circ_mv"],
+        )
+        df_mv["trade_date"] = df_mv["trade_date"].astype(str)
+        df_day = df_mv[df_mv["trade_date"] == trade_date]
+
+        # 若当日无数据，取最近可用日期
+        if df_day.empty:
+            latest = df_mv["trade_date"].max()
+            df_day = df_mv[df_mv["trade_date"] == latest]
+
+        df_zt_mv = df_day[df_day["code"].isin(zt_codes)].copy()
+        df_zt_mv = df_zt_mv.dropna(subset=["circ_mv"])
+        # circ_mv 单位为元，除以 1e8 转亿元
+        df_zt_mv["circ_mv_yi"] = df_zt_mv["circ_mv"] / 1e8
+
+        total = len(df_zt_mv)
+        if total == 0:
+            logger.info("[daily_compute] market_cap_dist %s: 未匹配到市值数据", trade_date)
+            return
+
+        small = int((df_zt_mv["circ_mv_yi"] < 50).sum())
+        mid = int(((df_zt_mv["circ_mv_yi"] >= 50) & (df_zt_mv["circ_mv_yi"] < 300)).sum())
+        large = int((df_zt_mv["circ_mv_yi"] >= 300).sum())
+        small_pct = small / total
+        mid_pct = mid / total
+        large_pct = large / total
+
+        upsert_market_cap_dist(trade_date, small, mid, large, small_pct, mid_pct, large_pct)
+        logger.info(
+            "[daily_compute] market_cap_dist %s: 小盘=%d(%.0f%%) 中盘=%d(%.0f%%) 大盘=%d(%.0f%%)",
+            trade_date, small, small_pct * 100, mid, mid_pct * 100, large, large_pct * 100,
+        )
+    except Exception as e:
+        logger.error("[daily_compute] market_cap_dist 失败: %s", e)
+
+
+# ── 补充任务3：市场宽度（涨跌家数 + 成交额比值）──────────────────────────────
+
+def compute_advance_decline(trade_date: str) -> None:
+    """
+    计算全市场上涨/下跌/平家数及成交额 vs 20日均值，写入 advance_decline 表。
+
+    数据来源:
+      - 涨跌幅相关因子.parquet: pct_chg_1（当日涨跌幅）
+      - 成交额相关因子.parquet: amount_mean_20（20日均成交额）+ amount_mean_5（近5日）
+    上涨: pct_chg_1 > 0.5%
+    下跌: pct_chg_1 < -0.5%
+    平盘: |pct_chg_1| <= 0.5%
+    total_amount: 当日全市场成交额总和（亿元）
+    amount_ma20: 20日均全市场成交额（亿元）
+    amount_ratio: total_amount / amount_ma20
+    """
+    try:
+        from db.storage import upsert_advance_decline
+
+        df_ret = get_factor_slice("涨跌幅相关因子", trade_date)
+        if df_ret.empty:
+            logger.warning("[daily_compute] advance_decline: %s 无数据", trade_date)
+            return
+
+        pct = df_ret["pct_chg_1"].dropna()
+        advance_count = int((pct > 0.005).sum())
+        decline_count = int((pct < -0.005).sum())
+        flat_count = int((pct.abs() <= 0.005).sum())
+        ad_ratio = advance_count / decline_count if decline_count > 0 else float(advance_count)
+
+        # 成交额（万元 → 亿元）
+        df_amt = get_factor_slice("成交额相关因子", trade_date)
+        total_amount = 0.0
+        amount_ma20 = 0.0
+        amount_ratio = 0.0
+
+        if not df_amt.empty:
+            # amount_mean_5 近似当日（取各股 amount_mean_5 之和 × 5 并不准确）
+            # 更好方式：从预处理数据取当日 amount 列求和
+            preproc_path = DATA_ROOT / "stg_cache" / "预处理数据" / "股票预处理数据.parquet"
+            if preproc_path.exists():
+                df_pre = pd.read_parquet(preproc_path, columns=["trade_date", "code", "amount"])
+                df_pre["trade_date"] = df_pre["trade_date"].astype(str)
+
+                # 当日成交额总和（元→亿元）
+                df_today_amt = df_pre[df_pre["trade_date"] == trade_date]
+                if not df_today_amt.empty:
+                    total_amount = float(df_today_amt["amount"].sum()) / 1e8
+
+                # 20日均：取最近 20 个交易日的均值
+                all_dates = sorted(df_pre["trade_date"].unique())
+                if trade_date in all_dates:
+                    td_idx = all_dates.index(trade_date)
+                    window_dates = all_dates[max(0, td_idx - 19): td_idx + 1]
+                    df_window = df_pre[df_pre["trade_date"].isin(window_dates)]
+                    daily_total = df_window.groupby("trade_date")["amount"].sum()
+                    amount_ma20 = float(daily_total.mean()) / 1e8
+
+                if amount_ma20 > 0:
+                    amount_ratio = total_amount / amount_ma20
+
+        upsert_advance_decline(
+            trade_date, advance_count, decline_count, flat_count, ad_ratio,
+            total_amount, amount_ma20, amount_ratio,
+        )
+        logger.info(
+            "[daily_compute] advance_decline %s: 涨=%d 跌=%d 平=%d A/D=%.2f "
+            "成交额=%.0f亿(MA20=%.0f亿,比值=%.2f)",
+            trade_date, advance_count, decline_count, flat_count, ad_ratio,
+            total_amount, amount_ma20, amount_ratio,
+        )
+    except Exception as e:
+        logger.error("[daily_compute] advance_decline 失败: %s", e)
+
+
 # ── 统一入口 ──────────────────────────────────────────────────────────────────
 
 def run_daily_compute(trade_date: str = None) -> None:
@@ -473,6 +958,12 @@ def run_daily_compute(trade_date: str = None) -> None:
         ("chip_status", compute_chip_status),
         ("lianzban_chain", compute_lianzban_chain),
         ("research_activity", compute_research_activity),
+        ("lianzban_stats", compute_lianzban_stats),
+        ("concept_zt_density", compute_concept_zt_density),
+        ("call_auction_stats", compute_call_auction_stats),
+        ("turnover_stats", compute_turnover_stats),
+        ("market_cap_dist", compute_market_cap_dist),
+        ("advance_decline", compute_advance_decline),
     ]
 
     for name, fn in tasks:

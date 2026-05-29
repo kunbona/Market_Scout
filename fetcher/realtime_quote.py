@@ -14,64 +14,57 @@ logger = logging.getLogger(__name__)
 
 def fetch_realtime_snapshot() -> None:
     """
-    拉取全市场价格快照，计算聚合指标后写入 market_pulse 表。
-
-    聚合指标：
-    - zt_count：当前价 >= 涨停价的股票数
-    - dt_count：当前价 <= 跌停价的股票数
-    - zb_count：炸板数（需要对比上一次快照，当前版本暂时从 zt_pool 近似）
-    - zt_dt_ratio：涨停/跌停比值
-
-    注意：
-    - ak.stock_zh_a_spot_em() 轮询间隔 >= 10s，此函数由 scheduler 以 30s 间隔调用
-    - 9:30-9:40 窗口 stock_fund_flow_individual("即时") 列数不稳定，暂不使用
-    - 非交易时间不调用（由 scheduler 的 _guarded 机制保证）
+    拉取全市场价格快照 + 乐咕活跃度，写入 market_pulse 表。
+    两个数据源独立 try/except，任一失败不影响另一个写入。
     """
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── 1. 全市场价格快照（涨停/跌停计数）──
+    zt_count = dt_count = zb_count = 0
+    zt_dt_ratio = 0.0
     try:
         df = ak.stock_zh_a_spot_em()
-
-        # 字段名可能因版本不同，做兼容处理
-        # 常见字段：最新价, 涨停价, 跌停价, 今开, 最高, 最低
-        # 如果没有涨停价字段，用 昨收 * 1.1 近似（非ST股）
-
-        fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # 获取涨停/跌停价列名（不同版本字段名不同）
         cols = df.columns.tolist()
-
-        # 尝试找涨停价列
         zt_price_col = next((c for c in cols if "涨停" in c and "价" in c), None)
         dt_price_col = next((c for c in cols if "跌停" in c and "价" in c), None)
-        price_col = next((c for c in cols if c in ["最新价", "现价", "price"]), None)
-
-        if price_col is None:
-            logger.warning("[realtime_quote] 找不到价格列，跳过")
-            return
-
-        zt_count = 0
-        dt_count = 0
-
-        if zt_price_col and price_col:
-            try:
-                df_valid = df[[price_col, zt_price_col]].dropna()
-                df_valid = df_valid.apply(pd.to_numeric, errors="coerce").dropna()
-                zt_count = int((df_valid[price_col] >= df_valid[zt_price_col]).sum())
-            except Exception as e:
-                logger.warning(f"[realtime_quote] 涨停计算失败: {e}")
-
-        if dt_price_col and price_col:
-            try:
-                df_valid = df[[price_col, dt_price_col]].dropna()
-                df_valid = df_valid.apply(pd.to_numeric, errors="coerce").dropna()
-                dt_count = int((df_valid[price_col] <= df_valid[dt_price_col]).sum())
-            except Exception as e:
-                logger.warning(f"[realtime_quote] 跌停计算失败: {e}")
-
-        # 炸板数：当前版本暂时设为 0（需要状态跟踪，后续版本实现）
-        zb_count = 0
+        price_col    = next((c for c in cols if c in ["最新价", "现价", "price"]), None)
+        if price_col:
+            if zt_price_col:
+                try:
+                    dv = df[[price_col, zt_price_col]].apply(pd.to_numeric, errors="coerce").dropna()
+                    zt_count = int((dv[price_col] >= dv[zt_price_col]).sum())
+                except Exception as e:
+                    logger.warning("[realtime_quote] 涨停计算失败: %s", e)
+            if dt_price_col:
+                try:
+                    dv = df[[price_col, dt_price_col]].apply(pd.to_numeric, errors="coerce").dropna()
+                    dt_count = int((dv[price_col] <= dv[dt_price_col]).sum())
+                except Exception as e:
+                    logger.warning("[realtime_quote] 跌停计算失败: %s", e)
         zt_dt_ratio = zt_count / dt_count if dt_count > 0 else float(zt_count)
-
-        insert_market_pulse(fetch_time, zt_count, dt_count, zb_count, zt_dt_ratio)
-
     except Exception as e:
-        logger.warning(f"[realtime_quote] fetch failed: {e}")
+        logger.warning("[realtime_quote] stock_zh_a_spot_em 失败: %s", e)
+
+    # ── 2. 乐咕活跃度（独立，不受上面影响）──
+    real_zt = real_dt = advance = decline = None
+    activity = None
+    try:
+        legu_df = ak.stock_market_activity_legu()
+        legu    = dict(zip(legu_df["item"], legu_df["value"]))
+        real_zt  = int(float(legu.get("真实涨停", 0) or 0))
+        real_dt  = int(float(legu.get("真实跌停", 0) or 0))
+        advance  = int(float(legu.get("上涨", 0) or 0))
+        decline  = int(float(legu.get("下跌", 0) or 0))
+        act_str  = str(legu.get("活跃度", "0%")).replace("%", "").strip()
+        activity = float(act_str) if act_str else None
+        # 若全市场快照失败，用乐咕涨停数补全
+        if zt_count == 0 and real_zt:
+            zt_count = int(legu.get("涨停", 0) or 0)
+            dt_count = int(legu.get("跌停", 0) or 0)
+            zt_dt_ratio = zt_count / dt_count if dt_count > 0 else float(zt_count)
+    except Exception as _e:
+        logger.warning("[realtime_quote] legu 拉取失败: %s", _e)
+
+    insert_market_pulse(fetch_time, zt_count, dt_count, zb_count, zt_dt_ratio,
+                        real_zt=real_zt, real_dt=real_dt, activity=activity,
+                        advance=advance, decline=decline)

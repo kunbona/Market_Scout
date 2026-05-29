@@ -21,6 +21,7 @@ from fetcher.global_news import fetch_cls_red, fetch_em, fetch_ths, fetch_wscn, 
 from fetcher.research import fetch as fetch_research
 from db.storage import cleanup_old_data
 from fetcher.realtime_quote import fetch_realtime_snapshot
+from fetcher.concept_flow import fetch_concept_flow
 from quant.daily_compute import run_daily_compute
 
 
@@ -54,6 +55,11 @@ def _guarded_realtime_quote():
         fetch_realtime_snapshot()
 
 
+def _guarded_concept_flow():
+    if _in_trade_hours():
+        fetch_concept_flow()
+
+
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -75,6 +81,7 @@ def start_scheduler() -> None:
     scheduler.add_job(_guarded_concept_heat, "interval", minutes=5)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=0)
     scheduler.add_job(_guarded_realtime_quote, "interval", seconds=30)
+    scheduler.add_job(_guarded_concept_flow, "interval", minutes=15)
     scheduler.add_job(run_daily_compute, "cron", hour=9, minute=0)
 
     scheduler.start()
@@ -89,7 +96,7 @@ def start_scheduler() -> None:
             except Exception:
                 pass
         if _in_trade_hours():
-            for fn in [fetch_sector_flow, fetch_zt_pool, fetch_dt_pool, fetch_concept_heat]:
+            for fn in [fetch_sector_flow, fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_concept_flow]:
                 try:
                     fn()
                 except Exception:

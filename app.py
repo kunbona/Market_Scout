@@ -7,6 +7,20 @@ from db.storage import (
     get_sector_flow_latest,
     get_lhb_data, get_zt_pool, get_dt_pool,
     get_research_reports,
+    get_market_emotion_summary,
+    get_lianzban_stats,
+    get_sector_zt_density,
+    get_concept_zt_density,
+    get_sector_flow_accel,
+    get_volume_breakout,
+    get_research_activity,
+    get_call_auction_stats,
+    get_latest_emotion_date,
+    get_turnover_stats,
+    get_market_cap_dist,
+    get_advance_decline,
+    get_concept_flow_latest,
+    get_market_pulse_latest,
 )
 
 st.set_page_config(page_title="Market Radar", layout="wide", initial_sidebar_state="collapsed")
@@ -399,6 +413,63 @@ def _lhb(): return get_lhb_data()
 @st.cache_data(ttl=300)
 def _research(qtype=None, n=40, today_only=False): return get_research_reports(qtype=qtype, limit=n, today_only=today_only)
 
+@st.cache_data(ttl=300)
+def _emotion_summary(): return get_market_emotion_summary()
+
+@st.cache_data(ttl=300)
+def _lianzban_stats(days=30): return get_lianzban_stats(days)
+
+@st.cache_data(ttl=300)
+def _sector_zt_density(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_sector_zt_density(d)
+
+@st.cache_data(ttl=300)
+def _concept_zt_density(date=None, top_n=15):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_concept_zt_density(d, top_n)
+
+@st.cache_data(ttl=300)
+def _sector_flow_accel(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_sector_flow_accel(d)
+
+@st.cache_data(ttl=300)
+def _call_auction(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_call_auction_stats(d)
+
+@st.cache_data(ttl=300)
+def _turnover_stats(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_turnover_stats(d)
+
+@st.cache_data(ttl=300)
+def _market_cap_dist(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_market_cap_dist(d)
+
+@st.cache_data(ttl=300)
+def _advance_decline(date=None):
+    from datetime import datetime
+    d = date or datetime.now().strftime("%Y-%m-%d")
+    return get_advance_decline(d)
+
+@st.cache_data(ttl=60)
+def _concept_flow_latest(top_n=30):
+    return get_concept_flow_latest(top_n)
+
+@st.cache_data(ttl=30)
+def _market_pulse():
+    rows = get_market_pulse_latest(n=1)
+    return rows[0] if rows else {}
+
 def _t(s):
     s = (s or "").strip()
     if len(s) >= 16: return f"{s[5:10]} {s[11:16]}"
@@ -440,41 +511,8 @@ if flows:
     _, total_cls = _pcolor(total)
     total_str = f"{total/10000:.1f}亿" if abs(total) >= 10000 else f"{total:.0f}万"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TICKER BAR
-# ─────────────────────────────────────────────────────────────────────────────
 tcls = "g" if total_cls == "g" else ("r" if total_cls == "r" else "n")
 p0_cls = "g" if p0 > 0 else ("r" if p0 < 0 else "n")
-
-st.markdown(f"""
-<div class="ticker-bar">
-  <div class="ticker-item">
-    <span class="ticker-label">涨停</span>
-    <span class="ticker-val g">{len(zt)}</span>
-  </div>
-  <div class="ticker-item">
-    <span class="ticker-label">跌停</span>
-    <span class="ticker-val r">{len(dt)}</span>
-  </div>
-  <div class="ticker-item">
-    <span class="ticker-label">连板最高</span>
-    <span class="ticker-val y">{max_conn}</span>
-  </div>
-  <div class="ticker-item">
-    <span class="ticker-label">领涨板块</span>
-    <span class="ticker-val n">{top1_name}</span>
-    <span class="ticker-chg {p0_cls}">{top1_pct}</span>
-  </div>
-  <div class="ticker-item">
-    <span class="ticker-label">主力净流入</span>
-    <span class="ticker-val {tcls}">{total_str}</span>
-  </div>
-  <div class="ticker-item">
-    <span class="ticker-label">更新</span>
-    <span class="ticker-val n">{now_str}</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NAVBAR
@@ -484,14 +522,6 @@ with _nb1:
     st.markdown(f"""
     <div class="mr-nav">
       <span class="mr-logo"><div class="mr-dot"></div>Market Radar</span>
-      <div class="mr-sep"></div>
-      <span class="mr-kpi">涨停 <em class="g">{len(zt)}</em></span>
-      <div class="mr-sep"></div>
-      <span class="mr-kpi">跌停 <em class="r">{len(dt)}</em></span>
-      <div class="mr-sep"></div>
-      <span class="mr-kpi">连板 <em class="y">{max_conn}</em></span>
-      <div class="mr-sep"></div>
-      <span class="mr-kpi">净流入 <em class="{tcls}">{total_str}</em></span>
       <div class="mr-spacer"></div>
       <div class="mr-live"><div class="mr-dot" style="width:5px;height:5px;margin:0"></div>LIVE</div>
       <span class="mr-time">{now_str}</span>
@@ -597,8 +627,10 @@ policy_html = (
     f'</div></div>'
 )
 
-# ── 3. 市场数据 HTML — 3列布局 ──
-data_col1 = data_col2 = data_col3 = ''
+# ── 3. 市场数据 + 市场情绪 合并面板 ──
+
+# --- 实时行情区（AKShare 实时数据）---
+rt_col1 = rt_col2 = rt_col3 = ''
 
 if flows:
     max_abs = max(abs(float(r.get("main_inflow",0) or 0)) for r in flows) or 1
@@ -611,7 +643,7 @@ if flows:
         bw = int(abs(infl)/max_abs*24)
         bc = "#16a34a66" if infl >= 0 else "#dc262666"
         rows_html += f'<div class="wr"><span class="wr-rank">{i+1}</span><span class="wr-name">{name}</span><div class="wr-bar-w"><div class="wr-bar" style="width:{bw}px;background:{bc}"></div></div><span class="wr-val" style="color:{col_}">{pct:+.1f}%</span></div>'
-    data_col1 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#f97316"></span>行业资金流<span class="widget-header-count">top 10</span></div>{rows_html}</div>'
+    rt_col1 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#f97316"></span>行业资金流<span class="widget-header-count">top 10</span></div>{rows_html}</div>'
 
 if zt:
     rows_html = ""
@@ -620,8 +652,27 @@ if zt:
         name = _e(str(r.get("stock_name","")))
         cnt  = str(r.get("zt_count","1"))
         sec  = _e(str(r.get("sector","") or ""))
-        rows_html += f'<div class="wr"><span class="wr-code">{code}</span><span class="wr-name">{name}</span><span class="wr-badge" style="background:#dcfce7;color:#16a34a">{cnt}板</span><span class="wr-tag">{sec}</span></div>'
-    data_col2 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#22c55e"></span>涨停池<span class="widget-header-count">{len(zt)}</span></div>{rows_html}</div>'
+        # 首次封板时间：6位字符串如 092500，取前4位格式化为 09:25
+        raw_time = str(r.get("first_zt_time","") or "")
+        zt_time  = f"{raw_time[:2]}:{raw_time[2:4]}" if len(raw_time) >= 4 else raw_time
+        # 炸板次数：>0 时显示红色小角标
+        zb_n = int(r.get("zb_count") or 0)
+        zb_tag = f'<span style="color:#ef4444;font-size:10px">炸{zb_n}</span>' if zb_n > 0 else ""
+        # 封板资金：单位元 → 亿元（1位小数），None 时不显示
+        seal_raw = r.get("seal_amount")
+        seal_tag = f'<span class="wr-val" style="color:#6b7280">{seal_raw/1e8:.1f}亿</span>' if seal_raw else ""
+        rows_html += (
+            f'<div class="wr">'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-badge" style="background:#dcfce7;color:#16a34a">{cnt}板</span>'
+            f'<span class="wr-tag">{zt_time}</span>'
+            f'{zb_tag}'
+            f'{seal_tag}'
+            f'<span class="wr-tag">{sec}</span>'
+            f'</div>'
+        )
+    rt_col2 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#22c55e"></span>涨停池<span class="widget-header-count">{len(zt)}</span></div>{rows_html}</div>'
 
 if dt:
     rows_html = ""
@@ -630,7 +681,7 @@ if dt:
         name = _e(str(r.get("stock_name","")))
         sec  = _e(str(r.get("sector","") or ""))
         rows_html += f'<div class="wr"><span class="wr-code">{code}</span><span class="wr-name">{name}</span><span class="wr-badge" style="background:#fee2e2;color:#dc2626">跌停</span><span class="wr-tag">{sec}</span></div>'
-    data_col2 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#ef4444"></span>跌停池<span class="widget-header-count">{len(dt)}</span></div>{rows_html}</div>'
+    rt_col2 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#ef4444"></span>跌停池<span class="widget-header-count">{len(dt)}</span></div>{rows_html}</div>'
 
 if lhb:
     rows_html = ""
@@ -641,15 +692,49 @@ if lhb:
         col_, _ = _pcolor(nb)
         sign = "+" if nb >= 0 else ""
         rows_html += f'<div class="wr"><span class="wr-code">{code}</span><span class="wr-name">{name}</span><span class="wr-val" style="color:{col_}">{sign}{nb:,.0f}万</span></div>'
-    data_col3 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#3b82f6"></span>龙虎榜<span class="widget-header-count">{len(lhb)}</span></div>{rows_html}</div>'
+    rt_col3 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#3b82f6"></span>龙虎榜<span class="widget-header-count">{len(lhb)}</span></div>{rows_html}</div>'
 
-data_html = (
-    f'<div class="col-wrap"><div class="col-header" style="--accent:#f59e0b"><span class="col-header-badge" style="background:#d97706;color:#fff">市场数据</span></div>'
-    f'<div class="panel-3col">'
-    f'<div class="panel-3col-col">{data_col1}</div>'
-    f'<div class="panel-3col-col">{data_col2}</div>'
-    f'<div class="panel-3col-col">{data_col3}</div>'
-    f'</div></div>'
+
+cf = _concept_flow_latest(25)
+if cf:
+    fetch_t = cf[0].get("fetch_time","")[:16] if cf else ""
+    cf_rows = ""
+    max_net = max(abs(r.get("net_amount",0) or 0) for r in cf) or 1
+    for i, r in enumerate(cf[:20]):
+        concept   = _e(str(r.get("concept","")))
+        net       = float(r.get("net_amount",0) or 0)
+        change    = float(r.get("change_pct",0) or 0)
+        lead      = _e(str(r.get("lead_stock","") or ""))
+        lead_pct  = float(r.get("lead_pct",0) or 0)
+        col_, _   = _pcolor(net)
+        bw        = int(abs(net)/max_net*24)
+        bc        = "#16a34a66" if net >= 0 else "#dc262666"
+        sign      = "+" if net >= 0 else ""
+        cf_rows  += (
+            f'<div class="wr">'
+            f'<span class="wr-rank">{i+1}</span>'
+            f'<span class="wr-name">{concept}</span>'
+            f'<div class="wr-bar-w"><div class="wr-bar" style="width:{bw}px;background:{bc}"></div></div>'
+            f'<span class="wr-val" style="color:{col_}">{sign}{net:.1f}亿</span>'
+            f'<span class="wr-tag" style="color:#6b7280">{lead} {lead_pct:+.1f}%</span>'
+            f'</div>'
+        )
+    rt_col1 += (
+        f'<div class="widget">'
+        f'<div class="widget-header"><span class="src-dot" style="background:#8b5cf6"></span>'
+        f'概念资金流<span class="widget-header-count">{fetch_t}</span></div>'
+        f'{cf_rows}'
+        f'</div>'
+    )
+
+realtime_section = (
+    '<div style="border-bottom:1px solid #e2e4ea;margin-bottom:0">'
+    '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:10px 14px 6px">实时行情</div>'
+    '<div class="panel-3col" style="padding:0 0 12px">'
+    f'<div class="panel-3col-col">{rt_col1}</div>'
+    f'<div class="panel-3col-col">{rt_col2}</div>'
+    f'<div class="panel-3col-col">{rt_col3}</div>'
+    '</div></div>'
 )
 
 # ── 4. 研究报告 HTML ──
@@ -709,27 +794,249 @@ for qt, ql in QTYPE_LABELS.items():
 
 research_html = f'<div class="col-wrap"><div class="col-header" style="--accent:#8b5cf6"><span class="col-header-badge" style="background:#8b5cf6">研究报告</span></div>{rc_sections}</div>'
 
-# ── 5. 组合成 panel tab 系统 ──
-# 市场情绪仪表盘（V3 实现，当前预留接口）
-emotion_html = (
+# ── 5. 市场情绪区（本地量价数据）+ 组合成 combined_data_html ──
+try:
+    # 收集数据
+    # 用本地 parquet 数据的最新交易日（而非 DB 中的日期，两者可能不一致）
+    try:
+        from quant.loader import get_latest_trade_date as _get_ltd
+        _latest_date = _get_ltd()
+    except Exception:
+        _latest_date = get_latest_emotion_date()
+    _em = _emotion_summary()
+    _lb_stats = _lianzban_stats(30)   # 30天历史
+    _szt = _sector_zt_density(_latest_date) if _latest_date else []
+    _czt = _concept_zt_density(_latest_date, 15) if _latest_date else []
+    _sfa = _sector_flow_accel(_latest_date) if _latest_date else []
+    _to_stats = _turnover_stats(_latest_date) if _latest_date else {}
+    _mc_dist = _market_cap_dist(_latest_date) if _latest_date else {}
+    _ad = _advance_decline(_latest_date) if _latest_date else {}
+    _pulse = _market_pulse()
+
+    # ── KPI 卡片行（8卡：原4 + 涨/跌家数、成交额/MA20、换手中位、市值偏好）──
+    zt_total = _em.get("zt_total", "—")
+    dt_total = _em.get("dt_total", "—")
+    max_lb = min(_em.get("max_lianzban", 0) or 0, 30)
+    zb_rate = _em.get("zb_rate", None)
+    premium = _em.get("zt_yesterday_premium", None)
+    tier1 = _em.get("tier_1", "—")
+    tier2 = _em.get("tier_2", "—")
+    tier3 = _em.get("tier_3", "—")
+    tier4p = _em.get("tier_4plus", "—")
+    adv_12 = _em.get("advance_1to2", None)
+
+    zb_rate_str = f"{zb_rate:.1%}" if zb_rate is not None else "—"
+    premium_str = f"{premium:+.2f}%" if premium is not None else "—"
+    premium_color = "#16a34a" if (premium or 0) > 0 else ("#ef4444" if (premium or 0) < 0 else "#6b7280")
+    adv_str = f"{adv_12:.1%}" if adv_12 is not None else "—"
+    adv_color = "#16a34a" if (adv_12 or 0) > 0.5 else ("#f59e0b" if (adv_12 or 0) > 0.3 else "#ef4444")
+    _em_date_str = f"数据截至 {_latest_date}" if _latest_date else "暂无计算数据"
+
+    # 新 KPI：涨/跌家数
+    _adv_cnt = _ad.get("advance_count", "—")
+    _dec_cnt = _ad.get("decline_count", "—")
+    _ad_ratio = _ad.get("ad_ratio", None)
+    _ad_ratio_str = f"{_ad_ratio:.2f}" if _ad_ratio is not None else "—"
+    _ad_color = "#16a34a" if (_ad_ratio or 0) >= 1.5 else ("#f59e0b" if (_ad_ratio or 0) >= 0.8 else "#ef4444")
+
+    # 新 KPI：成交额 vs MA20
+    _tot_amt = _ad.get("total_amount", None)
+    _amt_ratio = _ad.get("amount_ratio", None)
+    _tot_amt_str = f"{_tot_amt:.0f}亿" if _tot_amt else "—"
+    _amt_ratio_str = f"{_amt_ratio:.2f}x" if _amt_ratio is not None else "—"
+    _amt_color = "#16a34a" if (_amt_ratio or 0) >= 1.2 else ("#f59e0b" if (_amt_ratio or 0) >= 0.8 else "#ef4444")
+
+    # 新 KPI：涨停换手中位
+    _to_med = _to_stats.get("median_to", None)
+    _to_high = _to_stats.get("high_count", 0) or 0
+    _to_mid_v = _to_stats.get("mid_count", 0) or 0
+    _to_low = _to_stats.get("low_count", 0) or 0
+    _to_total = _to_high + _to_mid_v + _to_low
+    _to_med_str = f"{_to_med:.1f}%" if _to_med is not None else "—"
+    _to_high_pct = f"{_to_high/_to_total:.0%}" if _to_total > 0 else "—"
+
+    # 新 KPI：涨停市值偏好
+    _mc_mid = _mc_dist.get("mid_count", 0) or 0
+    _mc_small = _mc_dist.get("small_count", 0) or 0
+    _mc_large = _mc_dist.get("large_count", 0) or 0
+    _mc_total = _mc_mid + _mc_small + _mc_large
+    _mc_mid_pct = f"{_mc_mid/_mc_total:.0%}" if _mc_total > 0 else "—"
+    _mc_small_pct = f"{_mc_small/_mc_total:.0%}" if _mc_total > 0 else "—"
+
+    # 乐咕活跃度 KPI
+    _real_zt = _pulse.get("real_zt") if _pulse.get("real_zt") is not None else zt_total
+    _real_dt = _pulse.get("real_dt") if _pulse.get("real_dt") is not None else dt_total
+    _legu_adv = _pulse.get("advance", None)
+    _legu_dec = _pulse.get("decline", None)
+    _legu_adv_str = f"涨{_legu_adv}" if _legu_adv is not None else f"涨{_adv_cnt}"
+    _legu_dec_str = f"跌{_legu_dec}" if _legu_dec is not None else f"跌{_dec_cnt}"
+    _activity = _pulse.get("activity", None)
+    _act_str = f"{_activity:.1f}%" if _activity is not None else "—"
+    _act_color = "#16a34a" if (_activity or 0) >= 50 else ("#f59e0b" if (_activity or 0) >= 35 else "#ef4444")
+
+    _kpi_html = f'''<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px">
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">真实涨停 / 真实跌停</div>
+    <div style="font-size:20px;font-weight:700;color:#16a34a">{_real_zt}<span style="font-size:12px;color:#ef4444;margin-left:6px">/ {_real_dt}</span></div>
+    <div style="font-size:10px;color:#9ca3af;margin-top:3px">{_legu_adv_str}家 · {_legu_dec_str}家 · 含一字板共{zt_total}/{dt_total}</div>
+  </div>
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">炸板率</div>
+    <div style="font-size:20px;font-weight:700;color:#f59e0b">{zb_rate_str}</div>
+  </div>
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">昨日涨停溢价</div>
+    <div style="font-size:20px;font-weight:700;color:{premium_color}">{premium_str}</div>
+  </div>
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">最高连板 / 1→2晋级率</div>
+    <div style="font-size:20px;font-weight:700;color:#8b5cf6">{max_lb}板<span style="font-size:12px;color:{adv_color};margin-left:6px">{adv_str}</span></div>
+  </div>
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">活跃度（乐咕）</div>
+    <div style="font-size:20px;font-weight:700;color:{_act_color}">{_act_str}</div>
+    <div style="font-size:10px;color:#9ca3af;margin-top:3px">A/D {_adv_cnt}/{_dec_cnt} · 比值{_ad_ratio_str}</div>
+  </div>
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">全市场成交额 / MA20比</div>
+    <div style="font-size:16px;font-weight:700;color:{_amt_color}">{_tot_amt_str}<span style="font-size:11px;color:#9ca3af;margin-left:6px">{_amt_ratio_str}</span></div>
+  </div>
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">涨停换手中位 / 高换手占比</div>
+    <div style="font-size:16px;font-weight:700;color:#3b82f6">{_to_med_str}<span style="font-size:11px;color:#9ca3af;margin-left:6px">高换手{_to_high_pct}</span></div>
+  </div>
+  <div style="background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+    <div style="font-size:10px;color:#9ca3af;margin-bottom:4px">涨停市值偏好（中盘/小盘）</div>
+    <div style="font-size:16px;font-weight:700;color:#f97316">{_mc_mid_pct}<span style="font-size:11px;color:#9ca3af;margin-left:4px">/ {_mc_small_pct}</span></div>
+  </div>
+</div>'''
+
+    # ── 连板梯队 ──
+    _tier_inner = f'''<div class="widget">
+  <div class="widget-header"><span class="src-dot" style="background:#8b5cf6"></span>连板梯队<span class="widget-header-count">今日</span></div>
+  <div style="display:flex;gap:8px;padding:4px 8px 8px">
+    <div style="flex:1;text-align:center;background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+      <div style="font-size:10px;color:#9ca3af">1板</div><div style="font-size:18px;font-weight:700;color:#111827">{tier1}</div>
+    </div>
+    <div style="flex:1;text-align:center;background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+      <div style="font-size:10px;color:#9ca3af">2板</div><div style="font-size:18px;font-weight:700;color:#3b82f6">{tier2}</div>
+    </div>
+    <div style="flex:1;text-align:center;background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+      <div style="font-size:10px;color:#9ca3af">3板</div><div style="font-size:18px;font-weight:700;color:#8b5cf6">{tier3}</div>
+    </div>
+    <div style="flex:1;text-align:center;background:#fff;border-radius:8px;padding:10px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+      <div style="font-size:10px;color:#9ca3af">4板+</div><div style="font-size:18px;font-weight:700;color:#ef4444">{tier4p}</div>
+    </div>
+  </div>
+</div>'''
+
+    # ── 行业涨停密度 ──
+    _szt_rows = ""
+    for row in (_szt or [])[:15]:
+        density = row.get("zt_density", 0) or 0
+        zt_cnt = row.get("zt_count", 0) or 0
+        industry = _e(str(row.get("industry", "")))
+        bar_w = int(min(density * 300, 100))
+        bar_color = "#ef4444" if density >= 0.10 else ("#f59e0b" if density >= 0.05 else "#22c55e")
+        _szt_rows += f'<div class="wr"><span class="wr-name">{industry}</span><div class="wr-bar-w" style="width:100px"><div class="wr-bar" style="width:{bar_w}px;background:{bar_color}"></div></div><span class="wr-val" style="color:{bar_color}">{density:.1%}</span><span class="wr-tag">{zt_cnt}只</span></div>'
+    _szt_inner = f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#ef4444"></span>行业涨停密度<span class="widget-header-count">≥10%共振</span></div>{_szt_rows if _szt_rows else "<div style=padding:16px;color:#9ca3af>暂无数据</div>"}</div>'
+
+    # ── 概念涨停热度 ──
+    _czt_rows = ""
+    for row in (_czt or [])[:15]:
+        concept = _e(str(row.get("concept", "")))
+        zt_cnt = row.get("zt_count", 0) or 0
+        _czt_rows += f'<div class="wr"><span class="wr-name">{concept}</span><span class="wr-val" style="color:#8b5cf6">{zt_cnt}只</span></div>'
+    _czt_inner = f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#8b5cf6"></span>概念涨停热度<span class="widget-header-count">top 15</span></div>{_czt_rows if _czt_rows else "<div style=padding:16px;color:#9ca3af>暂无数据</div>"}</div>'
+
+    # ── 换手率分层（新增，替换到第4列）──
+    _to_bar_low  = int(_to_low  / _to_total * 100) if _to_total > 0 else 0
+    _to_bar_mid  = int(_to_mid_v / _to_total * 100) if _to_total > 0 else 0
+    _to_bar_high = int(_to_high / _to_total * 100) if _to_total > 0 else 0
+    _to_inner = f'''<div class="widget">
+  <div class="widget-header"><span class="src-dot" style="background:#3b82f6"></span>涨停换手分层<span class="widget-header-count">中位{_to_med_str}</span></div>
+  <div style="padding:6px 8px 8px">
+    <div class="wr"><span class="wr-name" style="width:60px">低(&lt;5%)</span><div class="wr-bar-w" style="width:80px"><div class="wr-bar" style="width:{_to_bar_low}px;background:#22c55e"></div></div><span class="wr-val">{_to_low}只</span></div>
+    <div class="wr"><span class="wr-name" style="width:60px">中(5-20%)</span><div class="wr-bar-w" style="width:80px"><div class="wr-bar" style="width:{_to_bar_mid}px;background:#f59e0b"></div></div><span class="wr-val">{_to_mid_v}只</span></div>
+    <div class="wr"><span class="wr-name" style="width:60px">高(≥20%)</span><div class="wr-bar-w" style="width:80px"><div class="wr-bar" style="width:{_to_bar_high}px;background:#ef4444"></div></div><span class="wr-val">{_to_high}只</span></div>
+  </div>
+</div>''' if _to_total > 0 else '<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#3b82f6"></span>涨停换手分层</div><div style="padding:16px;color:#9ca3af;font-size:12px">暂无数据</div></div>'
+
+    # ── 市值分布（新增，用小饼图文字替代）──
+    _mc_inner = f'''<div class="widget">
+  <div class="widget-header"><span class="src-dot" style="background:#f97316"></span>涨停市值分布<span class="widget-header-count">{_mc_total}只涨停</span></div>
+  <div style="display:flex;gap:6px;padding:6px 8px 8px">
+    <div style="flex:1;text-align:center;background:#fff;border-radius:8px;padding:8px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+      <div style="font-size:10px;color:#9ca3af">&lt;50亿</div>
+      <div style="font-size:16px;font-weight:700;color:#ef4444">{_mc_small}</div>
+      <div style="font-size:10px;color:#9ca3af">{_mc_small_pct}</div>
+    </div>
+    <div style="flex:1;text-align:center;background:#fff;border-radius:8px;padding:8px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+      <div style="font-size:10px;color:#9ca3af">50-300亿</div>
+      <div style="font-size:16px;font-weight:700;color:#f97316">{_mc_mid}</div>
+      <div style="font-size:10px;color:#9ca3af">{_mc_mid_pct}</div>
+    </div>
+    <div style="flex:1;text-align:center;background:#fff;border-radius:8px;padding:8px;box-shadow:0 1px 4px rgba(0,0,0,.07)">
+      <div style="font-size:10px;color:#9ca3af">≥300亿</div>
+      <div style="font-size:16px;font-weight:700;color:#3b82f6">{_mc_large}</div>
+      <div style="font-size:10px;color:#9ca3af">{_mc_dist.get("large_pct", 0) or 0:.0%}</div>
+    </div>
+  </div>
+</div>''' if _mc_total > 0 else '<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#f97316"></span>涨停市值分布</div><div style="padding:16px;color:#9ca3af;font-size:12px">暂无数据</div></div>'
+
+    # ── 机构资金加速度（全宽行）──
+    _sfa_rows = ""
+    for row in (_sfa or [])[:10]:
+        industry = _e(str(row.get("industry", "")))
+        acc = row.get("acceleration", None)
+        acc_str = f"{acc:.2f}x" if acc is not None else "—"
+        acc_color = "#16a34a" if (acc or 0) >= 1.5 else ("#f59e0b" if (acc or 0) >= 1.0 else "#ef4444")
+        _sfa_rows += f'<div class="wr"><span class="wr-name">{industry}</span><span class="wr-val" style="color:{acc_color}">{acc_str}</span></div>'
+    _sfa_full = f'<div style="padding:0 0 8px"><div class="widget-header"><span class="src-dot" style="background:#f97316"></span>机构资金加速度<span class="widget-header-count">3d/20d，按行业</span></div>{_sfa_rows if _sfa_rows else "<div style=padding:16px;color:#9ca3af>暂无数据</div>"}</div>'
+
+    emotion_section = (
+        '<div style="border-top:1px solid #e2e4ea;padding:0">'
+        '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:12px 14px 6px">市场情绪（基于本地日线）</div>'
+        + _kpi_html
+        + '<div class="panel-3col" style="padding:0">'
+        f'<div class="panel-3col-col">{_tier_inner}</div>'
+        f'<div class="panel-3col-col">{_szt_inner}</div>'
+        f'<div class="panel-3col-col">{_czt_inner}</div>'
+        '</div>'
+        + '<div class="panel-3col" style="padding:0">'
+        f'<div class="panel-3col-col">{_to_inner}</div>'
+        f'<div class="panel-3col-col">{_mc_inner}</div>'
+        f'<div class="panel-3col-col">{_sfa_full}</div>'
+        '</div>'
+        + '</div>'
+    )
+
+except Exception as _em_err:
+    _em_date_str = "数据加载失败"
+    emotion_section = (
+        '<div style="border-top:1px solid #e2e4ea;padding:40px;text-align:center;color:#9ca3af;font-size:13px">'
+        '数据暂时不可用，请先运行数据计算<br><br>'
+        f'<span style="font-size:11px;color:#f59e0b">{_e(str(_em_err))}</span>'
+        '</div>'
+    )
+
+# ── 组合成完整的市场数据面板 ──
+combined_data_html = (
     '<div class="col-wrap">'
-    '<div class="col-header" style="--accent:#10b981">'
-    '<span class="col-header-badge" style="background:#10b981">市场情绪</span>'
-    '<span class="col-header-sub">V3 · 开发中</span>'
+    '<div class="col-header" style="--accent:#f59e0b">'
+    '<span class="col-header-badge" style="background:#d97706;color:#fff">市场数据</span>'
+    f'<span class="col-header-sub">{_em_date_str}</span>'
     '</div>'
-    '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px">'
-    '市场情绪仪表盘将在 V3 版本实装<br><br>'
-    '计划内容：涨停密度热力图 · 板块共振指数 · 炸板率趋势 · 个股候选 Agent'
-    '</div>'
-    '</div>'
+    + realtime_section
+    + emotion_section
+    + '</div>'
 )
 
 panels = [
     ("0", "财经快讯", "#ef4444", news_html),
     ("1", "政策动态", "#3b82f6", policy_html),
-    ("2", "市场数据", "#d97706", data_html),
+    ("2", "市场数据", "#d97706", combined_data_html),
     ("3", "研究报告", "#8b5cf6", research_html),
-    ("4", "市场情绪", "#10b981", emotion_html),
 ]
 
 panel_bar = '<div class="panel-tab-bar">' + ''.join(
@@ -816,10 +1123,16 @@ a:visited{color:inherit!important}
 #rc-tab-1:checked ~ .rc-tab-contents .rc-tab-content[data-tab="1"]{display:block}
 #rc-tab-2:checked ~ .rc-tab-contents .rc-tab-content[data-tab="2"]{display:block}
 #rc-tab-3:checked ~ .rc-tab-contents .rc-tab-content[data-tab="3"]{display:block}
-#panel-4:checked ~ .panel-contents .panel-content[data-panel="4"] { display: block; }
 .pc-date{font-size:10px;color:#9ca3af;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;margin-bottom:6px;display:block}
 .pc-title,.pc-title a,a.pc-title{display:block;font-size:12.5px;color:#000!important;line-height:1.6;cursor:pointer}
 .pc-title:hover,a.pc-title:hover{color:#2563eb!important}
+.em-section-title{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:12px 14px 6px}
+.em-kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px}
+.em-kpi-card{background:#fff;border-radius:8px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
+.em-kpi-label{font-size:10px;color:#9ca3af;margin-bottom:4px}
+.em-kpi-val{font-size:20px;font-weight:700}
+.em-divider{border-bottom:1px solid #e2e4ea;margin:0 8px}
+.rt-section-label{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:10px 14px 6px}
 """
 
 panel_full_html = f"""<!DOCTYPE html>
@@ -839,6 +1152,76 @@ function showPanel(pid) {{
 }}
 </script>
 </body></html>"""
+
+# 本地量价数据计算按钮
+_btn_col1, _btn_col2, _btn_spacer = st.columns([1, 1, 6])
+with _btn_col1:
+    if st.button("⚡ 计算今日数据", key="btn_compute_today"):
+        _prog = st.progress(0, text="正在初始化...")
+        _status = st.empty()
+        try:
+            from quant.daily_compute import (
+                compute_market_emotion, compute_lianzban_stats,
+                compute_sector_zt_density, compute_sector_flow_acceleration,
+                compute_volume_breakout, compute_chip_status,
+                compute_lianzban_chain, compute_research_activity,
+                compute_concept_zt_density, compute_call_auction_stats,
+                compute_turnover_stats, compute_market_cap_dist,
+                compute_advance_decline,
+            )
+            from quant.loader import get_latest_trade_date
+            _td = get_latest_trade_date()
+            _tasks = [
+                ("市场情绪指标", compute_market_emotion),
+                ("连板梯队统计", compute_lianzban_stats),
+                ("板块涨停密度", compute_sector_zt_density),
+                ("资金流加速度", compute_sector_flow_acceleration),
+                ("成交额异动",   compute_volume_breakout),
+                ("筹码状态",     compute_chip_status),
+                ("连板链条",     compute_lianzban_chain),
+                ("机构调研热度", compute_research_activity),
+                ("概念涨停密度", compute_concept_zt_density),
+                ("集合竞价委比", compute_call_auction_stats),
+                ("换手率分层",   compute_turnover_stats),
+                ("市值分布",     compute_market_cap_dist),
+                ("市场宽度",     compute_advance_decline),
+            ]
+            _results = []
+            for _i, (_name, _fn) in enumerate(_tasks):
+                _prog.progress(_i / len(_tasks), text=f"计算中：{_name}…")
+                try:
+                    _fn(_td)
+                    _results.append(f"✓ {_name}")
+                except Exception as _e:
+                    _results.append(f"✗ {_name}：{_e}")
+            _prog.progress(1.0, text="完成")
+            _status.success(f"计算完成（{_td}）\n" + "　".join(_results))
+            st.cache_data.clear()
+            import time; time.sleep(0.8)
+            st.rerun()
+        except Exception as _e:
+            _prog.empty()
+            _status.error(f"计算失败：{_e}")
+with _btn_col2:
+    if st.button("📅 补算近30日", key="btn_compute_history"):
+        _prog = st.progress(0, text="正在读取交易日历…")
+        _status = st.empty()
+        try:
+            from quant.daily_compute import run_daily_compute
+            import pandas as pd
+            _df = pd.read_parquet("/mnt/ssd_1T/runist/data/Quant_Data/factors/stock/daily/涨停相关因子.parquet")
+            _dates = sorted(_df["trade_date"].astype(str).unique())[-30:]
+            for _i, _d in enumerate(_dates):
+                _prog.progress((_i + 1) / len(_dates), text=f"计算 {_d}（{_i+1}/{len(_dates)}）…")
+                run_daily_compute(_d)
+            _prog.progress(1.0, text="补算完成")
+            _status.success(f"已补算 {len(_dates)} 个交易日")
+            st.cache_data.clear()
+            import time; time.sleep(0.8)
+            st.rerun()
+        except Exception as _e:
+            _prog.empty()
+            _status.error(f"补算失败：{_e}")
 
 # 估算内容高度（财经快讯最高，按来源数估算）
 _panel_height = max(len(CLS_SOURCES) * 600, 3000)
