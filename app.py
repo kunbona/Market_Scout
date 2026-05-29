@@ -5,7 +5,7 @@ from db.storage import (
     get_cls_news_by_source,
     get_policy_news_by_source,
     get_sector_flow_latest,
-    get_lhb_data, get_zt_pool, get_dt_pool,
+    get_lhb_data, get_zt_pool, get_dt_pool, get_zbgc_pool, get_strong_pool,
     get_research_reports,
     get_market_emotion_summary,
     get_lianzban_stats,
@@ -21,6 +21,8 @@ from db.storage import (
     get_advance_decline,
     get_concept_flow_latest,
     get_market_pulse_latest,
+    get_hot_rank_up_latest,
+    get_northbound_flow_latest,
 )
 
 st.set_page_config(page_title="Market Radar", layout="wide", initial_sidebar_state="collapsed")
@@ -470,6 +472,20 @@ def _market_pulse():
     rows = get_market_pulse_latest(n=1)
     return rows[0] if rows else {}
 
+@st.cache_data(ttl=300)
+def _zbgc(): return get_zbgc_pool()
+
+@st.cache_data(ttl=300)
+def _strong(): return get_strong_pool()
+
+@st.cache_data(ttl=300)
+def _hot_rank_up():
+    return get_hot_rank_up_latest(20)
+
+@st.cache_data(ttl=60)
+def _northbound():
+    return get_northbound_flow_latest()
+
 def _t(s):
     s = (s or "").strip()
     if len(s) >= 16: return f"{s[5:10]} {s[11:16]}"
@@ -499,6 +515,10 @@ zt = _zt(); dt = _dt()
 max_conn = max((r["zt_count"] for r in zt), default=0)
 flows = _flows("industry")
 lhb = _lhb()
+zbgc   = _zbgc()
+strong = _strong()
+hot_up  = _hot_rank_up()
+nb_flow = _northbound()
 now_str = datetime.now().strftime("%H:%M")
 
 top1_name, top1_pct, total_str, total_cls, p0 = "—", "—", "—", "n", 0
@@ -683,16 +703,117 @@ if dt:
         rows_html += f'<div class="wr"><span class="wr-code">{code}</span><span class="wr-name">{name}</span><span class="wr-badge" style="background:#fee2e2;color:#dc2626">跌停</span><span class="wr-tag">{sec}</span></div>'
     rt_col2 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#ef4444"></span>跌停池<span class="widget-header-count">{len(dt)}</span></div>{rows_html}</div>'
 
+if zbgc:
+    rows_html = ""
+    for r in zbgc[:10]:
+        code = _e(str(r.get("stock_code","")))
+        name = _e(str(r.get("stock_name","")))
+        zb_n = int(r.get("zb_count") or 0)
+        raw_t = str(r.get("first_zt_time","") or "")
+        t_str = f"{raw_t[:2]}:{raw_t[2:4]}" if len(raw_t) >= 4 else raw_t
+        amp   = r.get("amplitude")
+        amp_s = f'{float(amp):.1f}%' if amp else ""
+        sec   = _e(str(r.get("sector","") or ""))
+        rows_html += (
+            f'<div class="wr">'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-badge" style="background:#fef3c7;color:#d97706">炸{zb_n}</span>'
+            f'<span class="wr-tag">{t_str}</span>'
+            f'<span class="wr-tag">{amp_s}</span>'
+            f'<span class="wr-tag">{sec}</span>'
+            f'</div>'
+        )
+    rt_col2 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#f59e0b"></span>炸板池<span class="widget-header-count">{len(zbgc)}</span></div>{rows_html}</div>'
+
 if lhb:
     rows_html = ""
     for r in lhb[:15]:
-        code = _e(str(r.get("stock_code","")))
-        name = _e(str(r.get("stock_name","")))
-        nb   = float(r.get("net_buy",0) or 0)
-        col_, _ = _pcolor(nb)
-        sign = "+" if nb >= 0 else ""
-        rows_html += f'<div class="wr"><span class="wr-code">{code}</span><span class="wr-name">{name}</span><span class="wr-val" style="color:{col_}">{sign}{nb:,.0f}万</span></div>'
+        code   = _e(str(r.get("stock_code","")))
+        name   = _e(str(r.get("stock_name","")))
+        nb     = float(r.get("net_buy",0) or 0)
+        pct    = float(r.get("change_pct",0) or 0)
+        interp = _e(str(r.get("interpret","") or "")[:12])
+        col_nb, _ = _pcolor(nb)
+        col_pc, _ = _pcolor(pct)
+        sign   = "+" if nb >= 0 else ""
+        rows_html += (
+            f'<div class="wr">'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-val" style="color:{col_pc}">{pct:+.1f}%</span>'
+            f'<span class="wr-tag" style="font-size:10px;color:#6b7280">{interp}</span>'
+            f'<span class="wr-val" style="color:{col_nb}">{sign}{nb/1e4:,.0f}万</span>'
+            f'</div>'
+        )
     rt_col3 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#3b82f6"></span>龙虎榜<span class="widget-header-count">{len(lhb)}</span></div>{rows_html}</div>'
+
+if strong:
+    rows_html = ""
+    for r in strong[:12]:
+        code   = _e(str(r.get("stock_code","")))
+        name   = _e(str(r.get("stock_name","")))
+        pct    = float(r.get("change_pct") or 0)
+        reason = _e(str(r.get("reason","") or ""))
+        is_hi  = str(r.get("is_new_high","") or "")
+        vr     = r.get("volume_ratio")
+        vr_s   = f'{float(vr):.1f}x' if vr else ""
+        hi_tag = '<span style="color:#ef4444;font-size:10px">新高</span>' if is_hi == "是" else ""
+        col_, _ = _pcolor(pct)
+        rows_html += (
+            f'<div class="wr">'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-val" style="color:{col_}">{pct:+.1f}%</span>'
+            f'{hi_tag}'
+            f'<span class="wr-tag">{vr_s}</span>'
+            f'<span class="wr-tag">{reason}</span>'
+            f'</div>'
+        )
+    rt_col3 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#22c55e"></span>强势股<span class="widget-header-count">{len(strong)}</span></div>{rows_html}</div>'
+
+if hot_up:
+    fetch_t = hot_up[0].get("fetch_time","")[:16] if hot_up else ""
+    rows_html = ""
+    for r in hot_up[:15]:
+        code  = _e(str(r.get("stock_code","")).replace("SZ","").replace("SH",""))
+        name  = _e(str(r.get("stock_name","")))
+        chg   = int(r.get("rank_change") or 0)
+        rank  = int(r.get("current_rank") or 0)
+        pct   = float(r.get("change_pct") or 0)
+        col_, _ = _pcolor(pct)
+        chg_color = "#16a34a" if chg > 0 else "#6b7280"
+        rows_html += (
+            f'<div class="wr">'
+            f'<span class="wr-rank" style="color:{chg_color}">↑{chg}</span>'
+            f'<span class="wr-code">{code}</span>'
+            f'<span class="wr-name">{name}</span>'
+            f'<span class="wr-val" style="color:{col_}">{pct:+.1f}%</span>'
+            f'<span class="wr-tag" style="color:#9ca3af">#{rank}</span>'
+            f'</div>'
+        )
+    rt_col3 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#f97316"></span>人气飙升<span class="widget-header-count">{fetch_t}</span></div>{rows_html}</div>'
+
+if nb_flow:
+    north = [r for r in nb_flow if r.get("direction","") == "北向"]
+    south = [r for r in nb_flow if r.get("direction","") == "南向"]
+    rows_html = ""
+    for r in north + south[:1]:  # 北向2条 + 南向合计1条
+        chan   = _e(str(r.get("channel","")))
+        direct = str(r.get("direction",""))
+        net_b  = float(r.get("net_buy") or 0)
+        net_i  = float(r.get("net_inflow") or 0)
+        col_b, _ = _pcolor(net_b)
+        col_i, _ = _pcolor(net_i)
+        dir_color = "#3b82f6" if direct == "北向" else "#f97316"
+        rows_html += (
+            f'<div class="wr">'
+            f'<span class="wr-name">{chan}</span>'
+            f'<span class="wr-badge" style="background:{"#eff6ff" if direct=="北向" else "#fff7ed"};color:{dir_color}">{direct}</span>'
+            f'<span class="wr-val" style="color:{col_b}">{net_b:+.1f}亿</span>'
+            f'</div>'
+        )
+    rt_col3 += f'<div class="widget"><div class="widget-header"><span class="src-dot" style="background:#3b82f6"></span>北向/南向资金<span class="widget-header-count">沪深港通</span></div>{rows_html}</div>'
 
 
 cf = _concept_flow_latest(25)

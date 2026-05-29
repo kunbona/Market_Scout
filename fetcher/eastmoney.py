@@ -43,16 +43,19 @@ def fetch_lhb() -> None:
     try:
         time.sleep(0.5)
         today = datetime.now().strftime("%Y%m%d")
-        df = ak.stock_lhb_detail_em(symbol="全部", start_date=today, end_date=today)
+        df = ak.stock_lhb_detail_em(start_date=today, end_date=today)
         if df is None or df.empty:
             return
 
-        trade_date = datetime.now().strftime("%Y-%m-%d")
-
-        col_code = next((c for c in ["代码", "股票代码"] if c in df.columns), None)
-        col_name = next((c for c in ["名称", "股票名称"] if c in df.columns), None)
-        col_reason = next((c for c in ["解读", "上榜原因", "原因"] if c in df.columns), None)
-        col_net_buy = next((c for c in ["净买额(万)", "净买额", "净买入额(万元)"] if c in df.columns), None)
+        # 列名容错探测
+        col_code      = next((c for c in df.columns if "代码" in c), None)
+        col_name      = next((c for c in df.columns if "名称" in c), None)
+        col_date      = next((c for c in df.columns if "上榜日" in c or "日期" in c), None)
+        col_interp    = next((c for c in df.columns if "解读" in c), None)
+        col_pct       = next((c for c in df.columns if "涨跌幅" in c), None)
+        col_net       = next((c for c in df.columns if "净买额" in c and "占" not in c), None)
+        col_reason    = next((c for c in df.columns if "原因" in c or "上榜原因" in c), None)
+        col_net_ratio = next((c for c in df.columns if "净买额占" in c), None)
 
         if col_code is None:
             logger.warning("[eastmoney] lhb: 未找到代码列，columns=%s", list(df.columns))
@@ -62,9 +65,26 @@ def fetch_lhb() -> None:
             try:
                 stock_code = str(row[col_code])
                 stock_name = str(row[col_name]) if col_name else ""
-                reason = str(row[col_reason]) if col_reason else ""
-                net_buy = float(row[col_net_buy]) if col_net_buy else 0.0
-                insert_lhb_data(trade_date, stock_code, stock_name, reason, net_buy)
+                interpret  = str(row[col_interp]) if col_interp else ""
+                reason     = str(row[col_reason]) if col_reason else ""
+                # net_buy: 龙虎榜净买额，单位元，直接存储
+                net_buy    = float(row[col_net]) if col_net else 0.0
+                change_pct = float(row[col_pct]) if col_pct else None
+                net_buy_ratio = float(row[col_net_ratio]) if col_net_ratio else None
+                # trade_date 优先取数据中的上榜日，避免 17:30 拉取时用 today 拿到明天日期
+                if col_date:
+                    raw_date = str(row[col_date]).strip()
+                    # 支持 YYYY-MM-DD 或 YYYYMMDD
+                    if len(raw_date) == 8 and raw_date.isdigit():
+                        trade_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                    else:
+                        trade_date = raw_date[:10]
+                else:
+                    trade_date = datetime.now().strftime("%Y-%m-%d")
+                insert_lhb_data(
+                    trade_date, stock_code, stock_name, reason, net_buy,
+                    change_pct=change_pct, interpret=interpret, net_buy_ratio=net_buy_ratio,
+                )
             except Exception:
                 continue
     except Exception as e:

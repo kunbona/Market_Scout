@@ -16,12 +16,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fetcher.cls_news import fetch as fetch_cls
 from fetcher.policy_rss import fetch as fetch_policy, fetch_cninfo
 from fetcher.eastmoney import fetch_sector_flow, fetch_lhb
-from fetcher.sector_heat import fetch_zt_pool, fetch_dt_pool, fetch_concept_heat
+from fetcher.sector_heat import fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_zbgc_pool, fetch_strong_pool
 from fetcher.global_news import fetch_cls_red, fetch_em, fetch_ths, fetch_wscn, fetch_yicai, fetch_jin10, fetch_gelonghui
 from fetcher.research import fetch as fetch_research
 from db.storage import cleanup_old_data
 from fetcher.realtime_quote import fetch_realtime_snapshot
 from fetcher.concept_flow import fetch_concept_flow
+from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow
 from quant.daily_compute import run_daily_compute
 
 
@@ -60,6 +61,26 @@ def _guarded_concept_flow():
         fetch_concept_flow()
 
 
+def _guarded_zbgc_pool():
+    if _in_trade_hours():
+        fetch_zbgc_pool()
+
+
+def _guarded_strong_pool():
+    if _in_trade_hours():
+        fetch_strong_pool()
+
+
+def _guarded_hot_rank_up():
+    if _in_trade_hours():
+        fetch_hot_rank_up()
+
+
+def _guarded_northbound():
+    if _in_trade_hours():
+        fetch_northbound_flow()
+
+
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -83,6 +104,10 @@ def start_scheduler() -> None:
     scheduler.add_job(_guarded_realtime_quote, "interval", seconds=30)
     scheduler.add_job(_guarded_concept_flow, "interval", minutes=15)
     scheduler.add_job(run_daily_compute, "cron", hour=9, minute=0)
+    scheduler.add_job(_guarded_zbgc_pool, "interval", minutes=5)
+    scheduler.add_job(_guarded_strong_pool, "interval", minutes=15)
+    scheduler.add_job(_guarded_hot_rank_up, "interval", minutes=30)
+    scheduler.add_job(_guarded_northbound,  "interval", minutes=15)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
@@ -96,7 +121,7 @@ def start_scheduler() -> None:
             except Exception:
                 pass
         if _in_trade_hours():
-            for fn in [fetch_sector_flow, fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_concept_flow]:
+            for fn in [fetch_sector_flow, fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_concept_flow, fetch_zbgc_pool, fetch_strong_pool, fetch_hot_rank_up, fetch_northbound_flow]:
                 try:
                     fn()
                 except Exception:

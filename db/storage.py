@@ -36,6 +36,18 @@ def _migrate(conn):
     ]:
         if col not in mp_cols:
             conn.execute(f"ALTER TABLE market_pulse ADD COLUMN {col} {coldef}")
+    # lhb_data 新增字段迁移
+    lhb_cols = {row[1] for row in conn.execute("PRAGMA table_info(lhb_data)")}
+    for col, coldef in [
+        ("change_pct",    "REAL"),
+        ("interpret",     "TEXT"),
+        ("net_buy_ratio", "REAL"),
+    ]:
+        if col not in lhb_cols:
+            conn.execute(f"ALTER TABLE lhb_data ADD COLUMN {col} {coldef}")
+    # reason 字段已存在于建表语句，仅在确实缺失时才补充（理论上不会触发）
+    if "reason" not in lhb_cols:
+        conn.execute("ALTER TABLE lhb_data ADD COLUMN reason TEXT")
     # research_report table (created fresh if not exists via init_db, but add migration for existing DBs)
     try:
         conn.execute("SELECT 1 FROM research_report LIMIT 1")
@@ -309,6 +321,54 @@ CREATE TABLE IF NOT EXISTS concept_flow (
     stock_count INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_concept_flow_time ON concept_flow(fetch_time);
+
+CREATE TABLE IF NOT EXISTS zbgc_pool (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date      TEXT,
+    stock_code      TEXT,
+    stock_name      TEXT,
+    first_zt_time   TEXT,
+    zb_count        INTEGER DEFAULT 0,
+    amplitude       REAL,
+    sector          TEXT,
+    UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS strong_pool (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date      TEXT,
+    stock_code      TEXT,
+    stock_name      TEXT,
+    change_pct      REAL,
+    is_new_high     TEXT,
+    volume_ratio    REAL,
+    reason          TEXT,
+    sector          TEXT,
+    UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS hot_rank_up (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time   TEXT,
+    rank_change  INTEGER,
+    current_rank INTEGER,
+    stock_code   TEXT,
+    stock_name   TEXT,
+    price        REAL,
+    change_pct   REAL
+);
+CREATE INDEX IF NOT EXISTS idx_hot_rank_up_time ON hot_rank_up(fetch_time);
+
+CREATE TABLE IF NOT EXISTS northbound_flow (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time   TEXT,
+    trade_date   TEXT,
+    channel      TEXT,
+    direction    TEXT,
+    net_buy      REAL,
+    net_inflow   REAL,
+    UNIQUE(fetch_time, channel)
+);
         """)
 
 
@@ -353,11 +413,14 @@ def insert_sector_flow(fetch_time, sector_name, change_pct, main_inflow, main_in
         )
 
 
-def insert_lhb_data(trade_date, stock_code, stock_name, reason, net_buy) -> None:
+def insert_lhb_data(trade_date, stock_code, stock_name, reason, net_buy,
+                    change_pct=None, interpret="", net_buy_ratio=None) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO lhb_data (trade_date, stock_code, stock_name, reason, net_buy) VALUES (?, ?, ?, ?, ?)",
-            (trade_date, stock_code, stock_name, reason, net_buy),
+            "INSERT OR REPLACE INTO lhb_data "
+            "(trade_date, stock_code, stock_name, reason, net_buy, change_pct, interpret, net_buy_ratio) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (trade_date, stock_code, stock_name, reason, net_buy, change_pct, interpret, net_buy_ratio),
         )
 
 
@@ -611,6 +674,11 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM concept_zt_density WHERE trade_date < ?", (cutoff_30d_date,))
         conn.execute("DELETE FROM call_auction_stats WHERE trade_date < ?", (cutoff_30d_date,))
         conn.execute("DELETE FROM concept_flow WHERE fetch_time < ?", (cutoff_30d,))
+        cutoff_7d_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        conn.execute("DELETE FROM zbgc_pool WHERE trade_date < ?", (cutoff_7d_date,))
+        conn.execute("DELETE FROM strong_pool WHERE trade_date < ?", (cutoff_7d_date,))
+        conn.execute("DELETE FROM hot_rank_up WHERE fetch_time < ?", (cutoff_7d,))
+        conn.execute("DELETE FROM northbound_flow WHERE fetch_time < ?", (cutoff_30d,))
 
 
 # ── market_pulse ──────────────────────────────────────────────────────────────
@@ -980,6 +1048,99 @@ def get_concept_flow_latest(top_n=30) -> list[dict]:
         cur = conn.execute(
             "SELECT * FROM concept_flow WHERE fetch_time = ? ORDER BY net_amount DESC LIMIT ?",
             (row[0], top_n),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── zbgc_pool ─────────────────────────────────────────────────────────────────
+
+def insert_zbgc_pool(trade_date: str, stock_code: str, stock_name: str,
+                     first_zt_time: str, zb_count: int, amplitude, sector: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO zbgc_pool "
+            "(trade_date, stock_code, stock_name, first_zt_time, zb_count, amplitude, sector) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (trade_date, stock_code, stock_name, first_zt_time, zb_count, amplitude, sector),
+        )
+
+
+def get_zbgc_pool(trade_date=None) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        date = trade_date or _latest_trade_date(conn, "zbgc_pool")
+        cur = conn.execute(
+            "SELECT * FROM zbgc_pool WHERE trade_date = ? ORDER BY zb_count DESC",
+            (date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── strong_pool ───────────────────────────────────────────────────────────────
+
+def insert_strong_pool(trade_date: str, stock_code: str, stock_name: str,
+                       change_pct, is_new_high: str, volume_ratio,
+                       reason: str, sector: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO strong_pool "
+            "(trade_date, stock_code, stock_name, change_pct, is_new_high, volume_ratio, reason, sector) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (trade_date, stock_code, stock_name, change_pct, is_new_high, volume_ratio, reason, sector),
+        )
+
+
+def get_strong_pool(trade_date=None) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        date = trade_date or _latest_trade_date(conn, "strong_pool")
+        cur = conn.execute(
+            "SELECT * FROM strong_pool WHERE trade_date = ? ORDER BY change_pct DESC",
+            (date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── hot_rank_up ───────────────────────────────────────────────────────────────
+
+def insert_hot_rank_up(fetch_time, rank_change, current_rank, stock_code, stock_name, price, change_pct):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO hot_rank_up (fetch_time,rank_change,current_rank,stock_code,stock_name,price,change_pct) VALUES (?,?,?,?,?,?,?)",
+            (fetch_time, rank_change, current_rank, stock_code, stock_name, price, change_pct),
+        )
+
+
+def get_hot_rank_up_latest(top_n=20) -> list[dict]:
+    """返回最新一批，按 rank_change 降序"""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT fetch_time FROM hot_rank_up ORDER BY fetch_time DESC LIMIT 1").fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM hot_rank_up WHERE fetch_time=? ORDER BY rank_change DESC LIMIT ?",
+            (row[0], top_n),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── northbound_flow ───────────────────────────────────────────────────────────
+
+def insert_northbound_flow(fetch_time, trade_date, channel, direction, net_buy, net_inflow):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO northbound_flow (fetch_time,trade_date,channel,direction,net_buy,net_inflow) VALUES (?,?,?,?,?,?)",
+            (fetch_time, trade_date, channel, direction, net_buy, net_inflow),
+        )
+
+
+def get_northbound_flow_latest() -> list[dict]:
+    """返回最新一批所有渠道"""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT fetch_time FROM northbound_flow ORDER BY fetch_time DESC LIMIT 1").fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM northbound_flow WHERE fetch_time=? ORDER BY direction,channel",
+            (row[0],),
         )
         return _rows_to_dicts(cur)
 
