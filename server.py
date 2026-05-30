@@ -633,7 +633,6 @@ def api_config_set():
             return _err(f"端口无效: {new_port}，需为 1024-65535 之间的数字", 400)
 
     if "quant_workers" in body:
-        import quant.loader as loader
         val = body["quant_workers"].strip()
         if val == "" or val == "0":
             os.environ.pop("QUANT_WORKERS", None)
@@ -642,7 +641,7 @@ def api_config_set():
         elif val.isdigit() and 1 <= int(val) <= 64:
             os.environ["QUANT_WORKERS"] = val
             env_updates["QUANT_WORKERS"] = val
-            changed.append(f"QUANT_WORKERS → {val}")
+            changed.append(f"QUANT_WORKERS → {val}（立即生效）")
         else:
             return _err(f"进程数无效: {val}，需为 1-64 之间的整数", 400)
 

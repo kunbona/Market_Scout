@@ -138,6 +138,8 @@ function SettingsPage({ settings, onUpdate }: {
   const [quantWorkersInput, setQuantWorkersInput] = useState('');
   const [rsshubTesting, setRsshubTesting] = useState(false);
   const [rsshubTestMsg, setRsshubTestMsg] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
 
   // 初次进入读取服务端当前值
   useEffect(() => {
@@ -172,55 +174,39 @@ function SettingsPage({ settings, onUpdate }: {
     }
   };
 
-  const [savingPort, setSavingPort] = useState(false);
-  const [savePortMsg, setSavePortMsg] = useState('');
-  const [savingData, setSavingData] = useState(false);
-  const [saveDataMsg, setSaveDataMsg] = useState('');
-
-  const handleSavePort = async () => {
-    setSavingPort(true);
-    setSavePortMsg('');
+  const handleSaveAll = async () => {
+    setSaving(true);
+    setSaveMsg('');
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flask_port: flaskPortInput, quant_workers: quantWorkersInput }),
+        body: JSON.stringify({
+          data_root: dataRootInput,
+          rsshub_url: rsshubInput,
+          flask_port: flaskPortInput,
+          quant_workers: quantWorkersInput,
+        }),
       });
       const json = await res.json();
       if (json.success) {
-        setSavePortMsg(`✓ 已保存：${json.data.changed.join('；') || '无变化'}`);
-        setServerConfig(prev => prev ? { ...prev, flask_port: flaskPortInput, quant_workers: quantWorkersInput } : prev);
-      } else {
-        setSavePortMsg(`✗ ${json.error}`);
-      }
-    } catch {
-      setSavePortMsg('✗ 请求失败');
-    } finally {
-      setSavingPort(false);
-    }
-  };
-
-  const handleSaveData = async () => {
-    setSavingData(true);
-    setSaveDataMsg('');
-    try {
-      const res = await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data_root: dataRootInput, rsshub_url: rsshubInput }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setSaveDataMsg(`✓ 已应用：${json.data.changed.join('；') || '无变化'}`);
-        setServerConfig(prev => prev ? { ...prev, data_root: dataRootInput, rsshub_url: rsshubInput } : prev);
+        const changed = json.data.changed ?? [];
+        setSaveMsg(changed.length > 0 ? `✓ 已保存：${changed.join('；')}` : '✓ 配置无变化');
+        setServerConfig(prev => prev ? {
+          ...prev,
+          data_root: dataRootInput,
+          rsshub_url: rsshubInput,
+          flask_port: flaskPortInput,
+          quant_workers: quantWorkersInput,
+        } : prev);
         onUpdate({ dataRoot: dataRootInput, rsshubUrl: rsshubInput });
       } else {
-        setSaveDataMsg(`✗ ${json.error}`);
+        setSaveMsg(`✗ ${json.error}`);
       }
     } catch {
-      setSaveDataMsg('✗ 请求失败，请确认服务已启动');
+      setSaveMsg('✗ 请求失败，请确认服务已启动');
     } finally {
-      setSavingData(false);
+      setSaving(false);
     }
   };
 
@@ -232,72 +218,10 @@ function SettingsPage({ settings, onUpdate }: {
         {/* 显示偏好（含分页） */}
         <DisplayPrefsCard settings={settings} onUpdate={onUpdate} />
 
-        {/* 端口配置 */}
+        {/* 服务配置 */}
         <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
-          <h3 className="text-base font-semibold text-gray-900 mb-1">端口配置</h3>
-          <p className="text-xs text-gray-400 mb-5">修改后需重启服务生效，通过 <code className="bg-gray-100 px-1 rounded">bash start.sh</code> 启动时自动读取</p>
-          <div className="space-y-4">
-            {/* 仪表盘访问端口 FLASK_PORT */}
-            <div>
-              <label className="block text-sm text-gray-700 mb-1.5">
-                仪表盘访问端口
-                <span className="ml-1.5 text-xs font-mono text-gray-400">FLASK_PORT</span>
-                {serverConfig && (
-                  <span className="ml-2 text-xs text-gray-400 font-normal">当前：{serverConfig.flask_port}</span>
-                )}
-              </label>
-              <input
-                type="text"
-                value={flaskPortInput}
-                onChange={e => setFlaskPortInput(e.target.value)}
-                placeholder="20026"
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
-              />
-              <p className="text-xs text-gray-400 mt-1">用户访问仪表盘使用的端口</p>
-            </div>
-
-            {/* 计算进程数 QUANT_WORKERS */}
-            <div>
-              <label className="block text-sm text-gray-700 mb-1.5">
-                量价计算进程数
-                <span className="ml-1.5 text-xs font-mono text-gray-400">QUANT_WORKERS</span>
-                {serverConfig && (
-                  <span className="ml-2 text-xs text-gray-400 font-normal">
-                    当前：{serverConfig.quant_workers || '自动（CPU核数/2）'}
-                  </span>
-                )}
-              </label>
-              <input
-                type="text"
-                value={quantWorkersInput}
-                onChange={e => setQuantWorkersInput(e.target.value)}
-                placeholder="留空=自动，填 1=单进程"
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
-              />
-              <p className="text-xs text-gray-400 mt-1">控制读取本地 CSV 的并行进程数，填 1 使用单进程避免占满 CPU</p>
-            </div>
-
-          </div>
-
-          <div className="flex items-center gap-3 mt-5 pt-4 border-t border-gray-100">
-            <button
-              onClick={handleSavePort}
-              disabled={savingPort}
-              className="px-4 py-2 text-sm text-white bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg hover:from-blue-600 hover:to-purple-700 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {savingPort ? '保存中...' : '保存端口配置'}
-            </button>
-            {savePortMsg
-              ? <span className={`text-xs ${savePortMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>{savePortMsg}</span>
-              : <span className="text-xs text-amber-500">⚠ 修改后需重启服务生效</span>
-            }
-          </div>
-        </div>
-
-        {/* 数据源配置 */}
-        <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
-          <h3 className="text-base font-semibold text-gray-900 mb-1">数据源配置</h3>
-          <p className="text-xs text-gray-400 mb-5">修改后点击保存，立即对运行中的服务生效，无需重启</p>
+          <h3 className="text-base font-semibold text-gray-900 mb-1">服务配置</h3>
+          <p className="text-xs text-gray-400 mb-5">配置后点击底部保存按钮生效；端口修改需重启服务</p>
 
           <div className="space-y-4">
             {/* 本地量价数据路径 */}
@@ -353,18 +277,63 @@ function SettingsPage({ settings, onUpdate }: {
             </div>
           </div>
 
-          <div className="mt-5 space-y-2">
+          <hr className="border-gray-100 my-4" />
+
+          <p className="text-xs font-medium text-gray-500 mb-3">服务参数</p>
+          <div className="space-y-4">
+            {/* 仪表盘访问端口 FLASK_PORT */}
+            <div>
+              <label className="block text-sm text-gray-700 mb-1.5">
+                仪表盘访问端口
+                <span className="ml-1.5 text-xs font-mono text-gray-400">FLASK_PORT</span>
+                {serverConfig && (
+                  <span className="ml-2 text-xs text-gray-400 font-normal">当前：{serverConfig.flask_port}</span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={flaskPortInput}
+                onChange={e => setFlaskPortInput(e.target.value)}
+                placeholder="20026"
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
+              />
+              <span className="text-xs text-amber-500 mt-1 block">⚠ 修改后需重启服务生效</span>
+            </div>
+
+            {/* 计算进程数 QUANT_WORKERS */}
+            <div>
+              <label className="block text-sm text-gray-700 mb-1.5">
+                量价计算进程数
+                <span className="ml-1.5 text-xs font-mono text-gray-400">QUANT_WORKERS</span>
+                {serverConfig && (
+                  <span className="ml-2 text-xs text-gray-400 font-normal">
+                    当前：{serverConfig.quant_workers || '自动（CPU核数/2）'}
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={quantWorkersInput}
+                onChange={e => setQuantWorkersInput(e.target.value)}
+                placeholder="留空=自动，填 1=单进程"
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
+              />
+              <span className="text-xs text-green-600 mt-1 block">✓ 修改后立即生效，无需重启</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 mt-5 pt-4 border-t border-gray-100">
             <button
-              onClick={handleSaveData}
-              disabled={savingData}
+              onClick={handleSaveAll}
+              disabled={saving}
               className="px-4 py-2 text-sm text-white bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg hover:from-blue-600 hover:to-purple-700 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {savingData ? '保存中...' : '保存数据源配置'}
+              {saving ? '保存中...' : '保存所有配置'}
             </button>
-            {saveDataMsg && (
-              <p className={`text-xs ${saveDataMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
-                {saveDataMsg}
-              </p>
+            {saveMsg && (
+              <span className={`text-xs ${saveMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
+                {saveMsg}
+              </span>
             )}
           </div>
         </div>
