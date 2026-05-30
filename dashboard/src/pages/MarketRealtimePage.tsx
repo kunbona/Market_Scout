@@ -173,6 +173,21 @@ interface BigDeal {
   deal_type: string;
   change_pct: number | null;
 }
+interface Margin {
+  stock_code: string; stock_name: string;
+  trade_date: string;
+  rzye: number; rzmre: number; rzrqye: number;
+}
+interface BlockTrade {
+  trade_date: string; stock_code: string; stock_name: string;
+  deal_price: number; close_price: number;
+  deal_volume: number; deal_amt: number;
+  buyer_name: string; seller_name: string;
+}
+interface HolderCount {
+  stock_code: string; stock_name: string; end_date: string;
+  holder_num: number; holder_num_change: number; holder_num_ratio: number;
+}
 
 export function MarketRealtimePage() {
   const [sf,     setSf]     = useState<SF[]>([]);
@@ -186,7 +201,10 @@ export function MarketRealtimePage() {
   const [nb,     setNb]     = useState<NB[]>([]);
   const [xq,     setXq]     = useState<XQ[]>([]);
   const [loading, setLoading] = useState(true);
-  const [bigDeal, setBigDeal] = useState<BigDeal[]>([]);
+  const [bigDeal,  setBigDeal]  = useState<BigDeal[]>([]);
+  const [margin,   setMargin]   = useState<Margin[]>([]);
+  const [blockTrd, setBlockTrd] = useState<BlockTrade[]>([]);
+  const [holder,   setHolder]   = useState<HolderCount[]>([]);
 
   useEffect(() => {
     Promise.allSettled([
@@ -221,8 +239,20 @@ export function MarketRealtimePage() {
         .then(d => setBigDeal(d ?? []))
         .catch(() => {});
     load();
-    const timer = setInterval(load, 3 * 60 * 1000); // 3分钟自动刷新
+    const timer = setInterval(load, 3 * 60 * 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    Promise.allSettled([
+      apiFetch<Margin[]>('/api/margin?top_n=100'),
+      apiFetch<BlockTrade[]>('/api/block-trade?limit=100'),
+      apiFetch<HolderCount[]>('/api/holder-count?top_n=100'),
+    ]).then(([r0, r1, r2]) => {
+      if (r0.status === 'fulfilled' && r0.value) setMargin(r0.value);
+      if (r1.status === 'fulfilled' && r1.value) setBlockTrd(r1.value);
+      if (r2.status === 'fulfilled' && r2.value) setHolder(r2.value);
+    });
   }, []);
 
   // ── 汇总 KPI 计算 ────────────────────────────────────────────
@@ -629,6 +659,101 @@ export function MarketRealtimePage() {
           />
         </div>
       </div>
+
+      {/* 8. 融资融券 & 大宗交易 */}
+      {(margin.length > 0 || blockTrd.length > 0) && (
+        <div>
+          <SectionTitle>融资融券 & 大宗交易</SectionTitle>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {margin.length > 0 ? (
+              <Widget title="融资融券余额 Top" dot="#8b5cf6" count={margin.length}
+                headers={['代码', '名称', '融资余额', '融资买入', '两融合计']}
+                rows={margin.map(d => [
+                  <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
+                  <span className="font-medium text-gray-800">{d.stock_name}</span>,
+                  <span className="font-mono text-red-500">{fmtYi(d.rzye)}</span>,
+                  <span className="font-mono text-gray-600">{fmtYi(d.rzmre)}</span>,
+                  <span className="font-mono text-purple-600">{fmtYi(d.rzrqye)}</span>,
+                ])}
+              />
+            ) : (
+              <EmptyCard msg="融资融券数据暂无（交易时段内自动更新）" />
+            )}
+            {blockTrd.length > 0 ? (
+              <Widget title="今日大宗交易" dot="#6366f1" count={blockTrd.length}
+                headers={['代码', '名称', '成交价', '折溢价', '金额']}
+                rows={blockTrd.map(d => {
+                  const disc = d.close_price > 0
+                    ? ((d.deal_price - d.close_price) / d.close_price * 100)
+                    : null;
+                  return [
+                    <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
+                    <span className="font-medium text-gray-800">{d.stock_name}</span>,
+                    <span className="font-mono text-gray-700">{d.deal_price?.toFixed(2)}</span>,
+                    disc != null
+                      ? <span className={`font-mono ${numColor(disc)}`}>{fmtPct(disc)}</span>
+                      : <span className="text-gray-300">—</span>,
+                    <span className="font-mono text-indigo-600">{fmtYi(d.deal_amt * 1e4)}</span>,
+                  ];
+                })}
+              />
+            ) : (
+              <EmptyCard msg="大宗交易数据暂无（交易时段内自动更新）" />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 9. 股东人数变化 */}
+      {holder.length > 0 && (
+        <div>
+          <SectionTitle>股东人数变化（最新报告期）</SectionTitle>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Widget
+              title="股东人数减少（筹码集中）"
+              dot="#ef4444"
+              count={holder.filter(d => d.holder_num_change < 0).length}
+              headers={['代码', '名称', '股东人数', '变化', '变化率']}
+              rows={holder
+                .filter(d => d.holder_num_change < 0)
+                .map(d => [
+                  <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
+                  <span className="font-medium text-gray-800">{d.stock_name}</span>,
+                  <span className="font-mono text-gray-600">
+                    {d.holder_num != null ? `${(d.holder_num / 1e4).toFixed(1)}万` : '--'}
+                  </span>,
+                  <span className="font-mono text-red-600">
+                    {d.holder_num_change > 0 ? '+' : ''}{(d.holder_num_change / 1e4).toFixed(2)}万
+                  </span>,
+                  <span className={`font-mono ${numColor(d.holder_num_ratio)}`}>
+                    {fmtPct(d.holder_num_ratio)}
+                  </span>,
+                ])}
+            />
+            <Widget
+              title="股东人数增加（筹码分散）"
+              dot="#22c55e"
+              count={holder.filter(d => d.holder_num_change >= 0).length}
+              headers={['代码', '名称', '股东人数', '变化', '变化率']}
+              rows={holder
+                .filter(d => d.holder_num_change >= 0)
+                .map(d => [
+                  <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
+                  <span className="font-medium text-gray-800">{d.stock_name}</span>,
+                  <span className="font-mono text-gray-600">
+                    {d.holder_num != null ? `${(d.holder_num / 1e4).toFixed(1)}万` : '--'}
+                  </span>,
+                  <span className="font-mono text-green-600">
+                    +{(d.holder_num_change / 1e4).toFixed(2)}万
+                  </span>,
+                  <span className={`font-mono ${numColor(d.holder_num_ratio)}`}>
+                    {fmtPct(d.holder_num_ratio)}
+                  </span>,
+                ])}
+            />
+          </div>
+        </div>
+      )}
 
     </div>
   );
