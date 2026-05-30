@@ -24,7 +24,9 @@ from db.storage import cleanup_old_data
 from fetcher.realtime_quote import fetch_realtime_snapshot
 from fetcher.concept_flow import fetch_concept_flow
 from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, fetch_xq_hot, fetch_big_deal
-from fetcher.eastmoney import fetch_margin, fetch_block_trade, fetch_holder_count
+from fetcher.eastmoney import (fetch_margin, fetch_block_trade, fetch_holder_count,
+                               fetch_lockup_expiry, fetch_dividend_history,
+                               fetch_industry_ranking, fetch_ths_hot_stocks)
 from fetcher.fundamentals import fetch_fundamentals_finance, fetch_fundamentals_f10
 from quant.daily_compute import run_daily_compute
 
@@ -103,6 +105,12 @@ def _guarded_fundamentals():
         _auto_run("基本面财务", fetch_fundamentals_finance)
         _auto_run("基本面F10",  fetch_fundamentals_f10)
 
+def _guarded_industry_ranking():
+    if _in_trade_hours(): _auto_run("行业排行", fetch_industry_ranking)
+
+def _guarded_ths_hot():
+    if _in_trade_hours(): _auto_run("同花顺主题热股", fetch_ths_hot_stocks)
+
 
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
@@ -138,6 +146,11 @@ def start_scheduler() -> None:
     # 股东人数变化频率低，每天收盘后一次即可
     scheduler.add_job(lambda: _auto_run("股东人数", fetch_holder_count), "cron", hour=17, minute=45)
     scheduler.add_job(_guarded_fundamentals, "interval", minutes=60)
+    scheduler.add_job(_guarded_industry_ranking, "interval", minutes=5)
+    scheduler.add_job(_guarded_ths_hot, "interval", minutes=30)
+    # 解禁/减持和分红历史变动慢，每天早上更新一次
+    scheduler.add_job(lambda: _auto_run("解禁减持", fetch_lockup_expiry), "cron", hour=9, minute=10)
+    scheduler.add_job(lambda: _auto_run("分红历史", fetch_dividend_history), "cron", hour=9, minute=12)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
@@ -177,9 +190,13 @@ def start_scheduler() -> None:
                 ("大宗交易",   fetch_block_trade),
                 ("基本面财务", fetch_fundamentals_finance),
                 ("基本面F10",  fetch_fundamentals_f10),
+                ("行业排行",   fetch_industry_ranking),
+                ("同花顺主题热股", fetch_ths_hot_stocks),
             ]
             for name, fn in trade_tasks:
                 _auto_run(name, fn)
         _auto_run("雪球热度", fetch_xq_hot)
+        _auto_run("解禁减持", fetch_lockup_expiry)
+        _auto_run("分红历史", fetch_dividend_history)
 
     threading.Thread(target=_initial_fetch, daemon=True).start()

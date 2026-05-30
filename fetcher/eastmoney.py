@@ -195,3 +195,131 @@ def fetch_holder_count() -> None:
             )
         except Exception:
             continue
+
+
+def fetch_lockup_expiry() -> None:
+    """近 30 天及未来 90 天解禁/减持计划（按解禁日期升序，取 200 条）。"""
+    from db.storage import insert_lockup_expiry
+    from datetime import datetime, timedelta
+    today = datetime.now().strftime("%Y-%m-%d")
+    future = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
+    rows = eastmoney_datacenter(
+        "RPT_LIFT_STAGE",
+        columns="SECURITY_CODE,SECURITY_NAME,FREE_DATE,LIFT_SHARES,LIFT_MARKET_CAP,LIFT_RATIO,HOLD_NUM,LIFT_TYPE",
+        filter_str=f'(FREE_DATE>="{today}")(FREE_DATE<="{future}")',
+        sort_columns="FREE_DATE", sort_types="1",
+        page_size=200,
+    )
+    for row in rows:
+        try:
+            insert_lockup_expiry(
+                str(row.get("FREE_DATE", ""))[:10],
+                str(row.get("SECURITY_CODE", "")),
+                str(row.get("SECURITY_NAME", "")),
+                float(row.get("LIFT_SHARES") or 0),
+                float(row.get("LIFT_MARKET_CAP") or 0),
+                float(row.get("LIFT_RATIO") or 0),
+                int(float(row.get("HOLD_NUM") or 0)),
+                str(row.get("LIFT_TYPE", "")),
+            )
+        except Exception:
+            continue
+
+
+def fetch_dividend_history() -> None:
+    """A 股最新分红送转记录（按除权日降序，取 200 条）。"""
+    from db.storage import insert_dividend
+    rows = eastmoney_datacenter(
+        "RPT_SHAREBONUS_DET",
+        columns="SECURITY_CODE,SECURITY_NAME,EX_DIVIDEND_DATE,PRETAX_BONUS_RMB,TRANSFER_RATIO,BONUS_RATIO,ASSIGN_PROGRESS",
+        sort_columns="EX_DIVIDEND_DATE", sort_types="-1",
+        page_size=200,
+    )
+    for row in rows:
+        try:
+            insert_dividend(
+                str(row.get("EX_DIVIDEND_DATE", ""))[:10],
+                str(row.get("SECURITY_CODE", "")),
+                str(row.get("SECURITY_NAME", "")),
+                float(row.get("PRETAX_BONUS_RMB") or 0),
+                float(row.get("TRANSFER_RATIO") or 0),
+                float(row.get("BONUS_RATIO") or 0),
+                str(row.get("ASSIGN_PROGRESS", "")),
+            )
+        except Exception:
+            continue
+
+
+def fetch_industry_ranking() -> None:
+    """全市场行业板块涨幅排行（东财 push2 clist）。"""
+    from db.storage import insert_industry_ranking
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    params = {
+        "pn": "1", "pz": "100", "po": "1", "np": "1",
+        "fltt": "2", "invt": "2",
+        "fs": "m:90+t:2",
+        "fields": "f2,f3,f4,f12,f14,f104,f105,f128,f136,f140,f141",
+    }
+    try:
+        r = requests.get(
+            "https://push2.eastmoney.com/api/qt/clist/get",
+            params=params,
+            headers={"User-Agent": _UA, "Referer": "https://quote.eastmoney.com/"},
+            timeout=15,
+        )
+        items = r.json().get("data", {}).get("diff", []) or []
+    except Exception as e:
+        logger.warning("[eastmoney] fetch_industry_ranking failed: %s", e)
+        return
+    for item in items:
+        try:
+            insert_industry_ranking(
+                fetch_time,
+                str(item.get("f12", "")),   # 板块代码
+                str(item.get("f14", "")),   # 板块名称
+                float(item.get("f3") or 0),  # 涨跌幅
+                float(item.get("f2") or 0),  # 最新价
+                int(float(item.get("f104") or 0)),  # 上涨家数
+                int(float(item.get("f105") or 0)),  # 下跌家数
+                str(item.get("f128", "")),  # 领涨股
+                float(item.get("f140") or 0),  # 领涨股涨幅
+            )
+        except Exception:
+            continue
+
+
+def fetch_ths_hot_stocks() -> None:
+    """同花顺主题热股（带编辑打标的主题理由，每日一次）。"""
+    from db.storage import insert_ths_hot_stock
+    from datetime import datetime
+    today = datetime.now().strftime("%Y%m%d")
+    fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    url = (
+        f"http://zx.10jqka.com.cn/event/api/getharden/"
+        f"date/{today}/orderby/date/orderway/desc/charset/UTF-8/"
+    )
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/117.0.0.0 Safari/537.36"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        logger.warning("[ths_hot] fetch_ths_hot_stocks failed: %s", e)
+        return
+
+    items = data if isinstance(data, list) else data.get("data", data.get("list", []))
+    for item in items:
+        try:
+            insert_ths_hot_stock(
+                fetch_time,
+                str(item.get("code", "")),
+                str(item.get("name", "")),
+                str(item.get("reason", "") or item.get("tag", "")),
+                str(item.get("industry", "") or item.get("sector", "")),
+                float(item.get("chg", 0) or 0),
+            )
+        except Exception:
+            continue

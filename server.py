@@ -757,6 +757,79 @@ def api_fundamentals_f10():
         return _err(exc)
 
 
+@app.route("/api/lockup-expiry")
+def api_lockup_expiry():
+    try:
+        from db.storage import get_lockup_expiry
+        days = int(request.args.get("days", 30))
+        rows = get_lockup_expiry(days)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/dividend")
+def api_dividend():
+    try:
+        from db.storage import get_dividend_latest
+        limit = int(request.args.get("limit", 100))
+        rows = get_dividend_latest(limit)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-ranking")
+def api_industry_ranking():
+    try:
+        from db.storage import get_industry_ranking_latest
+        rows = get_industry_ranking_latest()
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/ths-hot-stocks")
+def api_ths_hot_stocks():
+    try:
+        from db.storage import get_ths_hot_stocks_latest
+        top_n = int(request.args.get("top_n", 50))
+        rows = get_ths_hot_stocks_latest(top_n)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/research/pdf")
+def api_research_pdf():
+    """代理下载东财研报 PDF，自动注入 Referer 绕过 403。"""
+    import requests as _req
+    from flask import Response, stream_with_context
+    pdf_url = request.args.get("url", "").strip()
+    if not pdf_url or not pdf_url.startswith("https://pdf.dfcfw.com/"):
+        return _err("无效的 PDF 地址", 400)
+    try:
+        r = _req.get(
+            pdf_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://data.eastmoney.com/",
+            },
+            stream=True,
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return _err(f"上游返回 {r.status_code}", 502)
+        filename = pdf_url.split("/")[-1] or "report.pdf"
+        return Response(
+            stream_with_context(r.iter_content(chunk_size=8192)),
+            content_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+    except Exception as exc:
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------------
 # Manual fetch trigger
 # ---------------------------------------------------------------------------
@@ -786,7 +859,9 @@ def _run_fetch_all():
         )
         from fetcher.concept_flow import fetch_concept_flow
         from fetcher.realtime_quote import fetch_realtime_snapshot
-        from fetcher.eastmoney import fetch_margin, fetch_block_trade, fetch_holder_count
+        from fetcher.eastmoney import (fetch_margin, fetch_block_trade, fetch_holder_count,
+                                       fetch_lockup_expiry, fetch_dividend_history,
+                                       fetch_industry_ranking, fetch_ths_hot_stocks)
         from fetcher.fundamentals import fetch_fundamentals_finance, fetch_fundamentals_f10
     except Exception as e:
         with _fetch_lock:
@@ -820,6 +895,10 @@ def _run_fetch_all():
         ("股东人数",          fetch_holder_count),
         ("基本面财务",        fetch_fundamentals_finance),
         ("基本面F10",         fetch_fundamentals_f10),
+        ("行业排行",          fetch_industry_ranking),
+        ("同花顺主题热股",    fetch_ths_hot_stocks),
+        ("解禁减持",          fetch_lockup_expiry),
+        ("分红历史",          fetch_dividend_history),
     ]
 
     results = []

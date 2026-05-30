@@ -92,6 +92,30 @@ def _migrate(conn):
             UNIQUE(fetch_date, stock_code, category))""",
     ]:
         conn.execute(tbl_sql)
+    for tbl_sql in [
+        """CREATE TABLE IF NOT EXISTS lockup_expiry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            free_date TEXT, stock_code TEXT, stock_name TEXT,
+            lift_shares REAL, lift_market_cap REAL, lift_ratio REAL,
+            hold_num INTEGER, lift_type TEXT,
+            UNIQUE(free_date, stock_code, lift_type))""",
+        """CREATE TABLE IF NOT EXISTS dividend (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ex_dividend_date TEXT, stock_code TEXT, stock_name TEXT,
+            pretax_bonus_rmb REAL, transfer_ratio REAL,
+            bonus_ratio REAL, assign_progress TEXT,
+            UNIQUE(ex_dividend_date, stock_code))""",
+        """CREATE TABLE IF NOT EXISTS industry_ranking (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fetch_time TEXT, sector_code TEXT, sector_name TEXT,
+            change_pct REAL, price REAL, up_count INTEGER,
+            down_count INTEGER, lead_stock TEXT, lead_pct REAL)""",
+        """CREATE TABLE IF NOT EXISTS ths_hot_stocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fetch_time TEXT, stock_code TEXT, stock_name TEXT,
+            reason TEXT, industry TEXT, change_pct REAL)""",
+    ]:
+        conn.execute(tbl_sql)
 
 
 def init_db():
@@ -469,6 +493,56 @@ CREATE TABLE IF NOT EXISTS fundamentals_f10 (
     content     TEXT,
     UNIQUE(fetch_date, stock_code, category)
 );
+
+CREATE TABLE IF NOT EXISTS lockup_expiry (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    free_date        TEXT,
+    stock_code       TEXT,
+    stock_name       TEXT,
+    lift_shares      REAL,
+    lift_market_cap  REAL,
+    lift_ratio       REAL,
+    hold_num         INTEGER,
+    lift_type        TEXT,
+    UNIQUE(free_date, stock_code, lift_type)
+);
+
+CREATE TABLE IF NOT EXISTS dividend (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ex_dividend_date  TEXT,
+    stock_code        TEXT,
+    stock_name        TEXT,
+    pretax_bonus_rmb  REAL,
+    transfer_ratio    REAL,
+    bonus_ratio       REAL,
+    assign_progress   TEXT,
+    UNIQUE(ex_dividend_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS industry_ranking (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time   TEXT,
+    sector_code  TEXT,
+    sector_name  TEXT,
+    change_pct   REAL,
+    price        REAL,
+    up_count     INTEGER,
+    down_count   INTEGER,
+    lead_stock   TEXT,
+    lead_pct     REAL
+);
+CREATE INDEX IF NOT EXISTS idx_industry_ranking_time ON industry_ranking(fetch_time);
+
+CREATE TABLE IF NOT EXISTS ths_hot_stocks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time  TEXT,
+    stock_code  TEXT,
+    stock_name  TEXT,
+    reason      TEXT,
+    industry    TEXT,
+    change_pct  REAL
+);
+CREATE INDEX IF NOT EXISTS idx_ths_hot_time ON ths_hot_stocks(fetch_time);
         """)
 
 
@@ -803,6 +877,11 @@ def cleanup_old_data() -> None:
         cutoff_7d_date2 = (now - timedelta(days=7)).strftime("%Y-%m-%d")
         conn.execute("DELETE FROM fundamentals_finance WHERE fetch_date < ?", (cutoff_7d_date2,))
         conn.execute("DELETE FROM fundamentals_f10 WHERE fetch_date < ?", (cutoff_7d_date2,))
+        # lockup_expiry / dividend / industry_ranking / ths_hot_stocks: 保留 90 天
+        conn.execute("DELETE FROM lockup_expiry WHERE free_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM dividend WHERE ex_dividend_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM industry_ranking WHERE fetch_time < ?", (cutoff_30d,))
+        conn.execute("DELETE FROM ths_hot_stocks WHERE fetch_time < ?", (cutoff_7d,))
 
 
 # ── market_pulse ──────────────────────────────────────────────────────────────
@@ -1443,6 +1522,109 @@ def get_fundamentals_f10(stock_code: str, fetch_date: str = None) -> list[dict]:
             (fetch_date, stock_code),
         )
         return [{"category": r[0], "content": r[1]} for r in cur.fetchall()]
+
+
+# ── lockup_expiry ─────────────────────────────────────────────────────────────
+
+def insert_lockup_expiry(free_date, stock_code, stock_name,
+                         lift_shares, lift_market_cap, lift_ratio,
+                         hold_num, lift_type) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO lockup_expiry "
+            "(free_date,stock_code,stock_name,lift_shares,lift_market_cap,lift_ratio,hold_num,lift_type) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (free_date, stock_code, stock_name, lift_shares, lift_market_cap,
+             lift_ratio, hold_num, lift_type),
+        )
+
+
+def get_lockup_expiry(days: int = 30) -> list[dict]:
+    today = _today()
+    from datetime import timedelta
+    end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM lockup_expiry WHERE free_date >= ? AND free_date <= ? ORDER BY free_date ASC",
+            (today, end),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── dividend ──────────────────────────────────────────────────────────────────
+
+def insert_dividend(ex_dividend_date, stock_code, stock_name,
+                    pretax_bonus_rmb, transfer_ratio, bonus_ratio, assign_progress) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO dividend "
+            "(ex_dividend_date,stock_code,stock_name,pretax_bonus_rmb,transfer_ratio,bonus_ratio,assign_progress) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (ex_dividend_date, stock_code, stock_name, pretax_bonus_rmb,
+             transfer_ratio, bonus_ratio, assign_progress),
+        )
+
+
+def get_dividend_latest(limit: int = 100) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM dividend ORDER BY ex_dividend_date DESC LIMIT ?", (limit,)
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── industry_ranking ──────────────────────────────────────────────────────────
+
+def insert_industry_ranking(fetch_time, sector_code, sector_name,
+                             change_pct, price, up_count, down_count,
+                             lead_stock, lead_pct) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO industry_ranking "
+            "(fetch_time,sector_code,sector_name,change_pct,price,up_count,down_count,lead_stock,lead_pct) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (fetch_time, sector_code, sector_name, change_pct, price,
+             up_count, down_count, lead_stock, lead_pct),
+        )
+
+
+def get_industry_ranking_latest() -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT fetch_time FROM industry_ranking ORDER BY fetch_time DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM industry_ranking WHERE fetch_time=? ORDER BY change_pct DESC",
+            (row[0],),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── ths_hot_stocks ────────────────────────────────────────────────────────────
+
+def insert_ths_hot_stock(fetch_time, stock_code, stock_name, reason, industry, change_pct) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO ths_hot_stocks (fetch_time,stock_code,stock_name,reason,industry,change_pct) "
+            "VALUES (?,?,?,?,?,?)",
+            (fetch_time, stock_code, stock_name, reason, industry, change_pct),
+        )
+
+
+def get_ths_hot_stocks_latest(top_n: int = 50) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT fetch_time FROM ths_hot_stocks ORDER BY fetch_time DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM ths_hot_stocks WHERE fetch_time=? ORDER BY change_pct DESC LIMIT ?",
+            (row[0], top_n),
+        )
+        return _rows_to_dicts(cur)
 
 
 # ── Module init ───────────────────────────────────────────────────────────────

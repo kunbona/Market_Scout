@@ -46,7 +46,9 @@ function mapResearchItem(item: RawResearchItem): ResearchItem {
       : '',
     institution: item.org_name ?? '',
     rating: item.rating ?? '',
-    link: item.report_url || undefined,
+    link: item.report_url
+      ? `/api/research/pdf?url=${encodeURIComponent(item.report_url)}`
+      : undefined,
   };
 }
 

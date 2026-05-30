@@ -188,6 +188,19 @@ interface HolderCount {
   stock_code: string; stock_name: string; end_date: string;
   holder_num: number; holder_num_change: number; holder_num_ratio: number;
 }
+interface IndustryRank {
+  sector_code: string; sector_name: string;
+  change_pct: number; up_count: number; down_count: number;
+  lead_stock: string; lead_pct: number;
+}
+interface ThsHot {
+  stock_code: string; stock_name: string;
+  reason: string; industry: string; change_pct: number;
+}
+interface LockupExpiry {
+  free_date: string; stock_code: string; stock_name: string;
+  lift_shares: number; lift_market_cap: number; lift_ratio: number; lift_type: string;
+}
 
 export function MarketRealtimePage() {
   const [sf,     setSf]     = useState<SF[]>([]);
@@ -200,10 +213,13 @@ export function MarketRealtimePage() {
   const [hr,     setHr]     = useState<HR[]>([]);
   const [nb,     setNb]     = useState<NB[]>([]);
   const [xq,     setXq]     = useState<XQ[]>([]);
-  const [bigDeal,  setBigDeal]  = useState<BigDeal[]>([]);
-  const [margin,   setMargin]   = useState<Margin[]>([]);
-  const [blockTrd, setBlockTrd] = useState<BlockTrade[]>([]);
-  const [holder,   setHolder]   = useState<HolderCount[]>([]);
+  const [bigDeal,    setBigDeal]    = useState<BigDeal[]>([]);
+  const [margin,     setMargin]     = useState<Margin[]>([]);
+  const [blockTrd,   setBlockTrd]   = useState<BlockTrade[]>([]);
+  const [holder,     setHolder]     = useState<HolderCount[]>([]);
+  const [indRank,    setIndRank]    = useState<IndustryRank[]>([]);
+  const [thsHot,     setThsHot]     = useState<ThsHot[]>([]);
+  const [lockup,     setLockup]     = useState<LockupExpiry[]>([]);
 
   useEffect(() => {
     apiFetch<SF[]>('/api/sector-flow?type=industry').then(d => setSf(d ?? [])).catch(() => {});
@@ -229,15 +245,12 @@ export function MarketRealtimePage() {
   }, []);
 
   useEffect(() => {
-    Promise.allSettled([
-      apiFetch<Margin[]>('/api/margin?top_n=100'),
-      apiFetch<BlockTrade[]>('/api/block-trade?limit=100'),
-      apiFetch<HolderCount[]>('/api/holder-count?top_n=100'),
-    ]).then(([r0, r1, r2]) => {
-      if (r0.status === 'fulfilled' && r0.value) setMargin(r0.value);
-      if (r1.status === 'fulfilled' && r1.value) setBlockTrd(r1.value);
-      if (r2.status === 'fulfilled' && r2.value) setHolder(r2.value);
-    });
+    apiFetch<Margin[]>('/api/margin?top_n=100').then(d => setMargin(d ?? [])).catch(() => {});
+    apiFetch<BlockTrade[]>('/api/block-trade?limit=100').then(d => setBlockTrd(d ?? [])).catch(() => {});
+    apiFetch<HolderCount[]>('/api/holder-count?top_n=100').then(d => setHolder(d ?? [])).catch(() => {});
+    apiFetch<IndustryRank[]>('/api/industry-ranking').then(d => setIndRank(d ?? [])).catch(() => {});
+    apiFetch<ThsHot[]>('/api/ths-hot-stocks?top_n=100').then(d => setThsHot(d ?? [])).catch(() => {});
+    apiFetch<LockupExpiry[]>('/api/lockup-expiry?days=14').then(d => setLockup(d ?? [])).catch(() => {});
   }, []);
 
   // ── 汇总 KPI 计算 ────────────────────────────────────────────
@@ -669,6 +682,67 @@ export function MarketRealtimePage() {
       )}
 
       {/* 9. 股东人数变化 */}
+      {/* 10. 行业排行 & 同花顺主题热股 */}
+      {(indRank.length > 0 || thsHot.length > 0) && (
+        <div>
+          <SectionTitle>行业板块排行 & 同花顺主题热股</SectionTitle>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {indRank.length > 0 ? (
+              <Widget title="行业板块涨幅排行" dot="#3b82f6" count={indRank.length}
+                headers={['板块', '涨跌幅', '↑', '↓', '领涨股']}
+                rows={indRank.map((d, i) => [
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-gray-400 font-mono w-4 flex-shrink-0">{i + 1}</span>
+                    <span className="font-medium text-gray-800">{d.sector_name}</span>
+                  </span>,
+                  <span className={`font-mono font-bold ${numColor(d.change_pct)}`}>{fmtPct(d.change_pct)}</span>,
+                  <span className="font-mono text-red-500">{d.up_count}</span>,
+                  <span className="font-mono text-green-500">{d.down_count}</span>,
+                  <span className="text-gray-500 truncate">
+                    {d.lead_stock}{d.lead_pct ? ` ${fmtPct(d.lead_pct)}` : ''}
+                  </span>,
+                ])}
+              />
+            ) : (
+              <EmptyCard msg="行业排行数据暂无（交易时段内自动更新）" />
+            )}
+            {thsHot.length > 0 ? (
+              <Widget title="同花顺主题热股（编辑打标）" dot="#f97316" count={thsHot.length}
+                headers={['代码', '名称', '涨跌幅', '主题理由']}
+                rows={thsHot.map(d => [
+                  <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
+                  <span className="font-medium text-gray-800">{d.stock_name}</span>,
+                  <span className={`font-mono ${numColor(d.change_pct)}`}>{fmtPct(d.change_pct)}</span>,
+                  <span className="text-gray-500 truncate text-xs">{d.reason}</span>,
+                ])}
+              />
+            ) : (
+              <EmptyCard msg="同花顺热股数据暂无（交易时段内自动更新）" />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 11. 近期解禁/减持 */}
+      {lockup.length > 0 && (
+        <div>
+          <SectionTitle>近 14 天解禁 / 减持计划</SectionTitle>
+          <Widget title="解禁减持日历" dot="#ec4899" count={lockup.length}
+            headers={['解禁日', '代码', '名称', '解禁市值', '占比', '类型']}
+            rows={lockup.map(d => [
+              <span className="font-mono text-gray-500">{d.free_date?.slice(5)}</span>,
+              <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
+              <span className="font-medium text-gray-800">{d.stock_name}</span>,
+              <span className="font-mono text-gray-600">{fmtYi(d.lift_market_cap * 1e8)}</span>,
+              <span className={`font-mono ${d.lift_ratio > 5 ? 'text-red-600 font-bold' : 'text-gray-600'}`}>
+                {d.lift_ratio?.toFixed(1)}%
+              </span>,
+              <span className="text-xs text-gray-500 truncate">{d.lift_type}</span>,
+            ])}
+          />
+        </div>
+      )}
+
       {holder.length > 0 && (
         <div>
           <SectionTitle>股东人数变化（最新报告期）</SectionTitle>
