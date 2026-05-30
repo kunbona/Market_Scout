@@ -379,7 +379,7 @@ def api_lianzban_chain():
     try:
         trade_date = _computed_date()
         rows = get_lianzban_chain(trade_date)
-        return _ok(_apply_names(rows, _latest_stock_names()))
+        return _ok(rows)
     except Exception as exc:
         return _err(exc)
 
@@ -475,7 +475,7 @@ def api_volume_breakout():
         from db.storage import get_volume_breakout
         trade_date = _computed_date()
         rows = get_volume_breakout(trade_date)
-        return _ok(_apply_names(rows, _latest_stock_names()))
+        return _ok(rows)
     except Exception as exc:
         return _err(exc)
 
