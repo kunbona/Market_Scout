@@ -536,7 +536,26 @@ def _run_compute():
         ("市值分布",     compute_market_cap_dist),
         ("市场宽度",     compute_advance_decline),
     ]
+    import quant.loader as _loader
+    # 前置检查：DATA_ROOT 未配置或路径不存在时，整批标为失败并附上明确原因
+    if not _loader.DATA_ROOT:
+        _fail = [{"name": n, "ok": False, "error": "未配置 QUANT_DATA_ROOT，请在设置中填写本地数据路径"} for n, _ in tasks]
+        with _compute_lock:
+            _compute_state.update({"status": "done", "progress": _fail, "trade_date": "", "results": _fail})
+        return
+    if not _loader.DATA_ROOT.exists():
+        _fail = [{"name": n, "ok": False, "error": f"路径不存在: {_loader.DATA_ROOT}"} for n, _ in tasks]
+        with _compute_lock:
+            _compute_state.update({"status": "done", "progress": _fail, "trade_date": "", "results": _fail})
+        return
+
     td = get_latest_trade_date()
+    if not td:
+        _fail = [{"name": n, "ok": False, "error": "无法读取交易日期，请确认 factors/stock/daily/涨停相关因子.parquet 存在且有数据"} for n, _ in tasks]
+        with _compute_lock:
+            _compute_state.update({"status": "done", "progress": _fail, "trade_date": "", "results": _fail})
+        return
+
     with _compute_lock:
         _compute_state.update({"status": "running", "progress": [], "trade_date": td, "results": []})
 
