@@ -233,7 +233,6 @@ export function MarketSentimentPage() {
   const premiumPct = emotion ? (emotion.zt_yesterday_premium * 100).toFixed(2) : null;
   const premiumPositive = emotion ? emotion.zt_yesterday_premium >= 0 : null;
   const zbRatePct = emotion ? (emotion.zb_rate * 100).toFixed(1) : null;
-  const advance1to2Pct = lbStats ? Math.round(lbStats.advance_1to2 * 100) : null;
 
   const tierMax = lbStats
     ? Math.max(lbStats.tier_1, lbStats.tier_2, lbStats.tier_3, lbStats.tier_4plus, 1)
@@ -311,7 +310,6 @@ export function MarketSentimentPage() {
           icon={Zap}
           label="最高连板"
           value={emotion ? `${emotion.max_lianzban}板` : '--'}
-          sub={`1→2晋级率：${advance1to2Pct != null ? `${advance1to2Pct}%` : '--'}`}
           accent="amber"
           loading={loading}
         />
