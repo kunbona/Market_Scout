@@ -29,6 +29,7 @@ from fetcher.eastmoney import (fetch_margin, fetch_block_trade, fetch_holder_cou
                                fetch_industry_ranking, fetch_ths_hot_stocks)
 from fetcher.fundamentals import fetch_fundamentals_finance, fetch_fundamentals_f10
 from quant.daily_compute import run_daily_compute
+from fetcher.backfill import run_backfill
 
 
 def _auto_run(name: str, fn) -> None:
@@ -158,6 +159,9 @@ def start_scheduler() -> None:
     import threading
 
     def _initial_fetch():
+        # 新部署检测：zt_pool 为空时自动回填最近 7 个交易日历史数据
+        run_backfill()
+
         news_tasks = [
             ("财联社快讯",  fetch_cls),
             ("财联社红电报", fetch_cls_red),
