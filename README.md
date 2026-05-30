@@ -165,7 +165,75 @@ WSL2 内部服务 Windows 浏览器也可以直接访问：`http://localhost:200
 
 ---
 
-#### 方案三：Docker Compose（一键启动，适合不需要改代码的部署）
+#### 方案三：WSL2 运行 RSSHub + Windows 本地 Python（混合方案）
+
+适合已经有 Windows Python/conda 环境，只需要借助 WSL2 跑 Docker 来提供 RSSHub 的场景。Python 主程序仍在 Windows 侧运行，性能和调试体验与纯 Windows 一致。
+
+**第一步：在 WSL2 中启动 RSSHub**
+
+参考方案二的第一、二步安装 WSL2 和 Docker，然后在 WSL2 终端中执行：
+
+```bash
+docker run -d \
+  --name rsshub \
+  --restart unless-stopped \
+  -p 1200:1200 \
+  -e NODE_ENV=production \
+  -e CACHE_TYPE=memory \
+  diygod/rsshub
+```
+
+WSL2 的端口会自动映射到 Windows 本机，无需额外配置。
+
+**第二步：确认 Windows 侧可以访问 RSSHub**
+
+在 Windows PowerShell 或浏览器中验证：
+
+```powershell
+# PowerShell
+curl http://localhost:1200/cls/telegraph/red
+# 或直接用浏览器打开 http://localhost:1200/cls/telegraph/red
+```
+
+**第三步：在 Windows 侧配置并启动 market-radar**
+
+```powershell
+# 在 PowerShell 中执行
+cd market-radar
+
+# 安装 Python 依赖
+pip install -r requirements.txt
+
+# 配置环境变量（复制模板后编辑）
+copy .env.example .env.local
+```
+
+编辑 `.env.local`，关键配置：
+
+```
+RSSHUB_BASE_URL=http://localhost:1200
+QUANT_DATA_ROOT=C:\Users\你的用户名\Quant_Data
+FLASK_PORT=20026
+```
+
+```powershell
+# 构建前端
+cd dashboard
+npm install
+npm run build
+cd ..
+
+# 启动应用
+python server.py
+```
+
+访问 `http://localhost:20026`
+
+> **注意**：WSL2 中的 Docker 容器重启后仍然存在，但 WSL2 本身在 Windows 重启后需要重新启动。可以在 Docker Desktop 中勾选"Start Docker Desktop when you log in"让 Docker 随开机自启，从而保证 RSSHub 一直可用。
+
+---
+
+#### 方案四：Docker Compose（一键启动，适合不需要改代码的部署）
 
 需要先安装 Docker Desktop（Windows）或 Docker Engine（Linux/WSL2）。
 
