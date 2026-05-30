@@ -14,98 +14,6 @@ import type { AppSettings } from './lib/useSettings';
 
 const PAGE_SIZE_OPTIONS = [10, 20, 30, 50, 100];
 
-function DisplayPrefsCard({ settings, onUpdate }: {
-  settings: AppSettings;
-  onUpdate: (patch: Partial<AppSettings>) => void;
-}) {
-  return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
-      <h3 className="text-base font-semibold text-gray-900 mb-1">显示偏好</h3>
-      <p className="text-xs text-gray-400 mb-5">点选即自动保存到本地，刷新后生效</p>
-      <div className="space-y-5">
-
-        {/* 启动默认页面 */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-gray-700">启动默认页面</p>
-            <p className="text-xs text-gray-400 mt-0.5">打开看板时默认进入哪个模块</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {[
-              { id: 'market',   label: '📈 市场数据' },
-              { id: 'news',     label: '📰 财经快讯' },
-              { id: 'policy',   label: '📋 政策动态' },
-              { id: 'research', label: '📑 研究报告' },
-            ].map(({ id, label }) => (
-              <button
-                key={id}
-                onClick={() => onUpdate({ defaultTab: id as AppSettings['defaultTab'] })}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  settings.defaultTab === id
-                    ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
-                    : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 市场数据默认视图 */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-gray-700">市场数据默认视图</p>
-            <p className="text-xs text-gray-400 mt-0.5">进入市场数据时默认显示哪个视图</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {[
-              { id: 'realtime',  label: '🔴 实时数据' },
-              { id: 'sentiment', label: '📊 历史数据' },
-            ].map(({ id, label }) => (
-              <button
-                key={id}
-                onClick={() => onUpdate({ defaultMarketTab: id as AppSettings['defaultMarketTab'] })}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  settings.defaultMarketTab === id
-                    ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
-                    : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 列表每页条数 */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-gray-700">列表每页显示条数</p>
-            <p className="text-xs text-gray-400 mt-0.5">适用于财经快讯、政策动态</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {PAGE_SIZE_OPTIONS.map(size => (
-              <button
-                key={size}
-                onClick={() => onUpdate({ pageSize: size })}
-                className={`min-w-[40px] h-8 px-3 rounded-lg text-sm font-medium transition-all ${
-                  size === settings.pageSize
-                    ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
-                    : 'border border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                {size}
-              </button>
-            ))}
-          </div>
-        </div>
-
-      </div>
-
-    </div>
-  );
-}
 
 function SettingsPage({ settings, onUpdate }: {
   settings: AppSettings;
@@ -192,17 +100,99 @@ function SettingsPage({ settings, onUpdate }: {
 
   return (
     <>
-      <TabHeader title="⚙️ 系统设置" subtitle="配置显示偏好与数据路径，即时生效并自动保存" />
+      <TabHeader title="⚙️ 系统设置" subtitle="点击底部保存按钮统一生效" />
       <div className="space-y-6 max-w-2xl">
 
-        {/* 显示偏好（含分页） */}
-        <DisplayPrefsCard settings={settings} onUpdate={onUpdate} />
-
-        {/* 服务配置 */}
+        {/* 所有设置合并为一张卡片 */}
         <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
-          <h3 className="text-base font-semibold text-gray-900 mb-1">服务配置</h3>
-          <p className="text-xs text-gray-400 mb-5">配置后点击底部保存按钮生效；端口修改需重启服务</p>
 
+          {/* ── 显示偏好 ── */}
+          <p className="text-xs font-medium text-gray-500 mb-3">显示偏好</p>
+          <div className="space-y-5">
+
+            {/* 启动默认页面 */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-700">启动默认页面</p>
+                <p className="text-xs text-gray-400 mt-0.5">打开看板时默认进入哪个模块</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {[
+                  { id: 'market',   label: '📈 市场数据' },
+                  { id: 'news',     label: '📰 财经快讯' },
+                  { id: 'policy',   label: '📋 政策动态' },
+                  { id: 'research', label: '📑 研究报告' },
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    onClick={() => onUpdate({ defaultTab: id as AppSettings['defaultTab'] })}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      settings.defaultTab === id
+                        ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
+                        : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 市场数据默认视图 */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-700">市场数据默认视图</p>
+                <p className="text-xs text-gray-400 mt-0.5">进入市场数据时默认显示哪个视图</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {[
+                  { id: 'realtime',  label: '🔴 实时数据' },
+                  { id: 'sentiment', label: '📊 历史数据' },
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    onClick={() => onUpdate({ defaultMarketTab: id as AppSettings['defaultMarketTab'] })}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      settings.defaultMarketTab === id
+                        ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
+                        : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 列表每页条数 */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-700">列表每页显示条数</p>
+                <p className="text-xs text-gray-400 mt-0.5">适用于财经快讯、政策动态</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {PAGE_SIZE_OPTIONS.map(size => (
+                  <button
+                    key={size}
+                    onClick={() => onUpdate({ pageSize: size })}
+                    className={`min-w-[40px] h-8 px-3 rounded-lg text-sm font-medium transition-all ${
+                      size === settings.pageSize
+                        ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
+                        : 'border border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {size}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+          </div>
+
+          <hr className="border-gray-100 my-5" />
+
+          {/* ── 服务配置 ── */}
+          <p className="text-xs font-medium text-gray-500 mb-3">服务配置</p>
           <div className="space-y-4">
             {/* 本地量价数据路径 */}
             <div>
@@ -257,8 +247,9 @@ function SettingsPage({ settings, onUpdate }: {
             </div>
           </div>
 
-          <hr className="border-gray-100 my-4" />
+          <hr className="border-gray-100 my-5" />
 
+          {/* ── 服务参数 ── */}
           <p className="text-xs font-medium text-gray-500 mb-3">服务参数</p>
           <div className="space-y-4">
             {/* 仪表盘访问端口 FLASK_PORT */}
