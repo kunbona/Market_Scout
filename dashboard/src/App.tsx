@@ -18,18 +18,10 @@ function DisplayPrefsCard({ settings, onUpdate }: {
   settings: AppSettings;
   onUpdate: (patch: Partial<AppSettings>) => void;
 }) {
-  const [saved, setSaved] = useState(false);
-
-  const handleSave = () => {
-    // useSettings 已自动同步到 localStorage，这里只做视觉反馈
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
       <h3 className="text-base font-semibold text-gray-900 mb-1">显示偏好</h3>
-      <p className="text-xs text-gray-400 mb-5">页面布局与默认展示方式，刷新后生效</p>
+      <p className="text-xs text-gray-400 mb-5">点选即自动保存到本地，刷新后生效</p>
       <div className="space-y-5">
 
         {/* 启动默认页面 */}
@@ -111,18 +103,6 @@ function DisplayPrefsCard({ settings, onUpdate }: {
 
       </div>
 
-      {/* 保存按钮 */}
-      <div className="flex items-center gap-3 mt-5 pt-5 border-t border-gray-100">
-        <button
-          onClick={handleSave}
-          className="px-4 py-2 text-sm text-white bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg hover:from-blue-600 hover:to-purple-700 transition-all shadow-sm"
-        >
-          保存偏好设置
-        </button>
-        {saved && (
-          <span className="text-xs text-green-600">✓ 已保存，刷新后生效</span>
-        )}
-      </div>
     </div>
   );
 }
