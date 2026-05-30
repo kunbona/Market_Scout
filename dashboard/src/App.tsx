@@ -131,10 +131,11 @@ function SettingsPage({ settings, onUpdate }: {
   settings: AppSettings;
   onUpdate: (patch: Partial<AppSettings>) => void;
 }) {
-  const [serverConfig, setServerConfig] = useState<{ data_root: string; rsshub_url: string; flask_port: string } | null>(null);
+  const [serverConfig, setServerConfig] = useState<{ data_root: string; rsshub_url: string; flask_port: string; quant_workers: string } | null>(null);
   const [dataRootInput, setDataRootInput] = useState('');
   const [rsshubInput, setRsshubInput] = useState('');
   const [flaskPortInput, setFlaskPortInput] = useState('');
+  const [quantWorkersInput, setQuantWorkersInput] = useState('');
   const [rsshubTesting, setRsshubTesting] = useState(false);
   const [rsshubTestMsg, setRsshubTestMsg] = useState('');
 
@@ -148,6 +149,7 @@ function SettingsPage({ settings, onUpdate }: {
           setDataRootInput(j.data.data_root);
           setRsshubInput(j.data.rsshub_url);
           setFlaskPortInput(j.data.flask_port ?? '');
+          setQuantWorkersInput(j.data.quant_workers ?? '');
         }
       })
       .catch(() => {});
@@ -182,12 +184,12 @@ function SettingsPage({ settings, onUpdate }: {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flask_port: flaskPortInput }),
+        body: JSON.stringify({ flask_port: flaskPortInput, quant_workers: quantWorkersInput }),
       });
       const json = await res.json();
       if (json.success) {
-        setSavePortMsg(`✓ 已保存：${json.data.changed.join('；') || '无变化'}，重启后生效`);
-        setServerConfig(prev => prev ? { ...prev, flask_port: flaskPortInput } : prev);
+        setSavePortMsg(`✓ 已保存：${json.data.changed.join('；') || '无变化'}`);
+        setServerConfig(prev => prev ? { ...prev, flask_port: flaskPortInput, quant_workers: quantWorkersInput } : prev);
       } else {
         setSavePortMsg(`✗ ${json.error}`);
       }
@@ -252,6 +254,27 @@ function SettingsPage({ settings, onUpdate }: {
                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
               />
               <p className="text-xs text-gray-400 mt-1">用户访问仪表盘使用的端口</p>
+            </div>
+
+            {/* 计算进程数 QUANT_WORKERS */}
+            <div>
+              <label className="block text-sm text-gray-700 mb-1.5">
+                量价计算进程数
+                <span className="ml-1.5 text-xs font-mono text-gray-400">QUANT_WORKERS</span>
+                {serverConfig && (
+                  <span className="ml-2 text-xs text-gray-400 font-normal">
+                    当前：{serverConfig.quant_workers || '自动（CPU核数/2）'}
+                  </span>
+                )}
+              </label>
+              <input
+                type="text"
+                value={quantWorkersInput}
+                onChange={e => setQuantWorkersInput(e.target.value)}
+                placeholder="留空=自动，填 1=单进程"
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
+              />
+              <p className="text-xs text-gray-400 mt-1">控制读取本地 CSV 的并行进程数，填 1 使用单进程避免占满 CPU</p>
             </div>
 
           </div>

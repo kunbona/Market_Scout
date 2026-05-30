@@ -578,10 +578,12 @@ def api_config_get():
     rsshub_global = os.environ.get("RSSHUB_BASE_URL", "")
     data_root = str(loader.DATA_ROOT) if loader.DATA_ROOT else ""
     flask_port = os.environ.get("FLASK_PORT", "20026")
+    quant_workers = os.environ.get("QUANT_WORKERS", "")
     return _ok({
         "data_root": data_root,
         "rsshub_url": rsshub_global,
         "flask_port": flask_port,
+        "quant_workers": quant_workers,
     })
 
 
@@ -629,6 +631,20 @@ def api_config_set():
             changed.append(f"FLASK_PORT → {new_port}（重启后生效）")
         elif new_port:
             return _err(f"端口无效: {new_port}，需为 1024-65535 之间的数字", 400)
+
+    if "quant_workers" in body:
+        import quant.loader as loader
+        val = body["quant_workers"].strip()
+        if val == "" or val == "0":
+            os.environ.pop("QUANT_WORKERS", None)
+            env_updates["QUANT_WORKERS"] = ""
+            changed.append("QUANT_WORKERS 已清空（自动检测）")
+        elif val.isdigit() and 1 <= int(val) <= 64:
+            os.environ["QUANT_WORKERS"] = val
+            env_updates["QUANT_WORKERS"] = val
+            changed.append(f"QUANT_WORKERS → {val}")
+        else:
+            return _err(f"进程数无效: {val}，需为 1-64 之间的整数", 400)
 
     if env_updates:
         try:

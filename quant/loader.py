@@ -7,10 +7,14 @@ quant/loader.py — 本地量价数据读取工具
   不含: up_limit / down_limit（由本模块自行计算）
 
 不依赖 stg_cache / factors 目录，这些目录不保证在用户机器上存在。
+
+并发控制: QUANT_WORKERS 环境变量控制并行进程数（默认 CPU 核数的一半，最少 1）。
+  设为 1 则退化为单进程串行模式。
 """
 
 import logging
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN as _ROUND_DOWN
 from pathlib import Path
 
@@ -20,6 +24,15 @@ logger = logging.getLogger(__name__)
 
 _data_root_env = os.environ.get("QUANT_DATA_ROOT", "").strip()
 DATA_ROOT = Path(_data_root_env) if _data_root_env else None
+
+
+def _get_workers() -> int:
+    """从 QUANT_WORKERS 环境变量读取进程数，默认 CPU 核数的一半（最少 1）。"""
+    val = os.environ.get("QUANT_WORKERS", "").strip()
+    if val.isdigit() and int(val) >= 1:
+        return int(val)
+    cpu = os.cpu_count() or 2
+    return max(1, cpu // 2)
 
 # ── CSV 列名映射 ─────────────────────────────────────────────────────────────
 _TRADING_COL_MAP = {
@@ -146,38 +159,57 @@ def load_daily_range(trade_date: str, days: int = 25) -> pd.DataFrame:
 
 # ── 内部辅助 ─────────────────────────────────────────────────────────────────
 
+def _read_one_csv(args: tuple) -> "pd.DataFrame | None":
+    """子进程入口：读取单个 CSV，过滤到 trade_date <= cutoff 的 lookback 行。
+    必须是模块级函数才能被 ProcessPoolExecutor pickle。
+    """
+    csv_path, trade_date, lookback, usecols, col_map = args
+    try:
+        df = pd.read_csv(
+            csv_path,
+            encoding="GBK",
+            skiprows=1,
+            usecols=usecols,
+            dtype={"股票代码": str},
+        )
+        df = df.rename(columns=col_map)
+        df["trade_date"] = df["trade_date"].astype(str)
+        df = df[df["trade_date"] <= trade_date]
+        if df.empty:
+            return None
+        keep_dates = set(sorted(df["trade_date"].unique())[-lookback:])
+        df = df[df["trade_date"].isin(keep_dates)]
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
 def _load_window(trade_date: str, lookback: int) -> pd.DataFrame:
-    """从 stock-trading-data-pro 批量读取 lookback 天窗口数据。"""
+    """从 stock-trading-data-pro 并行读取 lookback 天窗口数据。"""
     trading_dir = DATA_ROOT / "stock-trading-data-pro" if DATA_ROOT else None
     if not trading_dir or not trading_dir.exists():
         logger.warning("[loader] stock-trading-data-pro 目录不存在: %s", trading_dir)
         return pd.DataFrame()
 
-    all_dfs = []
     csv_files = list(trading_dir.glob("*.csv"))
-    logger.info("[loader] 读取 %d 个 CSV 文件，窗口: %s 前 %d 天", len(csv_files), trade_date, lookback)
+    workers = _get_workers()
+    logger.info("[loader] 读取 %d 个 CSV，窗口: %s 前 %d 天，workers=%d",
+                len(csv_files), trade_date, lookback, workers)
 
-    for csv_path in csv_files:
-        try:
-            df_tmp = pd.read_csv(
-                csv_path,
-                encoding="GBK",
-                skiprows=1,
-                usecols=_USECOLS,
-                dtype={"股票代码": str},
-            )
-            df_tmp = df_tmp.rename(columns=_TRADING_COL_MAP)
-            df_tmp["trade_date"] = df_tmp["trade_date"].astype(str)
-            df_tmp = df_tmp[df_tmp["trade_date"] <= trade_date]
-            if df_tmp.empty:
-                continue
-            sorted_dates = sorted(df_tmp["trade_date"].unique())
-            keep_dates = set(sorted_dates[-lookback:])
-            df_tmp = df_tmp[df_tmp["trade_date"].isin(keep_dates)]
-            if not df_tmp.empty:
-                all_dfs.append(df_tmp)
-        except Exception:
-            pass
+    task_args = [(str(p), trade_date, lookback, _USECOLS, _TRADING_COL_MAP) for p in csv_files]
+
+    all_dfs = []
+    if workers == 1:
+        # 单进程模式：直接串行，避免 fork 开销
+        for args in task_args:
+            result = _read_one_csv(args)
+            if result is not None:
+                all_dfs.append(result)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as exe:
+            for result in exe.map(_read_one_csv, task_args, chunksize=64):
+                if result is not None:
+                    all_dfs.append(result)
 
     if not all_dfs:
         logger.warning("[loader] stock-trading-data-pro: %s 前无数据", trade_date)
