@@ -58,6 +58,40 @@ def _migrate(conn):
             publish_date TEXT, rating TEXT, aim_price TEXT,
             report_url TEXT UNIQUE, qtype INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    # margin / block_trade / holder_count / fundamentals
+    for tbl_sql in [
+        """CREATE TABLE IF NOT EXISTS margin (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fetch_time TEXT, trade_date TEXT,
+            stock_code TEXT, stock_name TEXT,
+            rzye REAL, rzmre REAL, rzche REAL,
+            rqye REAL, rqmcl REAL, rzrqye REAL,
+            UNIQUE(trade_date, stock_code))""",
+        """CREATE TABLE IF NOT EXISTS block_trade (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date TEXT, stock_code TEXT, stock_name TEXT,
+            deal_price REAL, close_price REAL,
+            deal_volume INTEGER, deal_amt REAL,
+            buyer_name TEXT, seller_name TEXT,
+            UNIQUE(trade_date, stock_code, deal_amt))""",
+        """CREATE TABLE IF NOT EXISTS holder_count (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            end_date TEXT, stock_code TEXT, stock_name TEXT,
+            holder_num INTEGER, holder_num_change REAL,
+            holder_num_ratio REAL, avg_free_shares REAL,
+            UNIQUE(end_date, stock_code))""",
+        """CREATE TABLE IF NOT EXISTS fundamentals_finance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fetch_date TEXT, stock_code TEXT,
+            data_json TEXT,
+            UNIQUE(fetch_date, stock_code))""",
+        """CREATE TABLE IF NOT EXISTS fundamentals_f10 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fetch_date TEXT, stock_code TEXT, category TEXT,
+            content TEXT,
+            UNIQUE(fetch_date, stock_code, category))""",
+    ]:
+        conn.execute(tbl_sql)
 
 
 def init_db():
@@ -395,6 +429,46 @@ CREATE TABLE IF NOT EXISTS big_deal (
     change_amt  REAL,
     UNIQUE(deal_time, stock_code, amount)
 );
+
+CREATE TABLE IF NOT EXISTS margin (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time TEXT, trade_date TEXT,
+    stock_code TEXT, stock_name TEXT,
+    rzye REAL, rzmre REAL, rzche REAL,
+    rqye REAL, rqmcl REAL, rzrqye REAL,
+    UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS block_trade (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date  TEXT, stock_code TEXT, stock_name TEXT,
+    deal_price  REAL, close_price REAL,
+    deal_volume INTEGER, deal_amt REAL,
+    buyer_name  TEXT, seller_name TEXT,
+    UNIQUE(trade_date, stock_code, deal_amt)
+);
+
+CREATE TABLE IF NOT EXISTS holder_count (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    end_date         TEXT, stock_code TEXT, stock_name TEXT,
+    holder_num       INTEGER, holder_num_change REAL,
+    holder_num_ratio REAL, avg_free_shares REAL,
+    UNIQUE(end_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS fundamentals_finance (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_date  TEXT, stock_code TEXT,
+    data_json   TEXT,
+    UNIQUE(fetch_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS fundamentals_f10 (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_date  TEXT, stock_code TEXT, category TEXT,
+    content     TEXT,
+    UNIQUE(fetch_date, stock_code, category)
+);
         """)
 
 
@@ -721,6 +795,14 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM northbound_flow WHERE fetch_time < ?", (cutoff_30d,))
         conn.execute("DELETE FROM xq_hot WHERE fetch_time < ?", (cutoff_7d,))
         conn.execute("DELETE FROM big_deal WHERE fetch_time < ?", (cutoff_7d,))
+        # margin / block_trade / holder_count: 保留 30 天
+        conn.execute("DELETE FROM margin WHERE trade_date < ?", (cutoff_30d_date,))
+        conn.execute("DELETE FROM block_trade WHERE trade_date < ?", (cutoff_30d_date,))
+        conn.execute("DELETE FROM holder_count WHERE end_date < ?", (cutoff_30d_date,))
+        # fundamentals: 保留最近 7 天（每日按活跃股更新）
+        cutoff_7d_date2 = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        conn.execute("DELETE FROM fundamentals_finance WHERE fetch_date < ?", (cutoff_7d_date2,))
+        conn.execute("DELETE FROM fundamentals_f10 WHERE fetch_date < ?", (cutoff_7d_date2,))
 
 
 # ── market_pulse ──────────────────────────────────────────────────────────────
@@ -1231,6 +1313,136 @@ def get_big_deal_latest(limit: int = 50) -> list[dict]:
             "SELECT * FROM big_deal ORDER BY deal_time DESC, id DESC LIMIT ?", (limit,)
         )
         return _rows_to_dicts(cur)
+
+
+# ── margin ────────────────────────────────────────────────────────────────────
+
+def insert_margin(fetch_time, trade_date, stock_code, stock_name,
+                  rzye, rzmre, rzche, rqye, rqmcl, rzrqye) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO margin "
+            "(fetch_time,trade_date,stock_code,stock_name,rzye,rzmre,rzche,rqye,rqmcl,rzrqye) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (fetch_time, trade_date, stock_code, stock_name, rzye, rzmre, rzche, rqye, rqmcl, rzrqye),
+        )
+
+
+def get_margin_latest(top_n: int = 50) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT trade_date FROM margin ORDER BY trade_date DESC LIMIT 1").fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM margin WHERE trade_date = ? ORDER BY rzye DESC LIMIT ?",
+            (row[0], top_n),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── block_trade ───────────────────────────────────────────────────────────────
+
+def insert_block_trade(trade_date, stock_code, stock_name,
+                       deal_price, close_price, deal_volume, deal_amt,
+                       buyer_name, seller_name) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO block_trade "
+            "(trade_date,stock_code,stock_name,deal_price,close_price,deal_volume,deal_amt,buyer_name,seller_name) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (trade_date, stock_code, stock_name, deal_price, close_price,
+             deal_volume, deal_amt, buyer_name, seller_name),
+        )
+
+
+def get_block_trade_latest(limit: int = 50) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT trade_date FROM block_trade ORDER BY trade_date DESC LIMIT 1").fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM block_trade WHERE trade_date = ? ORDER BY deal_amt DESC LIMIT ?",
+            (row[0], limit),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── holder_count ──────────────────────────────────────────────────────────────
+
+def insert_holder_count(end_date, stock_code, stock_name,
+                        holder_num, holder_num_change, holder_num_ratio, avg_free_shares) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO holder_count "
+            "(end_date,stock_code,stock_name,holder_num,holder_num_change,holder_num_ratio,avg_free_shares) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (end_date, stock_code, stock_name, holder_num, holder_num_change,
+             holder_num_ratio, avg_free_shares),
+        )
+
+
+def get_holder_count_latest(top_n: int = 50) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT end_date FROM holder_count ORDER BY end_date DESC LIMIT 1").fetchone()
+        if not row:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM holder_count WHERE end_date = ? ORDER BY holder_num_change ASC LIMIT ?",
+            (row[0], top_n),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── fundamentals_finance ──────────────────────────────────────────────────────
+
+def insert_fundamentals_finance(fetch_date, stock_code, data_dict) -> None:
+    import json
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO fundamentals_finance (fetch_date,stock_code,data_json) VALUES (?,?,?)",
+            (fetch_date, stock_code, json.dumps(data_dict, ensure_ascii=False, default=str)),
+        )
+
+
+def get_fundamentals_finance(fetch_date: str = None) -> list[dict]:
+    import json
+    with sqlite3.connect(DB_PATH) as conn:
+        if not fetch_date:
+            row = conn.execute("SELECT fetch_date FROM fundamentals_finance ORDER BY fetch_date DESC LIMIT 1").fetchone()
+            if not row:
+                return []
+            fetch_date = row[0]
+        cur = conn.execute(
+            "SELECT stock_code, data_json FROM fundamentals_finance WHERE fetch_date = ?", (fetch_date,)
+        )
+        return [{"stock_code": r[0], **json.loads(r[1])} for r in cur.fetchall()]
+
+
+# ── fundamentals_f10 ──────────────────────────────────────────────────────────
+
+def insert_fundamentals_f10(fetch_date, stock_code, category, content) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO fundamentals_f10 (fetch_date,stock_code,category,content) VALUES (?,?,?,?)",
+            (fetch_date, stock_code, category, content),
+        )
+
+
+def get_fundamentals_f10(stock_code: str, fetch_date: str = None) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        if not fetch_date:
+            row = conn.execute(
+                "SELECT fetch_date FROM fundamentals_f10 WHERE stock_code=? ORDER BY fetch_date DESC LIMIT 1",
+                (stock_code,),
+            ).fetchone()
+            if not row:
+                return []
+            fetch_date = row[0]
+        cur = conn.execute(
+            "SELECT category, content FROM fundamentals_f10 WHERE fetch_date=? AND stock_code=?",
+            (fetch_date, stock_code),
+        )
+        return [{"category": r[0], "content": r[1]} for r in cur.fetchall()]
 
 
 # ── Module init ───────────────────────────────────────────────────────────────

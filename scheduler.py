@@ -24,6 +24,8 @@ from db.storage import cleanup_old_data
 from fetcher.realtime_quote import fetch_realtime_snapshot
 from fetcher.concept_flow import fetch_concept_flow
 from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, fetch_xq_hot, fetch_big_deal
+from fetcher.eastmoney import fetch_margin, fetch_block_trade, fetch_holder_count
+from fetcher.fundamentals import fetch_fundamentals_finance, fetch_fundamentals_f10
 from quant.daily_compute import run_daily_compute
 
 
@@ -90,6 +92,17 @@ def _guarded_xq_hot():
 def _guarded_big_deal():
     if _in_trade_hours(): _auto_run("大单异动", fetch_big_deal)
 
+def _guarded_margin():
+    if _in_trade_hours(): _auto_run("融资融券", fetch_margin)
+
+def _guarded_block_trade():
+    if _in_trade_hours(): _auto_run("大宗交易", fetch_block_trade)
+
+def _guarded_fundamentals():
+    if _in_trade_hours():
+        _auto_run("基本面财务", fetch_fundamentals_finance)
+        _auto_run("基本面F10",  fetch_fundamentals_f10)
+
 
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
@@ -120,6 +133,11 @@ def start_scheduler() -> None:
     scheduler.add_job(_guarded_northbound,  "interval", minutes=15)
     scheduler.add_job(_guarded_xq_hot, "interval", minutes=63)
     scheduler.add_job(_guarded_big_deal, "interval", minutes=3)
+    scheduler.add_job(_guarded_margin, "interval", minutes=30)
+    scheduler.add_job(_guarded_block_trade, "interval", minutes=30)
+    # 股东人数变化频率低，每天收盘后一次即可
+    scheduler.add_job(lambda: _auto_run("股东人数", fetch_holder_count), "cron", hour=17, minute=45)
+    scheduler.add_job(_guarded_fundamentals, "interval", minutes=60)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
@@ -155,6 +173,10 @@ def start_scheduler() -> None:
                 ("北向资金",   fetch_northbound_flow),
                 ("大单异动",   fetch_big_deal),
                 ("实时行情",   fetch_realtime_snapshot),
+                ("融资融券",   fetch_margin),
+                ("大宗交易",   fetch_block_trade),
+                ("基本面财务", fetch_fundamentals_finance),
+                ("基本面F10",  fetch_fundamentals_f10),
             ]
             for name, fn in trade_tasks:
                 _auto_run(name, fn)

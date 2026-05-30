@@ -699,6 +699,64 @@ def api_big_deal():
         return _err(exc)
 
 
+@app.route("/api/margin")
+def api_margin():
+    try:
+        from db.storage import get_margin_latest
+        top_n = int(request.args.get("top_n", 50))
+        rows = get_margin_latest(top_n)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/block-trade")
+def api_block_trade():
+    try:
+        from db.storage import get_block_trade_latest
+        limit = int(request.args.get("limit", 50))
+        rows = get_block_trade_latest(limit)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/holder-count")
+def api_holder_count():
+    try:
+        from db.storage import get_holder_count_latest
+        top_n = int(request.args.get("top_n", 50))
+        rows = get_holder_count_latest(top_n)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/fundamentals/finance")
+def api_fundamentals_finance():
+    try:
+        from db.storage import get_fundamentals_finance
+        fetch_date = request.args.get("date", "").strip() or None
+        rows = get_fundamentals_finance(fetch_date)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/fundamentals/f10")
+def api_fundamentals_f10():
+    try:
+        from db.storage import get_fundamentals_f10
+        code = request.args.get("code", "").strip()
+        fetch_date = request.args.get("date", "").strip() or None
+        if not code:
+            return _err("缺少 code 参数", 400)
+        rows = get_fundamentals_f10(code, fetch_date)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------------
 # Manual fetch trigger
 # ---------------------------------------------------------------------------
@@ -728,6 +786,8 @@ def _run_fetch_all():
         )
         from fetcher.concept_flow import fetch_concept_flow
         from fetcher.realtime_quote import fetch_realtime_snapshot
+        from fetcher.eastmoney import fetch_margin, fetch_block_trade, fetch_holder_count
+        from fetcher.fundamentals import fetch_fundamentals_finance, fetch_fundamentals_f10
     except Exception as e:
         with _fetch_lock:
             _fetch_state.update({"status": "done", "results": [{"name": "导入失败", "ok": False, "error": str(e)}], "ts": _dt.now().strftime("%H:%M:%S")})
@@ -755,6 +815,11 @@ def _run_fetch_all():
         ("大单异动",          fetch_big_deal),
         ("市场实时脉冲",      fetch_realtime_snapshot),
         ("概念资金流",        fetch_concept_flow),
+        ("融资融券",          fetch_margin),
+        ("大宗交易",          fetch_block_trade),
+        ("股东人数",          fetch_holder_count),
+        ("基本面财务",        fetch_fundamentals_finance),
+        ("基本面F10",         fetch_fundamentals_f10),
     ]
 
     results = []
