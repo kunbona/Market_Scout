@@ -48,74 +48,6 @@ def _migrate(conn):
     # reason 字段已存在于建表语句，仅在确实缺失时才补充（理论上不会触发）
     if "reason" not in lhb_cols:
         conn.execute("ALTER TABLE lhb_data ADD COLUMN reason TEXT")
-    # research_report table (created fresh if not exists via init_db, but add migration for existing DBs)
-    try:
-        conn.execute("SELECT 1 FROM research_report LIMIT 1")
-    except Exception:
-        conn.execute("""CREATE TABLE IF NOT EXISTS research_report (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
-            stock_code TEXT, stock_name TEXT, org_name TEXT, researcher TEXT,
-            publish_date TEXT, rating TEXT, aim_price TEXT,
-            report_url TEXT UNIQUE, qtype INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-    # margin / block_trade / holder_count / fundamentals
-    for tbl_sql in [
-        """CREATE TABLE IF NOT EXISTS margin (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fetch_time TEXT, trade_date TEXT,
-            stock_code TEXT, stock_name TEXT,
-            rzye REAL, rzmre REAL, rzche REAL,
-            rqye REAL, rqmcl REAL, rzrqye REAL,
-            UNIQUE(trade_date, stock_code))""",
-        """CREATE TABLE IF NOT EXISTS block_trade (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trade_date TEXT, stock_code TEXT, stock_name TEXT,
-            deal_price REAL, close_price REAL,
-            deal_volume INTEGER, deal_amt REAL,
-            buyer_name TEXT, seller_name TEXT,
-            UNIQUE(trade_date, stock_code, deal_amt))""",
-        """CREATE TABLE IF NOT EXISTS holder_count (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            end_date TEXT, stock_code TEXT, stock_name TEXT,
-            holder_num INTEGER, holder_num_change REAL,
-            holder_num_ratio REAL, avg_free_shares REAL,
-            UNIQUE(end_date, stock_code))""",
-        """CREATE TABLE IF NOT EXISTS fundamentals_finance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fetch_date TEXT, stock_code TEXT,
-            data_json TEXT,
-            UNIQUE(fetch_date, stock_code))""",
-        """CREATE TABLE IF NOT EXISTS fundamentals_f10 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fetch_date TEXT, stock_code TEXT, category TEXT,
-            content TEXT,
-            UNIQUE(fetch_date, stock_code, category))""",
-    ]:
-        conn.execute(tbl_sql)
-    for tbl_sql in [
-        """CREATE TABLE IF NOT EXISTS lockup_expiry (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            free_date TEXT, stock_code TEXT, stock_name TEXT,
-            lift_shares REAL, lift_market_cap REAL, lift_ratio REAL,
-            hold_num INTEGER, lift_type TEXT,
-            UNIQUE(free_date, stock_code, lift_type))""",
-        """CREATE TABLE IF NOT EXISTS dividend (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ex_dividend_date TEXT, stock_code TEXT, stock_name TEXT,
-            pretax_bonus_rmb REAL, transfer_ratio REAL,
-            bonus_ratio REAL, assign_progress TEXT,
-            UNIQUE(ex_dividend_date, stock_code))""",
-        """CREATE TABLE IF NOT EXISTS industry_ranking (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fetch_time TEXT, sector_code TEXT, sector_name TEXT,
-            change_pct REAL, price REAL, up_count INTEGER,
-            down_count INTEGER, lead_stock TEXT, lead_pct REAL)""",
-        """CREATE TABLE IF NOT EXISTS ths_hot_stocks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fetch_time TEXT, stock_code TEXT, stock_name TEXT,
-            reason TEXT, industry TEXT, change_pct REAL)""",
-    ]:
-        conn.execute(tbl_sql)
 
 
 def init_db():
@@ -884,10 +816,9 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM block_trade WHERE trade_date < ?", (cutoff_30d_date,))
         conn.execute("DELETE FROM holder_count WHERE end_date < ?", (cutoff_30d_date,))
         # fundamentals: 保留最近 7 天（每日按活跃股更新）
-        cutoff_7d_date2 = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-        conn.execute("DELETE FROM fundamentals_finance WHERE fetch_date < ?", (cutoff_7d_date2,))
-        conn.execute("DELETE FROM fundamentals_f10 WHERE fetch_date < ?", (cutoff_7d_date2,))
-        # lockup_expiry / dividend / industry_ranking / ths_hot_stocks: 保留 90 天
+        conn.execute("DELETE FROM fundamentals_finance WHERE fetch_date < ?", (cutoff_7d_date,))
+        conn.execute("DELETE FROM fundamentals_f10 WHERE fetch_date < ?", (cutoff_7d_date,))
+        # lockup_expiry / dividend: 保留 90 天；industry_ranking: 保留 30 天；ths_hot_stocks: 保留 7 天
         conn.execute("DELETE FROM lockup_expiry WHERE free_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM dividend WHERE ex_dividend_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM industry_ranking WHERE fetch_time < ?", (cutoff_30d,))
@@ -1145,18 +1076,14 @@ def get_market_emotion_summary(trade_date: str = None) -> dict:
             row = conn.execute(
                 "SELECT * FROM market_emotion ORDER BY trade_date DESC LIMIT 1"
             ).fetchone()
-            if not row:
-                return {}
-            cols = [d[0] for d in conn.execute("SELECT * FROM market_emotion LIMIT 0").description]
-            result = dict(zip(cols, row))
         else:
             row = conn.execute(
                 "SELECT * FROM market_emotion WHERE trade_date = ?", (trade_date,)
             ).fetchone()
-            if not row:
-                return {}
-            cols = [d[0] for d in conn.execute("SELECT * FROM market_emotion LIMIT 0").description]
-            result = dict(zip(cols, row))
+        if not row:
+            return {}
+        cols = [d[0] for d in conn.execute("SELECT * FROM market_emotion LIMIT 0").description]
+        result = dict(zip(cols, row))
 
         ls = conn.execute(
             "SELECT * FROM lianzban_stats WHERE trade_date = ?", (result["trade_date"],)
@@ -1553,7 +1480,6 @@ def insert_lockup_expiry(free_date, stock_code, stock_name,
 
 def get_lockup_expiry(days: int = 30) -> list[dict]:
     today = _today()
-    from datetime import timedelta
     end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(

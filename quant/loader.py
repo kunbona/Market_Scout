@@ -10,14 +10,15 @@ quant/loader.py — 本地量价数据读取工具
 """
 
 import logging
-import os as _os
+import os
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN as _ROUND_DOWN
 from pathlib import Path
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_data_root_env = _os.environ.get("QUANT_DATA_ROOT", "").strip()
+_data_root_env = os.environ.get("QUANT_DATA_ROOT", "").strip()
 DATA_ROOT = Path(_data_root_env) if _data_root_env else None
 
 # ── CSV 列名映射 ─────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ def _normalize_code(code: str) -> str:
         return "sh" + num
     elif num.startswith(("0", "3")):
         return "sz" + num
-    elif num.startswith(("4", "8", "9", "2")):
+    elif num.startswith(("4", "8", "2")):
         return "bj" + num
     else:
         return "sh" + num
@@ -228,8 +229,6 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 def _calc_zdt_price_vectorized(df: pd.DataFrame) -> pd.DataFrame:
     """向量化计算涨跌停价格。规则与 market_essentials.cal_zdt_price 一致。"""
-    from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN as _ROUND_DOWN
-
     pre = df["pre_close"].fillna(0)
     code = df["code"].fillna("").astype(str)
     name = df["name"].fillna("").astype(str)
@@ -372,5 +371,7 @@ def get_sector_stocks(industry: str) -> list:
 
 def get_factor_slice(factor_name: str, trade_date: str) -> pd.DataFrame:
     """[已废弃] 不再依赖 factors 目录，始终返回空 DataFrame。"""
+    import warnings
+    warnings.warn("get_factor_slice is deprecated", DeprecationWarning, stacklevel=2)
     logger.warning("[loader] get_factor_slice 已废弃，请改用 load_daily_snapshot()")
     return pd.DataFrame()

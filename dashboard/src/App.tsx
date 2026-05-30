@@ -1,4 +1,3 @@
-// Pages filled by Agent B/C/D
 import { useState, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { TabHeader } from './components/TabHeader';
@@ -402,8 +401,6 @@ export default function App() {
         return <div>TODO: AI Analysis Page</div>;
       case 'settings':
         return <SettingsPage settings={settings} onUpdate={updateSettings} />;
-      default:
-        return <div>TODO</div>;
     }
   };
 

@@ -6,6 +6,7 @@ interface ControlBarProps {
   lastUpdate?: string;
 }
 
+
 interface TaskResult {
   name: string;
   ok: boolean;
@@ -143,16 +144,6 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
     <div className="mb-6 space-y-3">
       {/* 按钮行 */}
       <div className="flex items-center gap-3">
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            刷新数据
-          </button>
-        )}
-
         <button
           onClick={handleCompute}
           disabled={computing}

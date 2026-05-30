@@ -33,8 +33,10 @@ from flask_cors import CORS
 sys.path.insert(0, os.path.dirname(__file__))
 from db.storage import (
     get_cls_news_by_source,
+    count_cls_news_by_source,
     get_policy_news_by_source,
     get_policy_news,
+    count_policy_news_by_source,
     get_sector_flow_latest,
     get_lhb_data,
     get_zt_pool,
@@ -53,6 +55,22 @@ from db.storage import (
     get_xq_hot_latest,
     get_concept_flow_latest,
     get_agent_summary_latest,
+    get_sector_flow_accel,
+    get_volume_breakout,
+    get_turnover_stats,
+    get_market_cap_dist,
+    get_advance_decline,
+    get_big_deal_latest,
+    get_margin_latest,
+    get_block_trade_latest,
+    get_holder_count_latest,
+    get_fundamentals_finance,
+    get_fundamentals_f10,
+    get_lockup_expiry,
+    get_dividend_latest,
+    get_industry_ranking_latest,
+    get_ths_hot_stocks_latest,
+    get_latest_emotion_date,
 )
 
 DIST = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
@@ -115,56 +133,10 @@ def _date_or_none(key: str = "date") -> str | None:
     return val if val else None
 
 
-def _latest_stock_names() -> dict:
-    """从本地各 pool 表的最新日期取 stock_code→stock_name 映射。"""
-    import sqlite3
-    from db.storage import DB_PATH
-    name_map = {}
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            for tbl in ('zt_pool', 'strong_pool', 'zbgc_pool'):
-                try:
-                    for code, name in conn.execute(
-                        f"SELECT stock_code, stock_name FROM {tbl} "
-                        f"WHERE trade_date = (SELECT MAX(trade_date) FROM {tbl})"
-                    ).fetchall():
-                        if code and name:
-                            clean = code.upper().replace('SZ', '').replace('SH', '')
-                            name_map[clean] = name
-                            name_map[code] = name
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return name_map
-
-
-def _apply_names(rows: list, name_map: dict) -> list:
-    """用最新 name_map 覆盖 rows 中的 stock_name 字段。"""
-    if not name_map or not rows:
-        return rows
-    for row in rows:
-        code = row.get('stock_code', '')
-        if not code:
-            continue
-        clean = code.upper().replace('SZ', '').replace('SH', '')
-        new_name = name_map.get(clean) or name_map.get(code)
-        if new_name:
-            row['stock_name'] = new_name
-    return rows
-
-
-def _latest_computed_date() -> str:
-    """返回本地已计算数据的最新交易日（从 market_emotion 表推断）。
-    这些 storage 函数不支持 None 自动回落，需在 API 层统一处理。"""
-    from db.storage import get_latest_emotion_date
-    return get_latest_emotion_date() or _today()
-
-
 def _computed_date(key: str = "date") -> str:
     """用于历史计算型接口：有参数用参数，无参数回落到最新已计算日期。"""
     val = request.args.get(key, "").strip()
-    return val if val else _latest_computed_date()
+    return val if val else (get_latest_emotion_date() or _today())
 
 
 def _save_env_local(updates: dict) -> None:
@@ -205,7 +177,6 @@ def _save_env_local(updates: dict) -> None:
 @app.route("/api/news")
 def api_news():
     try:
-        from db.storage import count_cls_news_by_source
         source    = request.args.get("source", "财联社")
         page_size = int(request.args.get("page_size", 30))
         page      = int(request.args.get("page", 1))
@@ -220,7 +191,6 @@ def api_news():
 @app.route("/api/policy")
 def api_policy():
     try:
-        from db.storage import count_policy_news_by_source
         source    = request.args.get("source", "全部")
         page_size = int(request.args.get("page_size", 30))
         page      = int(request.args.get("page", 1))
@@ -462,7 +432,6 @@ def api_ai_summary():
 @app.route("/api/sector-flow-accel")
 def api_sector_flow_accel():
     try:
-        from db.storage import get_sector_flow_accel
         trade_date = _computed_date()
         rows = get_sector_flow_accel(trade_date)
         return _ok(rows)
@@ -472,7 +441,6 @@ def api_sector_flow_accel():
 @app.route("/api/volume-breakout")
 def api_volume_breakout():
     try:
-        from db.storage import get_volume_breakout
         trade_date = _computed_date()
         rows = get_volume_breakout(trade_date)
         return _ok(rows)
@@ -482,7 +450,6 @@ def api_volume_breakout():
 @app.route("/api/turnover-stats")
 def api_turnover_stats():
     try:
-        from db.storage import get_turnover_stats
         trade_date = _computed_date()
         data = get_turnover_stats(trade_date)
         return _ok(data)
@@ -492,7 +459,6 @@ def api_turnover_stats():
 @app.route("/api/market-cap-dist")
 def api_market_cap_dist():
     try:
-        from db.storage import get_market_cap_dist
         trade_date = _computed_date()
         data = get_market_cap_dist(trade_date)
         return _ok(data)
@@ -502,7 +468,6 @@ def api_market_cap_dist():
 @app.route("/api/advance-decline")
 def api_advance_decline():
     try:
-        from db.storage import get_advance_decline
         trade_date = _computed_date()
         data = get_advance_decline(trade_date)
         return _ok(data)
@@ -717,7 +682,6 @@ def api_test_rsshub():
 @app.route("/api/big-deal")
 def api_big_deal():
     try:
-        from db.storage import get_big_deal_latest
         limit = int(request.args.get("limit", 50))
         rows = get_big_deal_latest(limit)
         return _ok(rows)
@@ -728,7 +692,6 @@ def api_big_deal():
 @app.route("/api/margin")
 def api_margin():
     try:
-        from db.storage import get_margin_latest
         top_n = int(request.args.get("top_n", 50))
         rows = get_margin_latest(top_n)
         return _ok(rows)
@@ -739,7 +702,6 @@ def api_margin():
 @app.route("/api/block-trade")
 def api_block_trade():
     try:
-        from db.storage import get_block_trade_latest
         limit = int(request.args.get("limit", 50))
         rows = get_block_trade_latest(limit)
         return _ok(rows)
@@ -750,7 +712,6 @@ def api_block_trade():
 @app.route("/api/holder-count")
 def api_holder_count():
     try:
-        from db.storage import get_holder_count_latest
         top_n = int(request.args.get("top_n", 50))
         rows = get_holder_count_latest(top_n)
         return _ok(rows)
@@ -761,7 +722,6 @@ def api_holder_count():
 @app.route("/api/fundamentals/finance")
 def api_fundamentals_finance():
     try:
-        from db.storage import get_fundamentals_finance
         fetch_date = request.args.get("date", "").strip() or None
         rows = get_fundamentals_finance(fetch_date)
         return _ok(rows)
@@ -772,7 +732,6 @@ def api_fundamentals_finance():
 @app.route("/api/fundamentals/f10")
 def api_fundamentals_f10():
     try:
-        from db.storage import get_fundamentals_f10
         code = request.args.get("code", "").strip()
         fetch_date = request.args.get("date", "").strip() or None
         if not code:
@@ -786,7 +745,6 @@ def api_fundamentals_f10():
 @app.route("/api/lockup-expiry")
 def api_lockup_expiry():
     try:
-        from db.storage import get_lockup_expiry
         days = int(request.args.get("days", 30))
         rows = get_lockup_expiry(days)
         return _ok(rows)
@@ -797,7 +755,6 @@ def api_lockup_expiry():
 @app.route("/api/dividend")
 def api_dividend():
     try:
-        from db.storage import get_dividend_latest
         limit = int(request.args.get("limit", 100))
         rows = get_dividend_latest(limit)
         return _ok(rows)
@@ -808,7 +765,6 @@ def api_dividend():
 @app.route("/api/industry-ranking")
 def api_industry_ranking():
     try:
-        from db.storage import get_industry_ranking_latest
         rows = get_industry_ranking_latest()
         return _ok(rows)
     except Exception as exc:
@@ -818,7 +774,6 @@ def api_industry_ranking():
 @app.route("/api/ths-hot-stocks")
 def api_ths_hot_stocks():
     try:
-        from db.storage import get_ths_hot_stocks_latest
         top_n = int(request.args.get("top_n", 50))
         rows = get_ths_hot_stocks_latest(top_n)
         return _ok(rows)
@@ -877,6 +832,7 @@ def _run_fetch_all():
         from fetcher.policy_rss import fetch as fetch_policy
         from fetcher.sector_heat import (
             fetch_zt_pool, fetch_dt_pool, fetch_zbgc_pool, fetch_strong_pool,
+            fetch_concept_heat,
         )
         from fetcher.eastmoney import fetch_sector_flow, fetch_lhb
         from fetcher.market_sentiment import (
@@ -909,6 +865,7 @@ def _run_fetch_all():
         ("跌停池",            fetch_dt_pool),
         ("炸板池",            fetch_zbgc_pool),
         ("强势股",            fetch_strong_pool),
+        ("概念热度",          fetch_concept_heat),
         ("龙虎榜",            fetch_lhb),
         ("北向资金",          fetch_northbound_flow),
         ("人气飙升",          fetch_hot_rank_up),
@@ -976,7 +933,7 @@ def _serve(port: int) -> None:
                 use_reloader=False, threaded=True)
 
 
-def start_flask(port: int = 20027):
+def start_flask(port: int = 20026):
     """在后台线程启动 WSGI 服务器。"""
     import threading
     t = threading.Thread(target=lambda: _serve(port), daemon=True, name="flask-api")

@@ -14,37 +14,12 @@ trade_date 为 None 时，调用 loader.get_latest_trade_date() 自动获取。
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from quant.loader import DATA_ROOT, load_daily_snapshot, load_daily_range, get_latest_trade_date
 
 logger = logging.getLogger(__name__)
-
-
-# ── 辅助：前一交易日 ─────────────────────────────────────────────────────────────
-
-def _prev_trade_date(trade_date: str) -> str:
-    """
-    获取 trade_date 的前一个交易日。
-    从 stg_cache parquet 的日期列表推断；失败时返回空字符串。
-    """
-    try:
-        from quant.loader import _PREPROC_PARQUET
-        if _PREPROC_PARQUET and _PREPROC_PARQUET.exists():
-            df = pd.read_parquet(_PREPROC_PARQUET, columns=["trade_date"])
-            dates = sorted(df["trade_date"].astype(str).unique())
-        else:
-            # 回退：从 load_daily_range 推断
-            df_range = load_daily_range(trade_date, days=5)
-            if df_range.empty:
-                return ""
-            dates = sorted(df_range["trade_date"].unique())
-
-        idx = dates.index(trade_date) if trade_date in dates else -1
-        return dates[idx - 1] if idx > 0 else ""
-    except Exception as e:
-        logger.warning("[daily_compute] _prev_trade_date 失败: %s", e)
-        return ""
 
 
 # ── 任务1：市场情绪日度指标 ───────────────────────────────────────────────────
@@ -66,14 +41,17 @@ def compute_market_emotion(trade_date: str) -> None:
     zt_total = int(df["is_zt"].sum())
     zb_total = int(df["is_zb"].sum())
     dt_total = int(df["is_dt"].sum())
-    max_lianzban = int(df["lianzban_cnt"].max()) if not df.empty else 0
+    max_lianzban = int(df["lianzban_cnt"].max())
     # 非一字涨停：涨停且开盘价 < 涨停价（开盘即一字板的不算）
     real_zt = int(((df["is_zt"] == 1) & (df["open"] < df["up_limit"])).sum())
 
     # 昨日涨停今日溢价
     zt_yesterday_premium = None
     try:
-        prev_date = _prev_trade_date(trade_date)
+        _dr = load_daily_range(trade_date, days=5)
+        _dates = sorted(_dr["trade_date"].unique()) if not _dr.empty else []
+        _idx = _dates.index(trade_date) if trade_date in _dates else -1
+        prev_date = _dates[_idx - 1] if _idx > 0 else ""
         if prev_date:
             # 取含前日的两天数据
             df_range = load_daily_range(trade_date, days=3)
@@ -417,7 +395,10 @@ def compute_lianzban_stats(trade_date: str) -> None:
         tier_4plus = int((lb_today["lianzban_cnt"] >= 4).sum())
 
         advance_1to2 = advance_2to3 = advance_3to4 = 0.0
-        prev_date = _prev_trade_date(trade_date)
+        _dr2 = load_daily_range(trade_date, days=5)
+        _dates2 = sorted(_dr2["trade_date"].unique()) if not _dr2.empty else []
+        _idx2 = _dates2.index(trade_date) if trade_date in _dates2 else -1
+        prev_date = _dates2[_idx2 - 1] if _idx2 > 0 else ""
         if prev_date:
             # 用 load_daily_range 取两天，其中含 prev_date 的快照
             df_range = load_daily_range(trade_date, days=3)
@@ -594,7 +575,6 @@ def compute_turnover_stats(trade_date: str) -> None:
     """
     try:
         from db.storage import upsert_turnover_stats
-        import numpy as np
 
         df = load_daily_snapshot(trade_date)
         if df.empty:

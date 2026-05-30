@@ -1,4 +1,3 @@
-// v2
 import { useState, useEffect } from 'react';
 import { TrendingUp, TrendingDown, Zap, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
@@ -57,13 +56,17 @@ const fmtPct = (v: number | null | undefined, scale = 100) =>
 const fmtNum = (v: number | null | undefined, digits = 2, suffix = '') =>
   v != null ? `${v.toFixed(digits)}${suffix}` : '--';
 
-// ─── API ─────────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const BASE = '';
+// 空对象 {} 视为无数据，统一转 null，避免字段访问得到 undefined
+const nonEmpty = (v: any) =>
+  v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0 ? v : null;
+
+// ─── API ─────────────────────────────────────────────────────────────────────
 
 async function safeApiFetch<T>(path: string): Promise<T | null> {
   try {
-    const res = await fetch(`${BASE}${path}`);
+    const res = await fetch(path);
     const json = await res.json();
     if (!json.success) return null;
     return json.data as T;
@@ -203,8 +206,6 @@ export function MarketSentimentPage() {
       safeApiFetch<any[]>('/api/volume-breakout'),
       safeApiFetch<LianzbanStats[]>('/api/lianzban-stats?days=30'),
     ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb]) => {
-      // 空对象 {} 视为无数据，统一转 null，避免字段访问得到 undefined
-      const nonEmpty = (v: any) => (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0 ? v : null);
       if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
       if (s.status === 'fulfilled') {
         const raw = s.value ?? [];
@@ -277,18 +278,27 @@ export function MarketSentimentPage() {
 
       {/* ── Row 1: 关键指标卡片 ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard
-          icon={TrendingUp}
-          label="涨停 / 跌停"
-          value={
-            emotion
-              ? `${emotion.zt_total} / ${emotion.dt_total}`
-              : '--'
-          }
-          sub={`非一字涨停：${fmt(emotion?.real_zt)}只`}
-          accent="red"
-          loading={loading}
-        />
+        {/* 涨停/跌停：分色显示 */}
+        <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-500 font-medium">涨停 / 跌停</span>
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-red-50 text-red-500">
+              <TrendingUp className="w-3.5 h-3.5" />
+            </div>
+          </div>
+          {loading ? (
+            <div className="h-7 bg-gray-100 rounded animate-pulse w-2/3" />
+          ) : (
+            <div className="text-2xl font-semibold tracking-tight">
+              <span className="text-red-600">{emotion ? emotion.zt_total : '--'}</span>
+              <span className="text-gray-400 mx-1">/</span>
+              <span className="text-emerald-600">{emotion ? emotion.dt_total : '--'}</span>
+            </div>
+          )}
+          <div className="text-xs text-gray-500 leading-snug">
+            {loading ? <span className="text-gray-300">…</span> : `非一字涨停：${fmt(emotion?.real_zt)}只`}
+          </div>
+        </div>
         <StatCard
           icon={premiumPositive === false ? ArrowDownRight : ArrowUpRight}
           label="昨日涨停溢价"
@@ -417,12 +427,12 @@ export function MarketSentimentPage() {
             <span className="text-xs text-gray-400 font-normal ml-2">中位 {toStats?.median_to?.toFixed(1) ?? '--'}%</span>
           </h3>
           {loading ? <div className="text-sm text-gray-400">--</div> : toStats ? (
-            [['低(&lt;5%)', toStats.low_count, '#22c55e'], ['中(5-20%)', toStats.mid_count, '#f59e0b'], ['高(≥20%)', toStats.high_count, '#ef4444']].map(([label, count, color], i) => {
+            [['低(<5%)', toStats.low_count, '#22c55e'], ['中(5-20%)', toStats.mid_count, '#f59e0b'], ['高(≥20%)', toStats.high_count, '#ef4444']].map(([label, count, color], i) => {
               const total = (toStats.low_count||0) + (toStats.mid_count||0) + (toStats.high_count||0);
               const pct = total > 0 ? (count as number) / total * 100 : 0;
               return (
                 <div key={i} className="flex items-center gap-3 py-1.5">
-                  <span className="text-xs text-gray-500 w-20" dangerouslySetInnerHTML={{__html: label as string}} />
+                  <span className="text-xs text-gray-500 w-20">{label as string}</span>
                   <div className="flex-1 bg-gray-100 rounded-full h-1.5">
                     <div className="h-1.5 rounded-full transition-all" style={{width:`${pct}%`, background: color as string}} />
                   </div>
@@ -571,9 +581,9 @@ export function MarketSentimentPage() {
         <h3 className="text-sm text-gray-900 mb-4 font-medium">涨停市值分布</h3>
         {loading ? <div className="text-sm text-gray-400">--</div> : mcData ? (
           <div className="grid grid-cols-3 gap-3">
-            {([['&lt;50亿', mcData.small_count, mcData.small_pct, '#ef4444'], ['50-300亿', mcData.mid_count, mcData.mid_pct, '#f97316'], ['≥300亿', mcData.large_count, mcData.large_pct, '#3b82f6']] as [string,number,number,string][]).map(([label,count,pct,color],i) => (
+            {([['<50亿', mcData.small_count, mcData.small_pct, '#ef4444'], ['50-300亿', mcData.mid_count, mcData.mid_pct, '#f97316'], ['≥300亿', mcData.large_count, mcData.large_pct, '#3b82f6']] as [string,number,number,string][]).map(([label,count,pct,color],i) => (
               <div key={i} className="text-center p-3 border border-gray-100 rounded-lg">
-                <div className="text-xs text-gray-400 mb-1" dangerouslySetInnerHTML={{__html:label}} />
+                <div className="text-xs text-gray-400 mb-1">{label}</div>
                 <div className="text-xl font-bold" style={{color}}>{count ?? '--'}</div>
                 <div className="text-xs text-gray-400">{pct != null ? `${(pct*100).toFixed(0)}%` : '--'}</div>
               </div>
@@ -590,7 +600,7 @@ export function MarketSentimentPage() {
           </div>
           <div className="p-4 space-y-1">
             {loading ? <div className="text-sm text-gray-400">--</div> : sfaData.length > 0 ? sfaData.slice(0,10).map((r,i) => {
-              const col = (r.acceleration??0) >= 1.5 ? '#16a34a' : (r.acceleration??0) >= 1.0 ? '#f59e0b' : '#ef4444';
+              const col = (r.acceleration??0) >= 1.5 ? '#ef4444' : (r.acceleration??0) >= 1.0 ? '#f59e0b' : '#16a34a';
               return (
                 <div key={i} className="flex items-center justify-between py-1.5 hover:bg-gray-50 rounded px-2">
                   <span className="text-sm text-gray-900">{r.industry}</span>

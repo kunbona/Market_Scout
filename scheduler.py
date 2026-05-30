@@ -1,4 +1,5 @@
 import atexit
+import os
 from datetime import datetime
 from datetime import time
 from pathlib import Path
@@ -9,7 +10,7 @@ if _env_file.exists():
     for _line in _env_file.read_text().splitlines():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _v = _line.split("=", 1)
-            import os; os.environ.setdefault(_k.strip(), _v.strip())
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
@@ -59,58 +60,16 @@ def _in_trade_hours() -> bool:
     return time(9, 15) <= now <= time(15, 5)
 
 
-def _guarded_sector_flow():
-    if _in_trade_hours(): _auto_run("行业资金流", fetch_sector_flow)
+def _guarded(name: str, fn) -> None:
+    """仅在交易时段内执行 fn，否则跳过。"""
+    if _in_trade_hours():
+        _auto_run(name, fn)
 
-def _guarded_zt_pool():
-    if _in_trade_hours(): _auto_run("涨停池", fetch_zt_pool)
-
-def _guarded_dt_pool():
-    if _in_trade_hours(): _auto_run("跌停池", fetch_dt_pool)
-
-def _guarded_concept_heat():
-    if _in_trade_hours(): _auto_run("概念热度", fetch_concept_heat)
-
-def _guarded_realtime_quote():
-    if _in_trade_hours(): _auto_run("实时行情", fetch_realtime_snapshot)
-
-def _guarded_concept_flow():
-    if _in_trade_hours(): _auto_run("概念资金流", fetch_concept_flow)
-
-def _guarded_zbgc_pool():
-    if _in_trade_hours(): _auto_run("炸板池", fetch_zbgc_pool)
-
-def _guarded_strong_pool():
-    if _in_trade_hours(): _auto_run("强势股", fetch_strong_pool)
-
-def _guarded_hot_rank_up():
-    if _in_trade_hours(): _auto_run("人气飙升", fetch_hot_rank_up)
-
-def _guarded_northbound():
-    if _in_trade_hours(): _auto_run("北向资金", fetch_northbound_flow)
-
-def _guarded_xq_hot():
-    _auto_run("雪球热度", fetch_xq_hot)
-
-def _guarded_big_deal():
-    if _in_trade_hours(): _auto_run("大单异动", fetch_big_deal)
-
-def _guarded_margin():
-    if _in_trade_hours(): _auto_run("融资融券", fetch_margin)
-
-def _guarded_block_trade():
-    if _in_trade_hours(): _auto_run("大宗交易", fetch_block_trade)
 
 def _guarded_fundamentals():
     if _in_trade_hours():
         _auto_run("基本面财务", fetch_fundamentals_finance)
         _auto_run("基本面F10",  fetch_fundamentals_f10)
-
-def _guarded_industry_ranking():
-    if _in_trade_hours(): _auto_run("行业排行", fetch_industry_ranking)
-
-def _guarded_ths_hot():
-    if _in_trade_hours(): _auto_run("同花顺主题热股", fetch_ths_hot_stocks)
 
 
 def start_scheduler() -> None:
@@ -127,28 +86,28 @@ def start_scheduler() -> None:
     scheduler.add_job(lambda: _auto_run("政策 RSS",    fetch_policy),      "interval", minutes=30)
     scheduler.add_job(lambda: _auto_run("巨潮公告",    fetch_cninfo),      "interval", minutes=30)
     scheduler.add_job(lambda: _auto_run("研究报告",    fetch_research),    "interval", minutes=30)
-    scheduler.add_job(_guarded_sector_flow, "interval", minutes=15)
+    scheduler.add_job(lambda: _guarded("行业资金流", fetch_sector_flow),      "interval", minutes=15)
     scheduler.add_job(fetch_lhb, "cron", hour=17, minute=30)
-    scheduler.add_job(_guarded_zt_pool, "interval", minutes=5)
-    scheduler.add_job(_guarded_dt_pool, "interval", minutes=5)
-    scheduler.add_job(_guarded_concept_heat, "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("涨停池",     fetch_zt_pool),          "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("跌停池",     fetch_dt_pool),          "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("概念热度",   fetch_concept_heat),     "interval", minutes=5)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=0)
-    scheduler.add_job(_guarded_realtime_quote, "interval", seconds=30)
-    scheduler.add_job(_guarded_concept_flow, "interval", minutes=15)
+    scheduler.add_job(lambda: _guarded("实时行情",   fetch_realtime_snapshot),"interval", seconds=30)
+    scheduler.add_job(lambda: _guarded("概念资金流", fetch_concept_flow),     "interval", minutes=15)
     scheduler.add_job(run_daily_compute, "cron", hour=9, minute=0)
-    scheduler.add_job(_guarded_zbgc_pool, "interval", minutes=5)
-    scheduler.add_job(_guarded_strong_pool, "interval", minutes=15)
-    scheduler.add_job(_guarded_hot_rank_up, "interval", minutes=30)
-    scheduler.add_job(_guarded_northbound,  "interval", minutes=15)
-    scheduler.add_job(_guarded_xq_hot, "interval", minutes=63)
-    scheduler.add_job(_guarded_big_deal, "interval", minutes=3)
-    scheduler.add_job(_guarded_margin, "interval", minutes=30)
-    scheduler.add_job(_guarded_block_trade, "interval", minutes=30)
+    scheduler.add_job(lambda: _guarded("炸板池",     fetch_zbgc_pool),        "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("强势股",     fetch_strong_pool),      "interval", minutes=15)
+    scheduler.add_job(lambda: _guarded("人气飙升",   fetch_hot_rank_up),      "interval", minutes=30)
+    scheduler.add_job(lambda: _guarded("北向资金",   fetch_northbound_flow),  "interval", minutes=15)
+    scheduler.add_job(lambda: _auto_run("雪球热度",  fetch_xq_hot),           "interval", minutes=63)
+    scheduler.add_job(lambda: _guarded("大单异动",   fetch_big_deal),         "interval", minutes=3)
+    scheduler.add_job(lambda: _guarded("融资融券",   fetch_margin),           "interval", minutes=30)
+    scheduler.add_job(lambda: _guarded("大宗交易",   fetch_block_trade),      "interval", minutes=30)
     # 股东人数变化频率低，每天收盘后一次即可
     scheduler.add_job(lambda: _auto_run("股东人数", fetch_holder_count), "cron", hour=17, minute=45)
     scheduler.add_job(_guarded_fundamentals, "interval", minutes=60)
-    scheduler.add_job(_guarded_industry_ranking, "interval", minutes=5)
-    scheduler.add_job(_guarded_ths_hot, "interval", minutes=30)
+    scheduler.add_job(lambda: _guarded("行业排行",   fetch_industry_ranking), "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("同花顺主题热股", fetch_ths_hot_stocks),"interval", minutes=30)
     # 解禁/减持和分红历史变动慢，每天早上更新一次
     scheduler.add_job(lambda: _auto_run("解禁减持", fetch_lockup_expiry), "cron", hour=9, minute=10)
     scheduler.add_job(lambda: _auto_run("分红历史", fetch_dividend_history), "cron", hour=9, minute=12)
@@ -192,6 +151,7 @@ def start_scheduler() -> None:
                 ("实时行情",   fetch_realtime_snapshot),
                 ("融资融券",   fetch_margin),
                 ("大宗交易",   fetch_block_trade),
+                ("股东人数",   fetch_holder_count),
                 ("基本面财务", fetch_fundamentals_finance),
                 ("基本面F10",  fetch_fundamentals_f10),
                 ("行业排行",   fetch_industry_ranking),
