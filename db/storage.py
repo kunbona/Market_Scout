@@ -238,7 +238,8 @@ CREATE TABLE IF NOT EXISTS market_emotion (
     zb_total             INTEGER,
     max_lianzban         INTEGER,
     zt_yesterday_premium REAL,
-    zb_rate              REAL
+    zb_rate              REAL,
+    real_zt              INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sector_zt_density (
@@ -911,13 +912,18 @@ def get_market_pulse_latest(n: int = 60) -> list[dict]:
 # ── market_emotion ────────────────────────────────────────────────────────────
 
 def upsert_market_emotion(trade_date: str, zt_total: int, dt_total: int, zb_total: int,
-                          max_lianzban: int, zt_yesterday_premium: float, zb_rate: float) -> None:
+                          max_lianzban: int, zt_yesterday_premium: float, zb_rate: float,
+                          real_zt: int = None) -> None:
     with sqlite3.connect(DB_PATH) as conn:
+        try:
+            conn.execute("ALTER TABLE market_emotion ADD COLUMN real_zt INTEGER")
+        except Exception:
+            pass  # 列已存在则忽略
         conn.execute(
             "INSERT OR REPLACE INTO market_emotion "
-            "(trade_date, zt_total, dt_total, zb_total, max_lianzban, zt_yesterday_premium, zb_rate) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (trade_date, zt_total, dt_total, zb_total, max_lianzban, zt_yesterday_premium, zb_rate),
+            "(trade_date, zt_total, dt_total, zb_total, max_lianzban, zt_yesterday_premium, zb_rate, real_zt) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (trade_date, zt_total, dt_total, zb_total, max_lianzban, zt_yesterday_premium, zb_rate, real_zt),
         )
 
 
@@ -1153,17 +1159,6 @@ def get_market_emotion_summary(trade_date: str = None) -> dict:
         if ls:
             ls_cols = [d[0] for d in conn.execute("SELECT * FROM lianzban_stats LIMIT 0").description]
             result.update(dict(zip(ls_cols, ls)))
-
-        # 非一字涨停数：从 zt_pool 按日期统计 first_zt_time >= '092500' 的条数
-        # 集合竞价封板（< 092500）视为一字板，其余为非一字
-        try:
-            non_yizi = conn.execute(
-                "SELECT COUNT(*) FROM zt_pool WHERE trade_date = ? AND first_zt_time >= '092500'",
-                (result["trade_date"],)
-            ).fetchone()[0]
-            result["real_zt"] = non_yizi
-        except Exception:
-            pass
 
         return result
 

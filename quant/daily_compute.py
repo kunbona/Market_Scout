@@ -67,6 +67,8 @@ def compute_market_emotion(trade_date: str) -> None:
     zb_total = int(df["is_zb"].sum())
     dt_total = int(df["is_dt"].sum())
     max_lianzban = int(df["lianzban_cnt"].max()) if not df.empty else 0
+    # 非一字涨停：涨停且开盘价 < 涨停价（开盘即一字板的不算）
+    real_zt = int(((df["is_zt"] == 1) & (df["open"] < df["up_limit"])).sum())
 
     # 昨日涨停今日溢价
     zt_yesterday_premium = None
@@ -92,10 +94,11 @@ def compute_market_emotion(trade_date: str) -> None:
     upsert_market_emotion(
         trade_date, zt_total, dt_total, zb_total,
         max_lianzban, zt_yesterday_premium, zb_rate,
+        real_zt=real_zt,
     )
     logger.info(
-        "[daily_compute] market_emotion %s: zt=%d zb=%d dt=%d max_lb=%d zb_rate=%.3f",
-        trade_date, zt_total, zb_total, dt_total, max_lianzban, zb_rate,
+        "[daily_compute] market_emotion %s: zt=%d zb=%d dt=%d max_lb=%d zb_rate=%.3f real_zt=%d",
+        trade_date, zt_total, zb_total, dt_total, max_lianzban, zb_rate, real_zt,
     )
 
 
