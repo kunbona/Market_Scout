@@ -1,16 +1,16 @@
 # Market Radar
 
-A 股财经信息聚合仪表盘，基于 Streamlit 构建，实时整合多源财经快讯、政策动态、市场数据与研究报告。
+A 股财经信息聚合仪表盘，React 前端 + Flask 后端，实时整合多源财经快讯、政策动态、市场数据与研究报告。
 
 ---
 
 ## 功能概览
 
-- **财经快讯**：财联社、金十数据、格隆汇、东方财富、同花顺、第一财经、华尔街见闻，7 路来源实时聚合，三列布局
+- **财经快讯**：财联社电报（含红电报）、金十数据、格隆汇、东方财富、同花顺、第一财经、华尔街见闻，7 路来源聚合
 - **政策动态**：发改委、证监会、上交所、深交所、财新、巨潮公告，多源 RSS + 结构化抓取
-- **市场数据**：实时行情区（涨停/跌停/炸板/强势股池、行业/概念资金流、龙虎榜、人气飙升、北向资金、雪球热度）+ 情绪分析区（本地日线指标：KPI 8 卡、连板梯队、行业密度、换手分层、市值分布、连板链条、成交异动等）
-- **研究报告**：东方财富研报中心今日研报，按个股/行业/宏观/策略分类展示
-- **四 Tab 切换**：JS 驱动无刷新切换，单页承载全部信息
+- **市场实时**：涨停/跌停/炸板/强势股池、行业/概念资金流、行业板块排行、龙虎榜、大单异动、人气飙升、北向资金、雪球热度、融资融券、大宗交易、股东人数变化、同花顺主题热股、解禁/减持日历
+- **情绪分析**：本地日线量价指标（KPI 8 卡、连板梯队、行业密度、换手分层、市值分布、连板链条、成交异动、机构资金加速度）
+- **研究报告**：东方财富研报中心今日研报，支持 PDF 在线预览，按个股/行业/宏观/策略分类
 
 ---
 
@@ -18,157 +18,108 @@ A 股财经信息聚合仪表盘，基于 Streamlit 构建，实时整合多源�
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | Streamlit 1.57 + 纯 HTML/CSS/JS（iframe 渲染） |
-| 数据抓取 | AkShare、feedparser、requests、BeautifulSoup |
-| 调度 | APScheduler（后台线程，非阻塞启动） |
+| 前端 | React 18 + TypeScript + Vite + Tailwind CSS |
+| 后端 | Flask + Waitress（生产 WSGI） |
+| 数据抓取 | AkShare + feedparser + requests + BeautifulSoup |
+| 调度 | APScheduler（BackgroundScheduler，随 Flask 启动） |
 | 存储 | SQLite（本地文件 `db/market.db`） |
-| 本地量价 | Parquet 日线因子（`/mnt/ssd_1T/runist/data/Quant_Data/`） |
+| 本地量价 | Parquet 日线因子（需自备 `Quant_Data/` 目录） |
 | RSS 代理 | RSSHub（Docker 独立服务） |
-
----
-
-## 数据源与更新频率
-
-### Tab 1 — 财经快讯
-
-| 模块 | 来源 | AKShare / 接口 | 更新频率 | 盘中限制 |
-|------|------|---------------|---------|---------|
-| 财联社电报 | 财联社直连 | `cls.cn/nodeapi/telegraphList`（rn=50） | 5 分钟 | 无 |
-| 财联社加红 | RSSHub | `/cls/telegraph/red` | 5 分钟 | 无 |
-| 金十数据 | RSSHub | `/jin10` | 5 分钟 | 无 |
-| 格隆汇直播 | RSSHub | `/gelonghui/live` | 5 分钟 | 无 |
-| 东方财富 | AKShare | `stock_info_global_em` | 5 分钟 | 无 |
-| 同花顺 | AKShare | `stock_info_global_ths` | 5 分钟 | 无 |
-| 第一财经 | RSSHub | `/yicai/brief` | 5 分钟 | 无 |
-| 华尔街见闻 | RSSHub | `/wallstreetcn/live/a-stock`（降级直连） | 5 分钟 | 无 |
-
-### Tab 2 — 政策动态
-
-| 模块 | 来源 | AKShare / 接口 | 更新频率 | 盘中限制 |
-|------|------|---------------|---------|---------|
-| 发改委新闻 | RSSHub | `/gov/ndrc/xwdt/xwfb`、`/tzgg` | 30 分钟 | 无 |
-| 证监会公告 | RSSHub | `/gov/csrc/news` | 30 分钟 | 无 |
-| 上交所问询 | RSSHub | `/sse/inquire` | 30 分钟 | 无 |
-| 深交所问询/公告 | RSSHub | `/szse/inquire`、`/szse/notice` | 30 分钟 | 无 |
-| 财新新闻 | AKShare | `stock_news_main_cx` | 30 分钟 | 无 |
-| 巨潮公告 | AKShare | `stock_notice_report`（重要类型白名单过滤） | 30 分钟 | 无 |
-
-### Tab 3 — 市场数据（实时行情区）
-
-| 模块 | 来源 | AKShare 接口 | 更新频率 | 盘中限制 |
-|------|------|-------------|---------|---------|
-| 行业资金流 | 东方财富 | `get_sector_flow_latest` | 15 分钟 | 仅盘中 |
-| 概念资金流（387个概念） | 同花顺 | `stock_fund_flow_concept(即时)` | 15 分钟 | 仅盘中 |
-| 涨停池 | 东方财富 | `stock_zt_pool_em`（含封板时间/封单/炸板次数） | 5 分钟 | 仅盘中 |
-| 跌停池 | 东方财富 | `stock_dt_pool_em` | 5 分钟 | 仅盘中 |
-| 炸板池 | 东方财富 | `stock_zt_pool_zbgc_em`（含振幅/炸板次数） | 5 分钟 | 仅盘中 |
-| 强势股池 | 东方财富 | `stock_zt_pool_strong_em`（含入选理由/新高/量比） | 15 分钟 | 仅盘中 |
-| 龙虎榜 | 东方财富 | `stock_lhb_detail_em`（含解读/席位类型/胜率） | 每日 17:30 | 无 |
-| 人气飙升榜 | 东方财富 | `stock_hot_up_em`（排名较昨日变动） | 30 分钟 | 仅盘中 |
-| 北向/南向资金 | 东方财富 | `stock_hsgt_fund_flow_summary_em` | 15 分钟 | 仅盘中 |
-| 雪球关注热度 | 雪球 | `stock_hot_tweet_xq`（top 50，关注人数） | 63 分钟 | 无（全天） |
-| 市场活跃度（乐咕） | 乐咕乐股 | `stock_market_activity_legu`（真实涨停/活跃度） | 30 秒 | 仅盘中 |
-| 全市场涨跌快照 | 东方财富 | `stock_zh_a_spot_em`（涨停/跌停计数） | 30 秒 | 仅盘中 |
-
-### Tab 3 — 市场数据（情绪分析区，本地日线）
-
-本地量价数据来源：`/mnt/ssd_1T/runist/data/Quant_Data/`，每日收盘后离线计算，通过「⚡ 计算今日数据」按钮触发。
-
-| 模块 | 数据来源（本地 Parquet） | 指标说明 |
-|------|------------------------|---------|
-| KPI 卡片 × 8 | 涨停相关因子、涨跌幅相关因子、乐咕实时 | 涨停/跌停、炸板率、溢价、最高连板/晋级率、活跃度、成交额/MA20、换手中位、市值偏好 |
-| 连板梯队 | 涨停相关因子 | 1/2/3/4板+各层数量 |
-| 行业涨停密度 | 涨停相关因子 + 申万行业 | 各申万一级行业涨停占比 |
-| 概念涨停热度 | 涨停相关因子 + stock-popular-concept-detail | top 15 概念涨停数 |
-| 换手率分层 | 股票预处理数据（amount/circ_mv） | 涨停股低/中/高换手分布 |
-| 涨停市值分布 | 股票预处理数据（circ_mv） | 小盘(<50亿)/中盘(50-300亿)/大盘(≥300亿) |
-| 连板链条明细 | 涨停相关因子 + 申万行业 | 2板+个股列表（板数/炸板/行业） |
-| 成交额异动 | 成交额相关因子（amount_mean_5/20） | 5日均量/20日均量 > 2x 的个股 |
-| 机构资金加速度 | 资金流相关因子（机构净买入占比） | 3日均值 / 20日均值，按申万行业 |
-
-### Tab 4 — 研究报告
-
-| 模块 | 来源 | 接口 | 更新频率 |
-|------|------|------|---------|
-| 今日研报（个股/行业/宏观/策略） | 东方财富 | `reportapi.eastmoney.com/report/list` | 30 分钟 |
-
----
-
-## 数据库表结构
-
-| 表 | 来源类型 | 说明 | 保留时长 |
-|----|---------|------|---------|
-| `cls_news` | 外部实时 | 财经快讯（7路来源） | 7 天 |
-| `policy_news` | 外部实时 | 政策动态 | 90 天 |
-| `research_report` | 外部实时 | 研究报告 | 90 天 |
-| `sector_flow` | 外部实时 | 行业资金流 | 30 天 |
-| `concept_flow` | 外部实时 | 概念板块资金流（387个） | 30 天 |
-| `zt_pool` | 外部实时 | 涨停池（含封板时间/封单/炸板次数） | 7 天 |
-| `dt_pool` | 外部实时 | 跌停池 | 7 天 |
-| `zbgc_pool` | 外部实时 | 炸板股池 | 7 天 |
-| `strong_pool` | 外部实时 | 强势股池 | 7 天 |
-| `lhb_data` | 外部实时 | 龙虎榜（含解读/席位类型/胜率） | 90 天 |
-| `hot_rank_up` | 外部实时 | 人气飙升榜 | 7 天 |
-| `northbound_flow` | 外部实时 | 北向/南向资金 | 30 天 |
-| `xq_hot` | 外部实时 | 雪球关注热度 top 50 | 7 天 |
-| `market_pulse` | 外部实时 | 全市场涨停快照 + 乐咕活跃度 | 30 天 |
-| `agent_summary` | 计算 | Agent 分析摘要 | 60 天 |
-| `market_emotion` | 本地日线 | 涨停/跌停/炸板率/最高连板/溢价 | 长期 |
-| `lianzban_stats` | 本地日线 | 连板梯队分布 + 1→2/2→3/3→4 晋级率 | 长期 |
-| `sector_zt_density` | 本地日线 | 申万一级行业涨停密度 | 90 天 |
-| `concept_zt_density` | 本地日线 | 概念涨停热度（来自本地概念文件） | 90 天 |
-| `sector_flow_accel` | 本地日线 | 机构资金加速度（3d/20d窗口） | 90 天 |
-| `turnover_stats` | 本地日线 | 涨停股换手率分层 | 长期 |
-| `market_cap_dist` | 本地日线 | 涨停股流通市值分布 | 长期 |
-| `advance_decline` | 本地日线 | 全市场涨跌家数 + 成交额/MA20 | 长期 |
-| `volume_breakout` | 本地日线 | 成交额异动个股（5d/20d > 2x） | 90 天 |
-| `lianzban_chain` | 本地日线 | 连板链条个股明细（2板+） | 90 天 |
-| `call_auction_stats` | 本地日线 | 涨停股集合竞价委比 | 30 天 |
-| `chip_status` | 本地日线 | 筹码分布（50/95分位成本、胜率） | 90 天 |
-| `research_activity` | 本地日线 | 机构调研热度（5日内调研机构数） | 90 天 |
 
 ---
 
 ## 快速启动
 
-### 方式一：Docker Compose（推荐）
+### Linux
 
 ```bash
+# 1. 克隆项目
 git clone <repo>
 cd market-radar
-docker-compose up -d
+
+# 2. 安装 Python 依赖（推荐 conda 环境）
+pip install -r requirements.txt
+
+# 3. 配置本地环境变量
+cp .env.example .env.local
+# 编辑 .env.local，至少设置 QUANT_DATA_ROOT
+
+# 4. 启动 RSSHub（可选，RSS 源降级可跳过）
+docker run -d --name rsshub --restart unless-stopped -p 1200:1200 diygod/rsshub
+
+# 5. 构建前端
+cd dashboard && npm install && npm run build && cd ..
+
+# 6. 启动应用
+bash start.sh
+# 或直接: python server.py
 ```
 
 访问 `http://localhost:20026`
 
-`docker-compose.yml` 同时启动两个服务：
-- **RSSHub**：`http://localhost:1200`，为财联社、金十、格隆汇等 RSS 源提供代理
-- **market-radar**：Streamlit 应用，端口 20026
+---
 
-### 方式二：本地开发
+### Windows（推荐方案）
 
-```bash
+> Windows 下 Python 环境直接运行即可，但 RSSHub 需要 Docker，而 Docker Desktop 在 Windows 上底层依赖 WSL2，因此 **RSS 代理部分建议在 WSL2 中启动**。主应用本身可以在 Windows 原生 Python 或 WSL2 中任选其一。
+
+#### 方案一：Windows 原生 Python（不含 RSSHub）
+
+```powershell
+# 在 PowerShell 或命令提示符中执行
+
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 启动 RSSHub（需要 Docker）
-docker run -d -p 1200:1200 diygod/rsshub
+# 2. 配置环境变量
+copy .env.example .env.local
+# 用记事本或 VS Code 编辑 .env.local，设置 QUANT_DATA_ROOT 和 FLASK_PORT
 
-# 3. 配置本地环境变量（可选）
-cp .env.local.example .env.local
-# 编辑 .env.local，设置 RSSHUB_BASE_URL=http://localhost:1200
+# 3. 构建前端
+cd dashboard
+npm install
+npm run build
+cd ..
 
 # 4. 启动应用
-streamlit run app.py --server.port 20026
+python server.py
 ```
+
+访问 `http://localhost:20026`
+
+> RSSHub 相关来源（财联社红电报、金十、格隆汇、第一财经、华尔街见闻）在 `RSSHUB_BASE_URL` 不可用时会自动降级到直接 HTML 抓取或跳过，**不影响其他数据源正常运行**。
 
 ---
 
-## RSSHub 配置
+#### 方案二：WSL2 全环境（推荐，包含 RSSHub）
 
-项目使用 RSSHub 作为部分财经 RSS 源的代理服务。
+WSL2 是 Windows 10/11 内置的 Linux 子系统，可以完整运行 Docker 和 Linux 工具链。
 
-### Docker 单独启动
+**第一步：安装 WSL2**
+
+```powershell
+# 在管理员权限 PowerShell 中执行
+wsl --install
+# 默认安装 Ubuntu，安装完成后重启电脑
+```
+
+重启后打开 Ubuntu 终端，设置用户名和密码。
+
+**第二步：在 WSL2 中安装 Docker**
+
+```bash
+# 方法 A：安装 Docker Desktop（推荐，图形界面管理）
+# 从 https://www.docker.com/products/docker-desktop/ 下载 Windows 版 Docker Desktop
+# 安装时勾选 "Use WSL 2 instead of Hyper-V"
+# Docker Desktop 安装后，WSL2 内的 docker 命令自动可用
+
+# 方法 B：在 WSL2 内直接安装 Docker Engine
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# 退出并重新进入终端使权限生效
+```
+
+**第三步：在 WSL2 中运行 RSSHub**
 
 ```bash
 docker run -d \
@@ -178,46 +129,203 @@ docker run -d \
   -e NODE_ENV=production \
   -e CACHE_TYPE=memory \
   diygod/rsshub
+
+# 验证 RSSHub 可用
+curl http://localhost:1200/cls/telegraph/red
 ```
 
-### 验证可用性
+**第四步：在 WSL2 中克隆并启动 market-radar**
+
+```bash
+# 在 WSL2 终端中执行（推荐放在 WSL 文件系统内，性能更好）
+cd ~
+git clone <repo>
+cd market-radar
+
+# 安装 Python 依赖
+pip install -r requirements.txt
+
+# 配置环境变量
+cp .env.example .env.local
+# 编辑 .env.local：
+# RSSHUB_BASE_URL=http://localhost:1200   ← WSL2 内部访问本地 Docker
+# QUANT_DATA_ROOT=/mnt/c/Users/你的用户名/Quant_Data  ← 若数据在 Windows 磁盘
+# FLASK_PORT=20026
+
+# 构建前端
+cd dashboard && npm install && npm run build && cd ..
+
+# 启动
+bash start.sh
+```
+
+WSL2 内部服务 Windows 浏览器也可以直接访问：`http://localhost:20026`
+
+> **路径说明**：WSL2 中 Windows 的 `C:\` 对应 `/mnt/c/`，`D:\` 对应 `/mnt/d/`，以此类推。
+
+---
+
+#### 方案三：Docker Compose（一键启动，适合不需要改代码的部署）
+
+需要先安装 Docker Desktop（Windows）或 Docker Engine（Linux/WSL2）。
+
+```bash
+# 构建前端（Docker Compose 不会自动构建前端）
+cd dashboard && npm install && npm run build && cd ..
+
+# 启动所有服务（RSSHub + market-radar）
+docker compose up -d
+```
+
+访问 `http://localhost:20026`
+
+---
+
+## 环境变量
+
+配置文件 `.env.local`（不提交到 git，基于 `.env.example` 复制）：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `RSSHUB_BASE_URL` | `http://rsshub:1200` | RSSHub 服务地址。本地开发用 `http://localhost:1200`；Docker Compose 内部用 `http://rsshub:1200` |
+| `QUANT_DATA_ROOT` | `/path/to/Quant_Data` | 本地日线量价数据目录（可选，无此目录则情绪分析区显示空） |
+| `FLASK_PORT` | `20026` | Flask 监听端口 |
+
+> RSSHub 不可用时，RSS 相关来源自动降级，不影响系统启动。
+
+---
+
+## RSSHub 说明
+
+RSSHub 为财联社红电报、金十数据、格隆汇、第一财经、华尔街见闻等提供 RSS 代理，需要 Docker 环境。
+
+### 验证 RSSHub 可用性
 
 ```bash
 curl http://localhost:1200/cls/telegraph/red
 curl http://localhost:1200/jin10
 curl http://localhost:1200/gelonghui/live
+curl http://localhost:1200/yicai/brief
+curl http://localhost:1200/wallstreetcn/live/a-stock
 ```
-
-### 环境变量
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `RSSHUB_BASE_URL` | `http://172.17.0.1:1200` | RSSHub 服务地址。Docker Compose 内部通信用 `http://rsshub:1200`，本地开发用 `http://localhost:1200` |
-
-> **注意**：若 RSSHub 不可用，RSS 相关来源会降级到直接 HTML 抓取或跳过，系统不会崩溃。
 
 ---
 
-## 本地日线数据
+## 数据源与更新频率
 
-本地量价数据存储于 `/mnt/ssd_1T/runist/data/Quant_Data/`，每日收盘后离线更新。
+### Tab 1 — 财经快讯
 
-### 手动触发计算
+| 模块 | 来源 | 接口 | 更新频率 |
+|------|------|------|---------|
+| 财联社电报 | 财联社直连 | `cls.cn/nodeapi/telegraphList` | 5 分钟 |
+| 财联社红电报 | RSSHub | `/cls/telegraph/red` | 5 分钟 |
+| 金十数据 | RSSHub | `/jin10` | 5 分钟 |
+| 格隆汇直播 | RSSHub | `/gelonghui/live` | 5 分钟 |
+| 东方财富 | AkShare | `stock_info_global_em` | 5 分钟 |
+| 同花顺 | AkShare | `stock_info_global_ths` | 5 分钟 |
+| 第一财经 | RSSHub | `/yicai/brief` | 5 分钟 |
+| 华尔街见闻 | RSSHub | `/wallstreetcn/live/a-stock`（降级直连） | 5 分钟 |
 
-在「市场数据」Tab 侧边栏点击「⚡ 计算今日数据」，依次执行 13 个计算任务并显示进度。
+### Tab 2 — 政策动态
 
-### 数据目录结构
+| 模块 | 来源 | 接口 | 更新频率 |
+|------|------|------|---------|
+| 发改委新闻 | RSSHub | `/gov/ndrc/xwdt/xwfb`、`/tzgg` | 30 分钟 |
+| 证监会公告 | RSSHub | `/gov/csrc/news` | 30 分钟 |
+| 上交所问询 | RSSHub | `/sse/inquire` | 30 分钟 |
+| 深交所问询/公告 | RSSHub | `/szse/inquire`、`/szse/notice` | 30 分钟 |
+| 财新新闻 | AkShare | `stock_news_main_cx` | 30 分钟 |
+| 巨潮公告 | AkShare | `stock_notice_report` | 30 分钟 |
 
-```
-Quant_Data/
-├── factors/stock/daily/          # 21个日度因子 parquet（涨停/涨跌幅/成交额/资金流/均线/振幅等）
-├── stg_cache/预处理数据/           # 主交易数据（14.9M行×40列，含 amount/circ_mv/大户资金）
-├── stock-trading-data-pro/       # 各股日度 CSV（GBK，38列）
-├── stock-1h-trading-data-pro/    # 各股 1小时 K线 parquet（含换手率/日内特征）
-├── stock-popular-concept-detail/ # 各股概念归属（330种概念，86%覆盖率）
-├── stock-call-auction-data/      # 集合竞价数据
-└── stock-chip-distribution/      # 筹码分布（5/95分位成本/胜率）
-```
+### Tab 3 — 市场实时（实时行情区，盘中）
+
+| 模块 | 来源 | 接口 | 更新频率 |
+|------|------|------|---------|
+| 行业资金流 | 东方财富 | `get_sector_flow_latest` | 15 分钟 |
+| 概念资金流（387个） | 同花顺 | `stock_fund_flow_concept(即时)` | 15 分钟 |
+| 行业板块排行（全市场） | 东方财富 | `push2/api/qt/clist/get` (fs=m:90+t:2) | 5 分钟 |
+| 涨停池 | 东方财富 | `stock_zt_pool_em` | 5 分钟 |
+| 跌停池 | 东方财富 | `stock_dt_pool_em` | 5 分钟 |
+| 炸板池 | 东方财富 | `stock_zt_pool_zbgc_em` | 5 分钟 |
+| 强势股池 | 东方财富 | `stock_zt_pool_strong_em` | 15 分钟 |
+| 龙虎榜 | 东方财富 | `stock_lhb_detail_em` | 每日 17:30 |
+| 大单异动 | 东方财富 | `stock_fund_flow_individual` | 3 分钟 |
+| 人气飙升 | 东方财富 | `stock_hot_up_em` | 30 分钟 |
+| 北向/南向资金 | 东方财富 | `stock_hsgt_fund_flow_summary_em` | 15 分钟 |
+| 雪球热度 top50 | 雪球 | `stock_hot_tweet_xq` | 63 分钟 |
+| 全市场涨跌快照 | 东方财富 | `stock_zh_a_spot_em` | 30 秒 |
+| 融资融券余额 Top | 东方财富 datacenter | `RPTA_WEB_RZRQ_GGMX` | 30 分钟 |
+| 大宗交易 | 东方财富 datacenter | `RPT_DATA_BLOCKTRADE` | 30 分钟 |
+| 同花顺主题热股 | 同花顺 | `zx.10jqka.com.cn/event/api/getharden` | 30 分钟 |
+| 股东人数变化 | 东方财富 datacenter | `RPT_HOLDERNUMLATEST` | 每日 17:45 |
+| 解禁/减持日历（90天） | 东方财富 datacenter | `RPT_LIFT_STAGE` | 每日 09:10 |
+
+### Tab 3 — 市场实时（情绪分析区，本地日线）
+
+本地量价数据存储于 `QUANT_DATA_ROOT`（默认 `/mnt/ssd_1T/runist/data/Quant_Data/`），每日收盘后离线计算。
+
+| 模块 | 指标说明 |
+|------|---------|
+| KPI 卡片 × 8 | 涨停/跌停、炸板率、溢价、最高连板/晋级率、活跃度、成交额/MA20、换手中位、市值偏好 |
+| 连板梯队 | 1/2/3/4板+各层数量与晋级率 |
+| 行业涨停密度 | 各申万一级行业涨停占比 |
+| 概念涨停热度 | top 15 概念涨停数 |
+| 换手率分层 | 涨停股低/中/高换手分布 |
+| 涨停市值分布 | 小盘(<50亿)/中盘(50-300亿)/大盘(≥300亿) |
+| 连板链条明细 | 2板+个股列表（板数/炸板/行业） |
+| 成交额异动 | 5日均量/20日均量 > 2x 的个股 |
+| 机构资金加速度 | 3日均值 / 20日均值，按申万行业 |
+
+### Tab 4 — 研究报告
+
+| 模块 | 来源 | 接口 | 更新频率 |
+|------|------|------|---------|
+| 今日研报 | 东方财富 | `reportapi.eastmoney.com/report/list` | 30 分钟 |
+| PDF 预览 | 服务端代理 | `/api/research/pdf?url=...`（注入 Referer） | 按需 |
+
+---
+
+## 数据库表结构
+
+| 表 | 说明 | 保留时长 |
+|----|------|---------|
+| `cls_news` | 财经快讯（7路来源） | 7 天 |
+| `policy_news` | 政策动态 | 90 天 |
+| `research_report` | 研究报告 | 90 天 |
+| `sector_flow` | 行业资金流 | 30 天 |
+| `concept_flow` | 概念板块资金流（387个） | 30 天 |
+| `zt_pool` | 涨停池 | 7 天 |
+| `dt_pool` | 跌停池 | 7 天 |
+| `zbgc_pool` | 炸板股池 | 7 天 |
+| `strong_pool` | 强势股池 | 7 天 |
+| `lhb_data` | 龙虎榜 | 90 天 |
+| `hot_rank_up` | 人气飙升榜 | 7 天 |
+| `northbound_flow` | 北向/南向资金 | 30 天 |
+| `xq_hot` | 雪球关注热度 top 50 | 7 天 |
+| `big_deal` | 大单异动 | 7 天 |
+| `market_pulse` | 全市场涨停快照 + 乐咕活跃度 | 30 天 |
+| `margin` | 融资融券余额 | 30 天 |
+| `block_trade` | 大宗交易 | 30 天 |
+| `holder_count` | 股东人数变化 | 30 天 |
+| `lockup_expiry` | 解禁/减持日历 | 90 天 |
+| `dividend` | 分红历史 | 90 天 |
+| `industry_ranking` | 行业板块排行（全市场） | 30 天 |
+| `ths_hot_stocks` | 同花顺主题热股 | 7 天 |
+| `fundamentals_finance` | mootdx 基本面财务 | 7 天 |
+| `fundamentals_f10` | mootdx F10（公司概况/财务分析/股东研究） | 7 天 |
+| `agent_summary` | Agent 分析摘要 | 60 天 |
+| `market_emotion` | 涨停/跌停/炸板率/最高连板/溢价（日线） | 长期 |
+| `lianzban_stats` | 连板梯队分布 + 晋级率（日线） | 长期 |
+| `sector_zt_density` | 申万一级行业涨停密度（日线） | 90 天 |
+| `concept_zt_density` | 概念涨停热度（日线） | 90 天 |
+| `sector_flow_accel` | 机构资金加速度（日线） | 90 天 |
+| `turnover_stats` | 涨停股换手率分层（日线） | 长期 |
+| `market_cap_dist` | 涨停股流通市值分布（日线） | 长期 |
+| `advance_decline` | 全市场涨跌家数 + 成交额/MA20（日线） | 长期 |
+| `volume_breakout` | 成交额异动个股（5d/20d > 2x）（日线） | 90 天 |
+| `lianzban_chain` | 连板链条个股明细（2板+）（日线） | 90 天 |
+| `chip_status` | 筹码分布（日线） | 90 天 |
+| `research_activity` | 机构调研热度（日线） | 90 天 |
 
 ---
 
@@ -225,27 +333,43 @@ Quant_Data/
 
 ```
 market-radar/
-├── app.py                    # Streamlit 主应用，UI 渲染
-├── scheduler.py              # APScheduler 定时任务（20个任务）
+├── server.py                 # Flask 主程序（入口）
+├── scheduler.py              # APScheduler 定时任务
+├── fetch_status.py           # 抓取状态共享模块
+├── start.sh                  # 启动脚本（加载 .env.local）
 ├── requirements.txt
 ├── docker-compose.yml
+├── .env.example              # 环境变量模板
+├── dashboard/                # React 前端
+│   ├── src/
+│   │   ├── pages/            # 4个主页面
+│   │   │   ├── NewsPage.tsx
+│   │   │   ├── PolicyPage.tsx
+│   │   │   ├── MarketRealtimePage.tsx
+│   │   │   ├── MarketSentimentPage.tsx
+│   │   │   └── ResearchPage.tsx
+│   │   ├── components/       # 公共组件
+│   │   └── lib/api.ts        # apiFetch 封装
+│   └── dist/                 # 构建产物（由 npm run build 生成）
 ├── db/
-│   ├── storage.py            # SQLite CRUD（28张表）
+│   ├── storage.py            # SQLite CRUD（37张表）
 │   └── market.db             # 数据库（自动创建，不提交）
 ├── fetcher/
-│   ├── cls_news.py           # 财联社电报（东财直连，50条/次）
-│   ├── global_news.py        # 金十、格隆汇、东财、同花顺、第一财经、华尔街见闻
+│   ├── cls_news.py           # 财联社电报
+│   ├── global_news.py        # 金十/格隆汇/东财/同花顺/第一财经/华尔街见闻
 │   ├── policy_rss.py         # 政策动态 RSS + 巨潮公告
 │   ├── research.py           # 东财研报 API
-│   ├── eastmoney.py          # 行业资金流、龙虎榜
-│   ├── sector_heat.py        # 涨停/跌停/炸板/强势股池
+│   ├── eastmoney.py          # 行业资金流/龙虎榜/融资融券/大宗交易/
+│   │                         # 股东人数/解禁减持/分红/行业排行/THS热股
+│   ├── sector_heat.py        # 涨停/跌停/炸板/强势股池 + 概念热度
 │   ├── concept_flow.py       # 同花顺概念资金流（387个概念）
 │   ├── realtime_quote.py     # 全市场快照 + 乐咕活跃度
-│   └── market_sentiment.py   # 人气飙升榜、北向资金、雪球热度
+│   ├── market_sentiment.py   # 人气飙升/北向资金/雪球热度/大单异动
+│   └── fundamentals.py       # mootdx 基本面财务/F10（盘中活跃股）
 ├── quant/
 │   ├── loader.py             # 本地 parquet 读取工具
-│   └── daily_compute.py      # 13个日度计算任务
-└── agent/                    # Agent 分析层（规则 stub，待接入 LLM）
+│   └── daily_compute.py      # 日度计算任务（每日 09:00 触发）
+└── agent/                    # Agent 分析层（接口预留）
     ├── classifier.py
     ├── sector_agent.py
     ├── stock_agent.py
@@ -257,8 +381,9 @@ market-radar/
 ## 注意事项
 
 - 数据来源均为公开可访问的网络接口，仅供个人研究使用
-- 东财、同花顺等接口可能随时变更，建议定期关注 [AkShare 文档](https://akshare.akfamily.xyz/)
 - `db/market.db` 不纳入版本控制，首次运行自动创建
 - `.env.local` 不纳入版本控制，用于本地环境覆盖
-- 雪球热度每次抓取约需 50 秒（全量分页），不影响其他任务
-- `stock_zh_a_spot_em` 偶发连接中断，乐咕活跃度会独立写入不受影响
+- 前端 `dashboard/dist/` 需手动执行 `npm run build` 生成，不提交到 git
+- `QUANT_DATA_ROOT` 未配置时，情绪分析区（本地日线指标）显示为空，不影响其他 Tab
+- mootdx 基本面抓取仅在盘中运行，且只针对当日涨停/强势股池中的个股，不扫全市场
+- 雪球热度每次抓取约需 50 秒（全量分页），不影响其他并发任务
