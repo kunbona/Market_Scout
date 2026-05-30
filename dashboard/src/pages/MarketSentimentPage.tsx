@@ -56,6 +56,9 @@ const fmt = (v: number | null | undefined, suffix = '') =>
 const fmtPct = (v: number | null | undefined, scale = 100) =>
   v != null ? `${(v * scale).toFixed(2)}%` : '--';
 
+const fmtNum = (v: number | null | undefined, digits = 2, suffix = '') =>
+  v != null ? `${v.toFixed(digits)}${suffix}` : '--';
+
 // ─── API ─────────────────────────────────────────────────────────────────────
 
 const BASE = '';
@@ -258,6 +261,20 @@ export function MarketSentimentPage() {
         </div>
       </div>
 
+      {/* ── 无数据提示 Banner ── */}
+      {!loading && !emotion && !adData && !toStats && !mcData && (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+          <span className="text-lg leading-none mt-0.5">⚠️</span>
+          <div className="space-y-1">
+            <div className="font-medium">本地日线数据尚未生成</div>
+            <div className="text-amber-700 leading-relaxed">
+              情绪分析区依赖本地量价数据（<code className="bg-amber-100 px-1 rounded text-xs">QUANT_DATA_ROOT</code>），
+              请先确认路径已正确配置，然后点击上方「⚡ 计算今日数据」按钮生成指标。
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Row 1: 关键指标卡片 ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard
@@ -313,16 +330,16 @@ export function MarketSentimentPage() {
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
           <div className="text-xs text-gray-500 mb-1">全市场成交额/MA20</div>
           <div className="text-2xl text-gray-900 mb-1" style={{color: adData ? (adData.amount_ratio >= 1.2 ? '#16a34a' : adData.amount_ratio >= 0.8 ? '#f59e0b' : '#ef4444') : undefined}}>
-            {loading ? '--' : adData ? `${adData.total_amount?.toFixed(0)}亿` : '--'}
+            {loading ? '--' : fmtNum(adData?.total_amount, 0, '亿')}
           </div>
-          <div className="text-xs text-gray-600">{loading ? '' : adData ? `${adData.amount_ratio?.toFixed(2)}x` : '--'}</div>
+          <div className="text-xs text-gray-600">{loading ? '' : fmtNum(adData?.amount_ratio, 2, 'x')}</div>
         </div>
 
         {/* 涨停换手中位 */}
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
           <div className="text-xs text-gray-500 mb-1">涨停换手中位</div>
           <div className="text-2xl text-gray-900 mb-1">
-            {loading ? '--' : toStats ? `${toStats.median_to?.toFixed(1)}%` : '--'}
+            {loading ? '--' : fmtNum(toStats?.median_to, 1, '%')}
           </div>
           <div className="text-xs text-gray-600">
             {loading ? '' : toStats ? (() => { const t = (toStats.high_count||0)+(toStats.mid_count||0)+(toStats.low_count||0); return t > 0 ? `高换手占${(toStats.high_count/t*100).toFixed(0)}%` : '--'; })() : '--'}
@@ -333,8 +350,8 @@ export function MarketSentimentPage() {
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
           <div className="text-xs text-gray-500 mb-1">涨停市值偏好（中/小）</div>
           <div className="text-2xl text-gray-900 mb-1">
-            {loading ? '--' : mcData ? `${(mcData.mid_pct*100).toFixed(0)}%` : '--'}
-            {!loading && mcData && <span className="text-base text-gray-400"> / {(mcData.small_pct*100).toFixed(0)}%</span>}
+            {loading ? '--' : fmtNum(mcData?.mid_pct != null ? mcData.mid_pct * 100 : null, 0, '%')}
+            {!loading && mcData?.small_pct != null && <span className="text-base text-gray-400"> / {(mcData.small_pct * 100).toFixed(0)}%</span>}
           </div>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { RefreshCw, Zap, Calendar, CheckCircle, XCircle } from 'lucide-react';
+import { RefreshCw, Zap, Calendar, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 
 interface ControlBarProps {
@@ -25,6 +25,11 @@ const TASK_NAMES = [
   '概念涨停密度', '集合竞价委比', '换手率分层', '市值分布', '市场宽度',
 ];
 
+// 检测是否是 Windows 路径（C:\、D:\ 等盘符开头）
+function isWindowsPath(p: string): boolean {
+  return /^[A-Za-z]:[/\\]/.test(p);
+}
+
 export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
   const [computing, setComputing] = useState(false);
   const [progress, setProgress] = useState<TaskResult[]>([]);
@@ -32,6 +37,7 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
   const [done, setDone] = useState(false);
   const [tradeDate, setTradeDate] = useState('');
   const [error, setError] = useState('');
+  const [dataRootWarn, setDataRootWarn] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = () => {
@@ -40,6 +46,24 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
       pollRef.current = null;
     }
   };
+
+  // 检查 data_root 配置是否是 Windows 路径
+  useEffect(() => {
+    fetch('/api/config')
+      .then(r => r.json())
+      .then(j => {
+        if (!j.success) return;
+        const root: string = j.data?.data_root ?? '';
+        if (!root) {
+          setDataRootWarn('未配置本地数据路径（QUANT_DATA_ROOT），情绪分析指标无法计算。');
+        } else if (isWindowsPath(root)) {
+          setDataRootWarn(
+            `检测到 Windows 路径：${root}。若服务运行在 WSL/Linux 中，请改为 WSL 映射路径，例如将 C:\\Users\\xxx 改为 /mnt/c/Users/xxx。`
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // 组件挂载时检查后端是否有计算任务正在运行（切 tab 再回来能恢复进度）
   useEffect(() => {
@@ -147,6 +171,14 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
           </div>
         )}
       </div>
+
+      {/* data_root 路径警告 */}
+      {dataRootWarn && (
+        <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" />
+          <span>{dataRootWarn}</span>
+        </div>
+      )}
 
       {/* 进度条（计算中） */}
       {computing && (
