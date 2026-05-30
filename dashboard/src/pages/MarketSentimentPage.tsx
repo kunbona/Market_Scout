@@ -11,6 +11,10 @@ interface MarketEmotion {
   max_lianzban: number;
   zt_yesterday_premium: number;
   zb_rate: number;
+}
+
+interface LianzbanStats {
+  trade_date: string;
   tier_1: number;
   tier_2: number;
   tier_3: number;
@@ -180,6 +184,7 @@ function SectionHeader({ title, badge }: { title: string; badge?: string }) {
 
 export function MarketSentimentPage() {
   const [emotion, setEmotion] = useState<MarketEmotion | null>(null);
+  const [lbStats, setLbStats] = useState<LianzbanStats | null>(null);
   const [pulse, setPulse] = useState<MarketPulse | null>(null);
   const [sectors, setSectors] = useState<SectorDensity[] | null>(null);
   const [concepts, setConcepts] = useState<ConceptZt[] | null>(null);
@@ -204,7 +209,8 @@ export function MarketSentimentPage() {
       safeApiFetch<any>('/api/market-cap-dist'),
       safeApiFetch<any[]>('/api/sector-flow-accel'),
       safeApiFetch<any[]>('/api/volume-breakout'),
-    ]).then(([e, p, s, c, l, ad, to, mc, sfa, vb]) => {
+      safeApiFetch<LianzbanStats[]>('/api/lianzban-stats?days=30'),
+    ]).then(([e, p, s, c, l, ad, to, mc, sfa, vb, lb]) => {
       if (e.status === 'fulfilled') setEmotion(e.value);
       if (p.status === 'fulfilled') {
         const arr = p.value;
@@ -224,6 +230,10 @@ export function MarketSentimentPage() {
       if (mc.status === 'fulfilled') setMcData(mc.value);
       if (sfa.status === 'fulfilled') setSfaData(sfa.value ?? []);
       if (vb.status === 'fulfilled') setVbData(vb.value ?? []);
+      if (lb.status === 'fulfilled') {
+        const arr = lb.value;
+        if (Array.isArray(arr) && arr.length > 0) setLbStats(arr[arr.length - 1]);
+      }
       setLoading(false);
     });
   }, []);
@@ -232,10 +242,10 @@ export function MarketSentimentPage() {
   const premiumPct = emotion ? (emotion.zt_yesterday_premium * 100).toFixed(2) : null;
   const premiumPositive = emotion ? emotion.zt_yesterday_premium >= 0 : null;
   const zbRatePct = emotion ? (emotion.zb_rate * 100).toFixed(1) : null;
-  const advance1to2Pct = emotion ? Math.round(emotion.advance_1to2 * 100) : null;
+  const advance1to2Pct = lbStats ? Math.round(lbStats.advance_1to2 * 100) : null;
 
-  const tierMax = emotion
-    ? Math.max(emotion.tier_1, emotion.tier_2, emotion.tier_3, emotion.tier_4plus, 1)
+  const tierMax = lbStats
+    ? Math.max(lbStats.tier_1, lbStats.tier_2, lbStats.tier_3, lbStats.tier_4plus, 1)
     : 1;
 
   const sortedChains = chains ?? [];
@@ -364,39 +374,39 @@ export function MarketSentimentPage() {
           <div className="p-5 space-y-4">
             <TierBar
               label="首板"
-              count={emotion?.tier_1}
+              count={lbStats?.tier_1}
               max={tierMax}
               color="bg-red-400"
               loading={loading}
             />
             <TierBar
               label="2板"
-              count={emotion?.tier_2}
+              count={lbStats?.tier_2}
               max={tierMax}
               color="bg-orange-400"
               loading={loading}
             />
             <TierBar
               label="3板"
-              count={emotion?.tier_3}
+              count={lbStats?.tier_3}
               max={tierMax}
               color="bg-amber-400"
               loading={loading}
             />
             <TierBar
               label="4板+"
-              count={emotion?.tier_4plus}
+              count={lbStats?.tier_4plus}
               max={tierMax}
               color="bg-yellow-300"
               loading={loading}
             />
             {/* 晋级率行 */}
-            {!loading && emotion && (
+            {!loading && lbStats && (
               <div className="pt-2 border-t border-gray-100 grid grid-cols-3 gap-2">
                 {[
-                  { label: '1→2', val: emotion.advance_1to2 },
-                  { label: '2→3', val: emotion.advance_2to3 },
-                  { label: '3→4', val: emotion.advance_3to4 },
+                  { label: '1→2', val: lbStats.advance_1to2 },
+                  { label: '2→3', val: lbStats.advance_2to3 },
+                  { label: '3→4', val: lbStats.advance_3to4 },
                 ].map((r) => (
                   <div key={r.label} className="text-center">
                     <div className="text-xs text-gray-400 mb-1">{r.label} 晋级率</div>
