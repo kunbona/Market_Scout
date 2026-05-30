@@ -71,6 +71,7 @@ from db.storage import (
     get_industry_ranking_latest,
     get_ths_hot_stocks_latest,
     get_latest_emotion_date,
+    get_research_activity,
 )
 
 DIST = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
@@ -443,6 +444,15 @@ def api_volume_breakout():
     try:
         trade_date = _computed_date()
         rows = get_volume_breakout(trade_date)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+@app.route("/api/research-activity")
+def api_research_activity():
+    try:
+        trade_date = _computed_date()
+        rows = get_research_activity(trade_date)
         return _ok(rows)
     except Exception as exc:
         return _err(exc)

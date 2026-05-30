@@ -191,6 +191,7 @@ export function MarketSentimentPage() {
   const [mcData, setMcData] = useState<any>(null);
   const [sfaData, setSfaData] = useState<any[]>([]);
   const [vbData, setVbData] = useState<any[]>([]);
+  const [raData, setRaData] = useState<any[]>([]);
 
   useEffect(() => {
     setLoading(true);
@@ -205,7 +206,8 @@ export function MarketSentimentPage() {
       safeApiFetch<any[]>('/api/sector-flow-accel'),
       safeApiFetch<any[]>('/api/volume-breakout'),
       safeApiFetch<LianzbanStats[]>('/api/lianzban-stats?days=30'),
-    ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb]) => {
+      safeApiFetch<any[]>('/api/research-activity'),
+    ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb, ra]) => {
       if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
       if (s.status === 'fulfilled') {
         const raw = s.value ?? [];
@@ -221,6 +223,7 @@ export function MarketSentimentPage() {
       if (mc.status === 'fulfilled') setMcData(nonEmpty(mc.value));
       if (sfa.status === 'fulfilled') setSfaData(sfa.value ?? []);
       if (vb.status === 'fulfilled') setVbData(vb.value ?? []);
+      if (ra.status === 'fulfilled') setRaData(ra.value ?? []);
       if (lb.status === 'fulfilled') {
         const arr = lb.value;
         if (Array.isArray(arr) && arr.length > 0) setLbStats(arr[arr.length - 1]);
@@ -637,6 +640,35 @@ export function MarketSentimentPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Row 7: 机构密集调研 ── */}
+      {(raData.length > 0 || loading) && (
+        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200">
+            <h3 className="text-sm font-medium text-gray-900">机构密集调研 <span className="text-xs text-gray-400 font-normal">近5日≥3家机构</span></h3>
+          </div>
+          <div className="p-4">
+            {loading ? (
+              <div className="text-sm text-gray-400">--</div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                {raData.slice(0, 16).map((r, i) => (
+                  <div key={i} className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-900 truncate">{r.stock_name}</div>
+                      <div className="text-xs text-gray-400 truncate">{r.stock_code}</div>
+                    </div>
+                    <div className="ml-2 shrink-0 text-right">
+                      <div className="text-sm font-semibold text-blue-600">{r.org_count_5d}家</div>
+                      <div className="text-xs text-gray-400">{r.last_visit_date?.slice(5)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Bottom padding ── */}
       <div className="h-4" />
