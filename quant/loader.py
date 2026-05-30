@@ -191,7 +191,7 @@ def load_daily_range(trade_date: str, days: int = 25) -> pd.DataFrame:
         if df_window.empty:
             return pd.DataFrame()
 
-        # 只计算基础衍生列（不算 lianzban_cnt/amount_mean_* 以节省时间）
+        # 计算衍生列（含 lianzban_cnt，供 compute_lianzban_stats 的前日截面使用）
         if "pct_chg" not in df_window.columns:
             mask_pc = df_window["pre_close"] > 0
             df_window["pct_chg"] = 0.0
@@ -209,6 +209,8 @@ def load_daily_range(trade_date: str, days: int = 25) -> pd.DataFrame:
         inst_net = df_window["inst_buy"].fillna(0) - df_window["inst_sell"].fillna(0)
         df_window["inst_net_pct"] = inst_net.where(inst_sum > 0, 0.0) / inst_sum.where(inst_sum > 0, 1.0)
         df_window["inst_net_pct"] = df_window["inst_net_pct"].fillna(0.0)
+
+        df_window = _compute_lianzban_cnt(df_window)
 
         # 只返回 <= trade_date 的最近 days 个交易日
         sorted_dates = sorted(df_window["trade_date"].unique())

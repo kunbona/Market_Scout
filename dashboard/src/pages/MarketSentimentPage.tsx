@@ -211,7 +211,9 @@ export function MarketSentimentPage() {
       safeApiFetch<any[]>('/api/volume-breakout'),
       safeApiFetch<LianzbanStats[]>('/api/lianzban-stats?days=30'),
     ]).then(([e, p, s, c, l, ad, to, mc, sfa, vb, lb]) => {
-      if (e.status === 'fulfilled') setEmotion(e.value);
+      // 空对象 {} 视为无数据，统一转 null，避免字段访问得到 undefined
+      const nonEmpty = (v: any) => (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0 ? v : null);
+      if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
       if (p.status === 'fulfilled') {
         const arr = p.value;
         if (Array.isArray(arr) && arr.length > 0) setPulse(arr[0]);
@@ -225,9 +227,9 @@ export function MarketSentimentPage() {
         const raw = l.value ?? [];
         setChains([...raw].sort((a, b) => b.lianzban_cnt - a.lianzban_cnt));
       }
-      if (ad.status === 'fulfilled') setAdData(ad.value);
-      if (to.status === 'fulfilled') setToStats(to.value);
-      if (mc.status === 'fulfilled') setMcData(mc.value);
+      if (ad.status === 'fulfilled') setAdData(nonEmpty(ad.value));
+      if (to.status === 'fulfilled') setToStats(nonEmpty(to.value));
+      if (mc.status === 'fulfilled') setMcData(nonEmpty(mc.value));
       if (sfa.status === 'fulfilled') setSfaData(sfa.value ?? []);
       if (vb.status === 'fulfilled') setVbData(vb.value ?? []);
       if (lb.status === 'fulfilled') {
