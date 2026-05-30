@@ -63,7 +63,8 @@ def compute_market_emotion(trade_date: str) -> None:
                     mask = df_today["code"].isin(yesterday_zt_codes)
                     prem_vals = df_today.loc[mask, "pct_chg"].dropna()
                     if len(prem_vals) > 0:
-                        zt_yesterday_premium = float(prem_vals.mean())
+                        # 用中位数而非均值，避免科创板+20%等极端值干扰
+                        zt_yesterday_premium = float(prem_vals.median())
     except Exception as e:
         logger.warning("[daily_compute] zt_yesterday_premium 计算失败: %s", e)
 
@@ -166,7 +167,12 @@ def compute_sector_flow_acceleration(trade_date: str) -> None:
             ind_df = daily_ind[daily_ind["industry_l1"] == ind]
             inst_3d = float(ind_df[ind_df["trade_date"].isin(dates_3d)]["inst_mean"].mean())
             inst_20d = float(ind_df[ind_df["trade_date"].isin(dates_20d)]["inst_mean"].mean())
-            accel = inst_3d / inst_20d if inst_20d != 0 else 0.0
+            # 用绝对值做分母，避免负/负=正的方向错误
+            # inst_20d 为负表示近20日整体净卖出，accel 有意义的前提是趋势方向一致
+            if abs(inst_20d) > 1e-9:
+                accel = inst_3d / abs(inst_20d)
+            else:
+                accel = 0.0
             insert_sector_flow_accel(trade_date, ind, inst_3d, inst_20d, accel)
             written += 1
 
@@ -687,13 +693,16 @@ def compute_advance_decline(trade_date: str) -> None:
         total_amount = float(df["amount"].sum()) / 1e8
 
         # 20日均：从 load_daily_range 获取历史成交额
+        # 取前20个交易日（不含当日）作为 MA20 基准，避免今日既是分子又混入分母
         amount_ma20 = 0.0
         amount_ratio = 0.0
         try:
-            df_range = load_daily_range(trade_date, days=20)
+            df_range = load_daily_range(trade_date, days=21)
             if not df_range.empty:
                 daily_total = df_range.groupby("trade_date")["amount"].sum()
-                amount_ma20 = float(daily_total.mean()) / 1e8
+                # 排除当日，取前20个交易日的均值作为基准
+                prev_totals = daily_total[daily_total.index < trade_date]
+                amount_ma20 = float(prev_totals.iloc[-20:].mean()) / 1e8 if not prev_totals.empty else float(daily_total.mean()) / 1e8
                 if amount_ma20 > 0:
                     amount_ratio = total_amount / amount_ma20
         except Exception as e:

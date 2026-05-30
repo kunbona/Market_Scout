@@ -241,6 +241,7 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     ).astype(int)
     df["is_dt"] = (df["close"] <= df["down_limit"]).astype(int)
 
+    # inst_buy / inst_sell 单位为万元（与 amount 的元不同，切勿直接与 amount 混算）
     # inst_net_pct
     inst_sum = df["inst_buy"].fillna(0) + df["inst_sell"].fillna(0)
     inst_net = df["inst_buy"].fillna(0) - df["inst_sell"].fillna(0)
@@ -277,7 +278,7 @@ def _calc_zdt_price_vectorized(df: pd.DataFrame) -> pd.DataFrame:
     zt_ratio[is_st] = 1.05
     dt_ratio[is_st] = 0.95
 
-    merge_rule = is_kcb | is_cyb_new
+    merge_rule = (is_kcb | is_cyb_new) & ~is_st
     zt_ratio[merge_rule] = 1.2
     dt_ratio[merge_rule] = 0.8
 
@@ -303,6 +304,10 @@ def _calc_zdt_price_vectorized(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["up_limit"] = zt_prices
     df["down_limit"] = dt_prices
+    # pre_close 无效（0 或 NaN）时，up_limit/down_limit 置 NaN，避免后续误判涨跌停
+    invalid_mask = df["pre_close"].isna() | (df["pre_close"] <= 0)
+    df.loc[invalid_mask, "up_limit"] = float("nan")
+    df.loc[invalid_mask, "down_limit"] = float("nan")
     return df
 
 
