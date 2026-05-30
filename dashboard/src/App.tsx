@@ -79,7 +79,7 @@ function SettingsPage({ settings, onUpdate }: {
       const json = await res.json();
       if (json.success) {
         const changed = json.data.changed ?? [];
-        setSaveMsg(changed.length > 0 ? `✓ 已保存：${changed.join('；')}` : '✓ 配置无变化');
+        setSaveMsg(changed.length > 0 ? '✓ 已保存' : '✓ 配置无变化');
         setServerConfig(prev => prev ? {
           ...prev,
           data_root: dataRootInput,
