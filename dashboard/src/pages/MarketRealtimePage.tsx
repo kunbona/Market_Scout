@@ -200,37 +200,22 @@ export function MarketRealtimePage() {
   const [hr,     setHr]     = useState<HR[]>([]);
   const [nb,     setNb]     = useState<NB[]>([]);
   const [xq,     setXq]     = useState<XQ[]>([]);
-  const [loading, setLoading] = useState(true);
   const [bigDeal,  setBigDeal]  = useState<BigDeal[]>([]);
   const [margin,   setMargin]   = useState<Margin[]>([]);
   const [blockTrd, setBlockTrd] = useState<BlockTrade[]>([]);
   const [holder,   setHolder]   = useState<HolderCount[]>([]);
 
   useEffect(() => {
-    Promise.allSettled([
-      apiFetch<SF[]>('/api/sector-flow?type=industry'),
-      apiFetch<CF[]>('/api/concept-flow?top_n=50'),
-      apiFetch<ZT[]>('/api/zt-pool?date='),
-      apiFetch<DT[]>('/api/dt-pool?date='),
-      apiFetch<ZBGC[]>('/api/zbgc-pool?date='),
-      apiFetch<LHB[]>('/api/lhb?date='),
-      apiFetch<STRONG[]>('/api/strong-pool?date='),
-      apiFetch<HR[]>('/api/hot-rank-up?top_n=50'),
-      apiFetch<NB[]>('/api/northbound-flow'),
-      apiFetch<XQ[]>('/api/xq-hot?top_n=50'),
-    ]).then(([r0,r1,r2,r3,r4,r5,r6,r7,r8,r9]) => {
-      if (r0.status === 'fulfilled' && r0.value) setSf(r0.value);
-      if (r1.status === 'fulfilled' && r1.value) setCf(r1.value);
-      if (r2.status === 'fulfilled' && r2.value) setZt(r2.value);
-      if (r3.status === 'fulfilled' && r3.value) setDt(r3.value);
-      if (r4.status === 'fulfilled' && r4.value) setZbgc(r4.value);
-      if (r5.status === 'fulfilled' && r5.value) setLhb(r5.value);
-      if (r6.status === 'fulfilled' && r6.value) setStrong(r6.value);
-      if (r7.status === 'fulfilled' && r7.value) setHr(r7.value);
-      if (r8.status === 'fulfilled' && r8.value) setNb(r8.value);
-      if (r9.status === 'fulfilled' && r9.value) setXq(r9.value);
-      setLoading(false);
-    });
+    apiFetch<SF[]>('/api/sector-flow?type=industry').then(d => setSf(d ?? [])).catch(() => {});
+    apiFetch<CF[]>('/api/concept-flow?top_n=50').then(d => setCf(d ?? [])).catch(() => {});
+    apiFetch<ZT[]>('/api/zt-pool?date=').then(d => setZt(d ?? [])).catch(() => {});
+    apiFetch<DT[]>('/api/dt-pool?date=').then(d => setDt(d ?? [])).catch(() => {});
+    apiFetch<ZBGC[]>('/api/zbgc-pool?date=').then(d => setZbgc(d ?? [])).catch(() => {});
+    apiFetch<LHB[]>('/api/lhb?date=').then(d => setLhb(d ?? [])).catch(() => {});
+    apiFetch<STRONG[]>('/api/strong-pool?date=').then(d => setStrong(d ?? [])).catch(() => {});
+    apiFetch<HR[]>('/api/hot-rank-up?top_n=50').then(d => setHr(d ?? [])).catch(() => {});
+    apiFetch<NB[]>('/api/northbound-flow').then(d => setNb(d ?? [])).catch(() => {});
+    apiFetch<XQ[]>('/api/xq-hot?top_n=50').then(d => setXq(d ?? [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -277,27 +262,6 @@ export function MarketRealtimePage() {
     ? (zbgc.length / (zt.length + zbgc.length) * 100).toFixed(1)
     : '--';
   const sfNetTotal = sf.reduce((s, d) => s + (d.main_inflow ?? 0), 0);
-
-  if (loading) {
-    return (
-      <div className="space-y-6 animate-pulse">
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-          {Array.from({ length: 7 }).map((_, i) => (
-            <div key={i} className="h-20 bg-gray-100 rounded-xl" />
-          ))}
-        </div>
-        {[1,2,3].map(i => (
-          <div key={i}>
-            <div className="h-5 w-32 bg-gray-200 rounded mb-3" />
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="h-64 bg-gray-100 rounded-xl" />
-              <div className="h-64 bg-gray-100 rounded-xl" />
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  }
 
   // ── 行业资金流（各自最大值） ─────────────────────────────────
   const sfSorted  = [...sf].sort((a, b) => b.main_inflow - a.main_inflow);
