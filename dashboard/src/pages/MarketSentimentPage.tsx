@@ -1,3 +1,4 @@
+// v2
 import { useState, useEffect } from 'react';
 import { TrendingUp, TrendingDown, Zap, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 

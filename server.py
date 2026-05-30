@@ -70,14 +70,21 @@ CORS(app)
 def serve_spa(path):
     """Serve React SPA; fall back to index.html for client-side routing."""
     if path.startswith("api/"):
-        # Let API routes handle themselves (Flask matches more-specific rules first,
-        # but this guard makes the intent explicit)
         from flask import abort
         abort(404)
     full = os.path.join(DIST, path)
     if path and os.path.exists(full):
-        return send_from_directory(DIST, path)
-    return send_from_directory(DIST, "index.html")
+        # Hashed assets: cache aggressively
+        resp = send_from_directory(DIST, path)
+        if path.startswith("assets/"):
+            resp.cache_control.max_age = 31536000
+            resp.cache_control.immutable = True
+        return resp
+    # index.html: never cache — ensures browser picks up new asset hashes after deploy
+    resp = send_from_directory(DIST, "index.html")
+    resp.cache_control.no_cache = True
+    resp.cache_control.no_store = True
+    return resp
 
 
 # ---------------------------------------------------------------------------

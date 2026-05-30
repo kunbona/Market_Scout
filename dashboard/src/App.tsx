@@ -367,7 +367,7 @@ export default function App() {
   const { settings, update: updateSettings } = useSettings();
   const [activeTab, setActiveTab] = useState<TabId>(() => settings.defaultTab as TabId);
   const [marketTab, setMarketTab] = useState(() => settings.defaultMarketTab);
-  const [refreshKey] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const renderPage = () => {
     switch (activeTab) {
@@ -390,7 +390,7 @@ export default function App() {
             {marketTab === 'realtime' && <MarketRealtimePage />}
             {marketTab === 'sentiment' && (
               <div>
-                <ControlBar lastUpdate="本地日线数据" />
+                <ControlBar lastUpdate="本地日线数据" onRefresh={() => setRefreshKey(k => k + 1)} />
                 <MarketSentimentPage key={refreshKey} />
               </div>
             )}
