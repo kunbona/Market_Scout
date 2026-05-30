@@ -325,8 +325,8 @@ def compute_research_activity(trade_date: str) -> None:
     统计机构调研热度并写入 research_activity 表。
 
     数据来源: stock-activation-records/{code}.csv
-    统计窗口: trade_date 前5个交易日（含 trade_date）内被调研的机构数
-    筛选: org_count_5d >= 3
+    统计窗口: trade_date 前14自然日（含 trade_date，覆盖约10个交易日）
+    筛选: org_count_14d >= 10（参会机构数不低于10家）
     """
     from db.storage import insert_research_activity
 
@@ -341,7 +341,7 @@ def compute_research_activity(trade_date: str) -> None:
         logger.error("[daily_compute] research_activity: 日期解析失败 %s: %s", trade_date, e)
         return
 
-    window_start = (end_dt - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+    window_start = (end_dt - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
 
     inserted = 0
     for csv_file in act_dir.glob("*.csv"):
@@ -362,7 +362,7 @@ def compute_research_activity(trade_date: str) -> None:
             orgs = window_df["参会机构名称"].dropna()
             org_count = orgs.nunique()
 
-            if org_count < 3:
+            if org_count < 10:
                 continue
 
             code = str(window_df["股票代码"].iloc[0]).strip()

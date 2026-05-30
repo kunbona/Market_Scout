@@ -645,7 +645,13 @@ export function MarketSentimentPage() {
       {(raData.length > 0 || loading) && (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200">
-            <h3 className="text-sm font-medium text-gray-900">机构密集调研 <span className="text-xs text-gray-400 font-normal">近5日≥3家机构</span></h3>
+            <h3 className="text-sm font-medium text-gray-900">
+              机构密集调研
+              <span className="text-xs text-gray-400 font-normal ml-1">近14日≥10家参会机构</span>
+              {emotion?.trade_date && (
+                <span className="text-xs text-gray-400 font-normal ml-2">截止 {emotion.trade_date}</span>
+              )}
+            </h3>
           </div>
           <div className="p-4">
             {loading ? (
@@ -660,7 +666,6 @@ export function MarketSentimentPage() {
                     </div>
                     <div className="ml-2 shrink-0 text-right">
                       <div className="text-sm font-semibold text-blue-600">{r.org_count_5d}家</div>
-                      <div className="text-xs text-gray-400">{r.last_visit_date?.slice(5)}</div>
                     </div>
                   </div>
                 ))}
