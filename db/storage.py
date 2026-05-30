@@ -545,6 +545,15 @@ CREATE TABLE IF NOT EXISTS ths_hot_stocks (
 );
 CREATE INDEX IF NOT EXISTS idx_ths_hot_time ON ths_hot_stocks(fetch_time);
         """)
+        # 增量迁移：为旧版 DB 补充新增列（列已存在时忽略）
+        _migrations = [
+            "ALTER TABLE market_emotion ADD COLUMN real_zt INTEGER",
+        ]
+        for sql in _migrations:
+            try:
+                conn.execute(sql)
+            except Exception:
+                pass  # 列已存在
 
 
 def _rows_to_dicts(cursor) -> list[dict]:
@@ -915,10 +924,6 @@ def upsert_market_emotion(trade_date: str, zt_total: int, dt_total: int, zb_tota
                           max_lianzban: int, zt_yesterday_premium: float, zb_rate: float,
                           real_zt: int = None) -> None:
     with sqlite3.connect(DB_PATH) as conn:
-        try:
-            conn.execute("ALTER TABLE market_emotion ADD COLUMN real_zt INTEGER")
-        except Exception:
-            pass  # 列已存在则忽略
         conn.execute(
             "INSERT OR REPLACE INTO market_emotion "
             "(trade_date, zt_total, dt_total, zb_total, max_lianzban, zt_yesterday_premium, zb_rate, real_zt) "
