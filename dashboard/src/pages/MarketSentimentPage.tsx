@@ -12,6 +12,7 @@ interface MarketEmotion {
   max_lianzban: number;
   zt_yesterday_premium: number;
   zb_rate: number;
+  real_zt: number | null;
 }
 
 interface LianzbanStats {
@@ -23,14 +24,6 @@ interface LianzbanStats {
   advance_1to2: number;
   advance_2to3: number;
   advance_3to4: number;
-}
-
-interface MarketPulse {
-  fetch_time: string;
-  zt_count: number;
-  dt_count: number;
-  real_zt: number | null;
-  activity: number | null;
 }
 
 interface SectorDensity {
@@ -186,7 +179,6 @@ function SectionHeader({ title, badge }: { title: string; badge?: string }) {
 export function MarketSentimentPage() {
   const [emotion, setEmotion] = useState<MarketEmotion | null>(null);
   const [lbStats, setLbStats] = useState<LianzbanStats | null>(null);
-  const [pulse, setPulse] = useState<MarketPulse | null>(null);
   const [sectors, setSectors] = useState<SectorDensity[] | null>(null);
   const [concepts, setConcepts] = useState<ConceptZt[] | null>(null);
   const [chains, setChains] = useState<LianzbanItem[] | null>(null);
@@ -201,7 +193,6 @@ export function MarketSentimentPage() {
     setLoading(true);
     Promise.allSettled([
       safeApiFetch<MarketEmotion>('/api/market-emotion'),
-      safeApiFetch<MarketPulse[]>('/api/market-pulse?n=1'),
       safeApiFetch<SectorDensity[]>('/api/sector-zt-density'),
       safeApiFetch<ConceptZt[]>('/api/concept-zt-density?top_n=15'),
       safeApiFetch<LianzbanItem[]>('/api/lianzban-chain'),
@@ -211,14 +202,10 @@ export function MarketSentimentPage() {
       safeApiFetch<any[]>('/api/sector-flow-accel'),
       safeApiFetch<any[]>('/api/volume-breakout'),
       safeApiFetch<LianzbanStats[]>('/api/lianzban-stats?days=30'),
-    ]).then(([e, p, s, c, l, ad, to, mc, sfa, vb, lb]) => {
+    ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb]) => {
       // 空对象 {} 视为无数据，统一转 null，避免字段访问得到 undefined
       const nonEmpty = (v: any) => (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0 ? v : null);
       if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
-      if (p.status === 'fulfilled') {
-        const arr = p.value;
-        if (Array.isArray(arr) && arr.length > 0) setPulse(arr[0]);
-      }
       if (s.status === 'fulfilled') {
         const raw = s.value ?? [];
         setSectors([...raw].sort((a, b) => b.zt_count - a.zt_count));
@@ -298,7 +285,7 @@ export function MarketSentimentPage() {
               ? `${emotion.zt_total} / ${emotion.dt_total}`
               : '--'
           }
-          sub={`非一字涨停：${fmt(pulse?.real_zt)}只`}
+          sub={`非一字涨停：${fmt(emotion?.real_zt)}只`}
           accent="red"
           loading={loading}
         />

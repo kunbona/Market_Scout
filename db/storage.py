@@ -1153,6 +1153,18 @@ def get_market_emotion_summary(trade_date: str = None) -> dict:
         if ls:
             ls_cols = [d[0] for d in conn.execute("SELECT * FROM lianzban_stats LIMIT 0").description]
             result.update(dict(zip(ls_cols, ls)))
+
+        # 非一字涨停数：从 zt_pool 按日期统计 first_zt_time >= '092500' 的条数
+        # 集合竞价封板（< 092500）视为一字板，其余为非一字
+        try:
+            non_yizi = conn.execute(
+                "SELECT COUNT(*) FROM zt_pool WHERE trade_date = ? AND first_zt_time >= '092500'",
+                (result["trade_date"],)
+            ).fetchone()[0]
+            result["real_zt"] = non_yizi
+        except Exception:
+            pass
+
         return result
 
 
