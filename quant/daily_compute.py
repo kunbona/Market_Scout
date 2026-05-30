@@ -748,6 +748,7 @@ def run_daily_compute(trade_date: str = None) -> None:
         ("lianzban_chain", compute_lianzban_chain),
         ("lianzban_stats", compute_lianzban_stats),
         ("concept_zt_density", compute_concept_zt_density),
+        ("research_activity", compute_research_activity),
         ("turnover_stats", compute_turnover_stats),
         ("market_cap_dist", compute_market_cap_dist),
         ("advance_decline", compute_advance_decline),

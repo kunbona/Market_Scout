@@ -310,6 +310,7 @@ export function MarketSentimentPage() {
           icon={Zap}
           label="最高连板"
           value={emotion ? `${emotion.max_lianzban}板` : '--'}
+          sub={chains ? `连板股：${chains.length}只` : undefined}
           accent="amber"
           loading={loading}
         />
@@ -356,10 +357,18 @@ export function MarketSentimentPage() {
 
         {/* 市值偏好 */}
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
-          <div className="text-xs text-gray-500 mb-1">涨停市值偏好（中/小）</div>
-          <div className="text-2xl text-gray-900 mb-1">
-            {loading ? '--' : fmtNum(mcData?.mid_pct != null ? mcData.mid_pct * 100 : null, 0, '%')}
-            {!loading && mcData?.small_pct != null && <span className="text-base text-gray-400"> / {(mcData.small_pct * 100).toFixed(0)}%</span>}
+          <div className="text-xs text-gray-500 mb-1">涨停市值偏好</div>
+          <div className="text-2xl font-semibold mb-1" style={{color:
+            !mcData ? undefined :
+            mcData.small_pct >= 0.5 ? '#ef4444' :
+            mcData.large_pct >= 0.4 ? '#3b82f6' : '#f97316'
+          }}>
+            {loading ? '--' : !mcData ? '--' :
+              mcData.small_pct >= 0.5 ? '偏小盘' :
+              mcData.large_pct >= 0.4 ? '偏大盘' : '偏中盘'}
+          </div>
+          <div className="text-xs text-gray-400">
+            {loading ? '' : mcData ? `小${(mcData.small_pct*100).toFixed(0)}% 中${(mcData.mid_pct*100).toFixed(0)}% 大${(mcData.large_pct*100).toFixed(0)}%` : ''}
           </div>
         </div>
       </div>
