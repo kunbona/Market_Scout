@@ -143,14 +143,14 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
 
       {/* Nav */}
       <nav className="flex-1 p-4 relative z-10 overflow-y-auto">
-        {/* 滑动活跃背景指示器 */}
+        {/* 滑动活跃背景指示器 — CSS transition 驱动，无 React 重渲染延迟 */}
         <div
           className="absolute left-4 right-4 rounded-xl bg-gradient-to-r from-blue-500 to-purple-600 nav-item-active pointer-events-none"
           style={{
             height: '44px',
-            transform: `translateY(${menuItems.findIndex(m => m.id === activeTab) * (44 + 6)}px)`,
-            transition: 'transform 280ms cubic-bezier(0.22, 1, 0.36, 1)',
-            opacity: 1,
+            top: '16px',
+            transform: `translateY(${menuItems.findIndex(m => m.id === activeTab) * 50}px)`,
+            transition: 'transform 240ms cubic-bezier(0.25, 1, 0.5, 1)',
           }}
         />
         {menuItems.map((item) => {
@@ -160,15 +160,27 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`nav-item relative z-10 w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1.5 text-sm font-medium ${
-                isActive ? 'text-white' : 'text-gray-600 hover:text-gray-900'
-              }`}
+              className="nav-item relative z-10 w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1.5 text-sm font-medium"
+              style={{
+                color: isActive ? 'white' : undefined,
+                transition: 'color 180ms ease',
+              }}
             >
-              <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-white' : 'text-gray-400'}`} />
+              <Icon
+                className="w-4 h-4 flex-shrink-0"
+                style={{
+                  color: isActive ? 'white' : undefined,
+                  transition: 'color 180ms ease',
+                }}
+              />
               <span>{item.label}</span>
-              {isActive && (
-                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white/70" />
-              )}
+              <span
+                className="ml-auto w-1.5 h-1.5 rounded-full bg-white/70"
+                style={{
+                  opacity: isActive ? 1 : 0,
+                  transition: 'opacity 180ms ease',
+                }}
+              />
             </button>
           );
         })}
