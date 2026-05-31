@@ -126,8 +126,8 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
         // 已在运行，直接轮询
       }
       startPolling();
-    } catch (e: any) {
-      setError(e?.message ?? '请求失败');
+    } catch (e) {
+      setError((e instanceof Error ? e.message : String(e)) || '请求失败');
       setComputing(false);
     }
   };

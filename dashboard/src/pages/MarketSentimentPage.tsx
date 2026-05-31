@@ -45,6 +45,71 @@ interface LianzbanItem {
   is_zb: number;
 }
 
+interface AdvanceDecline {
+  trade_date: string;
+  advance_count: number;
+  decline_count: number;
+  ad_ratio: number;
+  total_amount: number;
+  amount_ma20: number;
+  amount_ratio: number;
+}
+
+interface TurnoverStats {
+  trade_date: string;
+  median_to: number;
+  low_count: number;
+  mid_count: number;
+  high_count: number;
+}
+
+interface MarketCapDist {
+  trade_date: string;
+  small_count: number;
+  mid_count: number;
+  large_count: number;
+  small_pct: number;
+  mid_pct: number;
+  large_pct: number;
+}
+
+interface SectorFlowAccel {
+  industry: string;
+  acceleration: number;
+  inst_3d: number;
+  inst_20d: number;
+}
+
+interface VolumeBreakout {
+  stock_code: string;
+  stock_name: string;
+  ratio_5_20: number;
+  amount: number;
+}
+
+interface ResearchActivity {
+  stock_code: string;
+  stock_name: string;
+  org_count: number;
+  latest_date: string;
+}
+
+// ─── Semantic colors ─────────────────────────────────────────────────────────
+const C_UP     = '#16a34a';  // 涨/强 green
+const C_UP2    = '#22c55e';  // 涨/强 green lighter
+const C_WARN   = '#f59e0b';  // 警示 amber
+const C_DOWN   = '#ef4444';  // 跌/弱 red
+const C_BLUE   = '#3b82f6';  // 信息 blue
+const C_ORANGE = '#f97316';  // 中性偏暖 orange
+const C_MUTED  = '#d1d5db';  // 无数据 gray
+const C_RING_NONE = '#e5e7eb'; // ring 无数据 light gray
+
+const accelColor = (v: number) =>
+  v >= 1.5 ? '#ef4444' : v >= 1.0 ? '#f59e0b' : '#16a34a';
+
+const breakoutColor = (v: number) =>
+  v >= 3 ? '#ef4444' : v >= 2 ? '#f59e0b' : '#6b7280';
+
 // ─── Formatters ──────────────────────────────────────────────────────────────
 
 const fmt = (v: number | null | undefined, suffix = '') =>
@@ -59,7 +124,7 @@ const fmtNum = (v: number | null | undefined, digits = 2, suffix = '') =>
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // 空对象 {} 视为无数据，统一转 null，避免字段访问得到 undefined
-const nonEmpty = (v: any) =>
+const nonEmpty = (v: unknown) =>
   v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0 ? v : null;
 
 // ─── API ─────────────────────────────────────────────────────────────────────
@@ -176,11 +241,11 @@ function AmountRatioGauge({ ratio, loading }: { ratio: number | null | undefined
     }
   }, [ratio]);
 
-  const color = ratio == null ? '#d1d5db'
-    : ratio >= 1.5 ? '#16a34a'
-    : ratio >= 1.0 ? '#22c55e'
-    : ratio >= 0.8 ? '#f59e0b'
-    : '#ef4444';
+  const color = ratio == null ? C_MUTED
+    : ratio >= 1.5 ? C_UP
+    : ratio >= 1.0 ? C_UP2
+    : ratio >= 0.8 ? C_WARN
+    : C_DOWN;
 
   return (
     <div className="mt-1.5">
@@ -218,10 +283,10 @@ function AdRatioRing({
   // offset = circumference - (ratio * circumference)：ratio=1 → full, ratio=0 → empty
   const offset = circumference - clampedRatio * circumference;
 
-  const strokeColor = ratio == null ? '#e5e7eb'
-    : ratio >= 0.6 ? '#16a34a'
-    : ratio >= 0.45 ? '#f59e0b'
-    : '#ef4444';
+  const strokeColor = ratio == null ? C_RING_NONE
+    : ratio >= 0.6 ? C_UP
+    : ratio >= 0.45 ? C_WARN
+    : C_DOWN;
 
   return (
     <div className="flex items-center gap-2 mt-1">
@@ -283,12 +348,12 @@ export function MarketSentimentPage() {
   const [concepts, setConcepts] = useState<ConceptZt[] | null>(null);
   const [chains, setChains] = useState<LianzbanItem[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [adData, setAdData] = useState<any>(null);
-  const [toStats, setToStats] = useState<any>(null);
-  const [mcData, setMcData] = useState<any>(null);
-  const [sfaData, setSfaData] = useState<any[]>([]);
-  const [vbData, setVbData] = useState<any[]>([]);
-  const [raData, setRaData] = useState<any[]>([]);
+  const [adData, setAdData] = useState<AdvanceDecline | null>(null);
+  const [toStats, setToStats] = useState<TurnoverStats | null>(null);
+  const [mcData, setMcData] = useState<MarketCapDist | null>(null);
+  const [sfaData, setSfaData] = useState<SectorFlowAccel[]>([]);
+  const [vbData, setVbData] = useState<VolumeBreakout[]>([]);
+  const [raData, setRaData] = useState<ResearchActivity[]>([]);
 
   useEffect(() => {
     setLoading(true);
@@ -297,13 +362,13 @@ export function MarketSentimentPage() {
       safeApiFetch<SectorDensity[]>('/api/sector-zt-density'),
       safeApiFetch<ConceptZt[]>('/api/concept-zt-density?top_n=15'),
       safeApiFetch<LianzbanItem[]>('/api/lianzban-chain'),
-      safeApiFetch<any>('/api/advance-decline'),
-      safeApiFetch<any>('/api/turnover-stats'),
-      safeApiFetch<any>('/api/market-cap-dist'),
-      safeApiFetch<any[]>('/api/sector-flow-accel'),
-      safeApiFetch<any[]>('/api/volume-breakout'),
+      safeApiFetch<AdvanceDecline>('/api/advance-decline'),
+      safeApiFetch<TurnoverStats>('/api/turnover-stats'),
+      safeApiFetch<MarketCapDist>('/api/market-cap-dist'),
+      safeApiFetch<SectorFlowAccel[]>('/api/sector-flow-accel'),
+      safeApiFetch<VolumeBreakout[]>('/api/volume-breakout'),
       safeApiFetch<LianzbanStats[]>('/api/lianzban-stats?days=30'),
-      safeApiFetch<any[]>('/api/research-activity'),
+      safeApiFetch<ResearchActivity[]>('/api/research-activity'),
     ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb, ra]) => {
       if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
       if (s.status === 'fulfilled') {
@@ -431,7 +496,7 @@ export function MarketSentimentPage() {
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-gray-500 font-medium">活跃度</span>
             {adData && (
-              <span className="text-xs font-mono font-semibold" style={{color: adData.ad_ratio >= 1.5 ? '#16a34a' : adData.ad_ratio >= 0.8 ? '#f59e0b' : '#ef4444'}}>
+              <span className="text-xs font-mono font-semibold" style={{color: adData.ad_ratio >= 1.5 ? C_UP : adData.ad_ratio >= 0.8 ? C_WARN : C_DOWN}}>
                 {adData.ad_ratio?.toFixed(2)}
               </span>
             )}
@@ -456,7 +521,7 @@ export function MarketSentimentPage() {
           ) : (
             <>
               <div className="text-2xl font-semibold tracking-tight mb-0.5"
-                style={{color: adData ? (adData.amount_ratio >= 1.2 ? '#16a34a' : adData.amount_ratio >= 0.8 ? '#f59e0b' : '#ef4444') : undefined}}>
+                style={{color: adData ? (adData.amount_ratio >= 1.2 ? C_UP : adData.amount_ratio >= 0.8 ? C_WARN : C_DOWN) : undefined}}>
                 <span className="kpi-counter">{fmtNum(adData?.total_amount, 0, '亿')}</span>
               </div>
               <div className="text-xs text-gray-500 mb-1">
@@ -484,8 +549,8 @@ export function MarketSentimentPage() {
           <div className="text-xs text-gray-500 font-medium mb-1">涨停市值偏好</div>
           <div className="text-2xl font-semibold tracking-tight mb-1" style={{color:
             !mcData ? undefined :
-            mcData.small_pct >= 0.5 ? '#ef4444' :
-            mcData.large_pct >= 0.4 ? '#3b82f6' : '#f97316'
+            mcData.small_pct >= 0.5 ? C_DOWN :
+            mcData.large_pct >= 0.4 ? C_BLUE : C_ORANGE
           }}>
             {loading ? <div className="h-7 bg-gray-100 rounded animate-pulse w-2/3" /> :
               <span className="kpi-counter">{!mcData ? '--' :
@@ -559,7 +624,7 @@ export function MarketSentimentPage() {
             <span className="text-xs text-gray-400 font-normal ml-2">中位 {toStats?.median_to?.toFixed(1) ?? '--'}%</span>
           </h3>
           {loading ? <div className="text-sm text-gray-400">--</div> : toStats ? (
-            [['低(<5%)', toStats.low_count, '#22c55e'], ['中(5-20%)', toStats.mid_count, '#f59e0b'], ['高(≥20%)', toStats.high_count, '#ef4444']].map(([label, count, color], i) => {
+            [['低(<5%)', toStats.low_count, C_UP2], ['中(5-20%)', toStats.mid_count, C_WARN], ['高(≥20%)', toStats.high_count, C_DOWN]].map(([label, count, color], i) => {
               const total = (toStats.low_count||0) + (toStats.mid_count||0) + (toStats.high_count||0);
               const pct = total > 0 ? (count as number) / total * 100 : 0;
               return (
@@ -713,7 +778,7 @@ export function MarketSentimentPage() {
         <h3 className="text-sm text-gray-900 mb-4 font-medium">涨停市值分布</h3>
         {loading ? <div className="text-sm text-gray-400">--</div> : mcData ? (
           <div className="grid grid-cols-3 gap-3">
-            {([['<50亿', mcData.small_count, mcData.small_pct, '#ef4444'], ['50-300亿', mcData.mid_count, mcData.mid_pct, '#f97316'], ['≥300亿', mcData.large_count, mcData.large_pct, '#3b82f6']] as [string,number,number,string][]).map(([label,count,pct,color],i) => (
+            {([[`<50亿`, mcData.small_count, mcData.small_pct, C_DOWN], ['50-300亿', mcData.mid_count, mcData.mid_pct, C_ORANGE], ['≥300亿', mcData.large_count, mcData.large_pct, C_BLUE]] as [string,number,number,string][]).map(([label,count,pct,color],i) => (
               <div key={i} className="text-center p-3 border border-gray-100 rounded-lg">
                 <div className="text-xs text-gray-400 mb-1">{label}</div>
                 <div className="text-xl font-bold" style={{color}}>{count ?? '--'}</div>
@@ -732,7 +797,7 @@ export function MarketSentimentPage() {
           </div>
           <div className="p-4 space-y-1">
             {loading ? <div className="text-sm text-gray-400">--</div> : sfaData.length > 0 ? sfaData.slice(0,10).map((r,i) => {
-              const col = (r.acceleration??0) >= 1.5 ? '#ef4444' : (r.acceleration??0) >= 1.0 ? '#f59e0b' : '#16a34a';
+              const col = accelColor(r.acceleration ?? 0);
               return (
                 <div key={i} className="flex items-center justify-between py-1.5 hover:bg-gray-50 rounded px-2">
                   <span className="text-sm text-gray-900">{r.industry}</span>
@@ -749,7 +814,7 @@ export function MarketSentimentPage() {
           </div>
           <div className="p-4 space-y-1">
             {loading ? <div className="text-sm text-gray-400">--</div> : vbData.length > 0 ? vbData.slice(0,15).map((r,i) => {
-              const col = (r.ratio_5_20??0) >= 3 ? '#ef4444' : (r.ratio_5_20??0) >= 2 ? '#f59e0b' : '#6b7280';
+              const col = breakoutColor(r.ratio_5_20 ?? 0);
               return (
                 <div key={i} className="flex items-center gap-2 py-1.5 hover:bg-gray-50 rounded px-2">
                   <span className="text-sm text-gray-900 flex-1 truncate">{r.stock_name}</span>

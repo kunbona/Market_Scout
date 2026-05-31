@@ -152,6 +152,15 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-base font-semibold text-gray-800 mb-3">{children}</h3>;
 }
 
+// ─── Semantic badge colors ────────────────────────────────────────────────────
+const BADGE = {
+  red:    { background: '#fee2e2', color: '#dc2626' },
+  green:  { background: '#dcfce7', color: '#16a34a' },
+  amber:  { background: '#fef3c7', color: '#d97706' },
+  blue:   { background: '#eff6ff', color: '#3b82f6' },
+  orange: { background: '#fff7ed', color: '#f97316' },
+} as const;
+
 // ─── 大单成交额辅助 ────────────────────────────────────────────
 // akshare 返回百万元单位，≥100百万（即≥1亿）显示亿，否则换算万
 const fmtDealAmt = (v?: number | null) =>
@@ -380,14 +389,14 @@ export function MarketRealtimePage() {
           <div className="space-y-1">
             <div className="flex items-center justify-between">
               <span className="text-xs px-1.5 py-0.5 rounded font-bold"
-                style={{ background: '#eff6ff', color: '#3b82f6' }}>北向</span>
+                style={BADGE.blue}>北向</span>
               <span className={`text-sm font-bold font-mono ${nbNorth >= 0 ? 'text-red-600' : 'text-green-600'}`}>
                 {nbNorth >= 0 ? '+' : ''}{nbNorth.toFixed(1)}亿
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs px-1.5 py-0.5 rounded font-bold"
-                style={{ background: '#fff7ed', color: '#f97316' }}>南向</span>
+                style={BADGE.orange}>南向</span>
               <span className={`text-sm font-bold font-mono ${nbSouth >= 0 ? 'text-red-600' : 'text-green-600'}`}>
                 {nbSouth >= 0 ? '+' : ''}{nbSouth.toFixed(1)}亿
               </span>
@@ -438,7 +447,7 @@ export function MarketRealtimePage() {
               <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
               <span className="font-medium text-gray-800">{d.stock_name}</span>,
               <span className="px-1.5 py-0.5 rounded font-bold text-xs"
-                style={{ background: '#fee2e2', color: '#dc2626' }}>{d.zt_count}板</span>,
+                style={BADGE.red}>{d.zt_count}板</span>,
               <span className="font-mono text-gray-500">{fmtTime(d.first_zt_time)}</span>,
               (d.zb_count ?? 0) > 0
                 ? <span className="font-bold text-green-600">炸板{d.zb_count}次</span>
@@ -454,7 +463,7 @@ export function MarketRealtimePage() {
                 <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
                 <span className="font-medium text-gray-800">{d.stock_name}</span>,
                 <span className="px-1.5 py-0.5 rounded font-bold text-xs"
-                  style={{ background: '#dcfce7', color: '#16a34a' }}>跌停</span>,
+                  style={BADGE.green}>跌停</span>,
                 <span className="font-mono text-gray-500">{fmtTime(d.first_dt_time)}</span>,
                 <span className="text-gray-500 truncate">{d.sector}</span>,
               ])}
@@ -475,7 +484,7 @@ export function MarketRealtimePage() {
               <span className="font-mono text-gray-500">{cleanCode(d.stock_code)}</span>,
               <span className="font-medium text-gray-800">{d.stock_name}</span>,
               <span className="px-1.5 py-0.5 rounded font-bold text-xs"
-                style={{ background: '#fef3c7', color: '#d97706' }}>炸板{d.zb_count}次</span>,
+                style={BADGE.amber}>炸板{d.zb_count}次</span>,
               <span className="font-mono text-gray-500">{fmtTime(d.first_zt_time)}</span>,
               <span className="font-mono text-gray-600">
                 {d.amplitude != null ? `${d.amplitude.toFixed(1)}%` : '—'}
@@ -592,10 +601,7 @@ export function MarketRealtimePage() {
               return [
                 <span className="font-medium text-gray-800">{d.channel}</span>,
                 <span className="px-1.5 py-0.5 rounded text-xs font-bold"
-                  style={{
-                    background: isNorth ? '#eff6ff' : '#fff7ed',
-                    color: isNorth ? '#3b82f6' : '#f97316',
-                  }}>{d.direction}</span>,
+                  style={isNorth ? BADGE.blue : BADGE.orange}>{d.direction}</span>,
                 <span className={`font-mono ${numColor(d.net_buy)}`}>
                   {d.net_buy >= 0 ? '+' : ''}{d.net_buy.toFixed(2)}亿
                 </span>,
