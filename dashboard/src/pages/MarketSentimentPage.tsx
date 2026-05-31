@@ -83,15 +83,16 @@ interface SectorFlowAccel {
 interface VolumeBreakout {
   stock_code: string;
   stock_name: string;
+  industry:   string;
   ratio_5_20: number;
-  amount: number;
+  amount_5d:  number | null;
 }
 
 interface ResearchActivity {
-  stock_code: string;
-  stock_name: string;
-  org_count: number;
-  latest_date: string;
+  stock_code:      string;
+  stock_name:      string;
+  org_count_5d:    number;
+  last_visit_date: string;
 }
 
 // ─── Semantic colors ─────────────────────────────────────────────────────────
@@ -124,8 +125,10 @@ const fmtNum = (v: number | null | undefined, digits = 2, suffix = '') =>
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // 空对象 {} 视为无数据，统一转 null，避免字段访问得到 undefined
-const nonEmpty = (v: unknown) =>
-  v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0 ? v : null;
+const nonEmpty = <T extends object>(v: unknown): T | null =>
+  v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length > 0
+    ? (v as T)
+    : null;
 
 // ─── API ─────────────────────────────────────────────────────────────────────
 
