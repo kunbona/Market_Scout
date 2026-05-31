@@ -117,13 +117,13 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
     : '就绪';
   const syncColor = isDone && failed === 0 ? 'text-green-600'
     : isDone && failed > 0 ? 'text-amber-600'
-    : isRunning ? 'text-blue-600'
-    : isAuto ? 'text-blue-500'
+    : isRunning ? 'text-indigo-600'
+    : isAuto ? 'text-indigo-500'
     : 'text-green-600';
   const dotColor = isDone && failed === 0 ? 'bg-green-500'
     : isDone && failed > 0 ? 'bg-amber-500'
-    : isRunning ? 'bg-blue-500'
-    : isAuto ? 'bg-blue-400'
+    : isRunning ? 'bg-indigo-500'
+    : isAuto ? 'bg-indigo-400'
     : 'bg-green-500';
 
   return (

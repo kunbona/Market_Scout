@@ -8,16 +8,15 @@
   /* 数值/代码用等宽字体，防止数字跳动 */
   --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 
-  /* ── Brand accent token (OKLCH) ──
-     单一 primary color，替代散落各处的 from-blue-500/to-purple-600 字面值。
-     oklch(58% 0.20 262) ≈ blue-600，饱和度适中，在白色背景上对比度 4.7:1，通过 WCAG AA。
-     hover/active 通过 lightness 降低实现，不引入第二个色调。               */
-  --accent:        oklch(58% 0.20 262);   /* primary — buttons, active nav, selected tab */
-  --accent-hover:  oklch(52% 0.20 262);   /* button hover */
-  --accent-active: oklch(47% 0.20 262);   /* button active/press */
-  --accent-subtle: oklch(96% 0.05 262);   /* tinted surface — bg-tint, hover bg */
-  --accent-muted:  oklch(70% 0.14 262);   /* muted text, secondary indicators */
-  --accent-glow:   oklch(58% 0.20 262 / 0.25); /* focus ring, shadow */
+  /* ── Brand accent tokens ──
+     渐变：from-blue-500 (#3b82f6) → to-purple-600 (#9333ea)
+     单色 fallback 取渐变中点，用于 focus ring / shadow 等不支持渐变的场景。 */
+  --accent:        #6366f1;                /* 渐变中点（indigo-500），用于 focus/shadow */
+  --accent-hover:  #4f46e5;               /* 略深，用于 hover 状态文字色 */
+  --accent-active: #4338ca;               /* 再深，用于 active 状态 */
+  --accent-subtle: oklch(96% 0.04 280);   /* 极淡紫蓝，用于 sidebar tint */
+  --accent-muted:  oklch(68% 0.12 280);   /* 柔和紫，用于次要指示 */
+  --accent-glow:   rgba(99, 102, 241, 0.25); /* focus ring / shadow */
 
   /* ── Elevation 阴影层级 ── */
   --shadow-xs:  0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
@@ -138,14 +137,18 @@ button:disabled {
    使用方 只需写 class="accent-solid" 即可，修改品牌色只改这一处。
    ────────────────────────────────────────────────────────── */
 .accent-solid {
-  background: var(--accent);
+  background: linear-gradient(to right, #3b82f6, #9333ea);
   color: white;
 }
-.accent-solid:hover:not(:disabled) { background: var(--accent-hover); }
-.accent-solid:active:not(:disabled) { background: var(--accent-active); }
+.accent-solid:hover:not(:disabled) {
+  background: linear-gradient(to right, #2563eb, #7e22ce);
+}
+.accent-solid:active:not(:disabled) {
+  background: linear-gradient(to right, #1d4ed8, #6b21a8);
+}
 
 .accent-logo {
-  background: var(--accent);
+  background: linear-gradient(135deg, #3b82f6, #9333ea);
 }
 
 /* ─── FilterTab 胶囊按钮活跃态增强光泽 ──────────────────────  */
