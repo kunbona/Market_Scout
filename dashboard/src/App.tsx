@@ -376,7 +376,7 @@ export default function App() {
 
       <Sidebar activeTab={activeTab} setActiveTab={(tab) => setActiveTab(tab as TabId)} />
       <main className="flex-1 overflow-y-auto relative z-10">
-        <div className="p-8">
+        <div key={activeTab} className="p-8 page-enter">
           {renderPage()}
         </div>
       </main>

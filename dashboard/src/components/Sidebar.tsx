@@ -143,21 +143,30 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
 
       {/* Nav */}
       <nav className="flex-1 p-4 relative z-10 overflow-y-auto">
+        {/* 滑动活跃背景指示器 */}
+        <div
+          className="absolute left-4 right-4 rounded-xl bg-gradient-to-r from-blue-500 to-purple-600 nav-item-active pointer-events-none"
+          style={{
+            height: '44px',
+            transform: `translateY(${menuItems.findIndex(m => m.id === activeTab) * (44 + 6)}px)`,
+            transition: 'transform 280ms cubic-bezier(0.22, 1, 0.36, 1)',
+            opacity: 1,
+          }}
+        />
         {menuItems.map((item) => {
           const Icon = item.icon;
+          const isActive = activeTab === item.id;
           return (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1.5 text-sm font-medium ${
-                activeTab === item.id
-                  ? 'nav-item-active bg-gradient-to-r from-blue-500 to-purple-600 text-white'
-                  : 'text-gray-600 hover:text-gray-900'
+              className={`nav-item relative z-10 w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1.5 text-sm font-medium ${
+                isActive ? 'text-white' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Icon className={`w-4 h-4 flex-shrink-0 ${activeTab === item.id ? 'text-white' : 'text-gray-400'}`} />
+              <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-white' : 'text-gray-400'}`} />
               <span>{item.label}</span>
-              {activeTab === item.id && (
+              {isActive && (
                 <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white/70" />
               )}
             </button>

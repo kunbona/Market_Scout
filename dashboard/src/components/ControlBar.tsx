@@ -196,6 +196,8 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
                 <span
                   key={name}
                   className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
+                    (isDone || isCurrent) ? 'task-tag-enter' : ''
+                  } ${
                     failed
                       ? 'bg-red-50 text-red-600'
                       : isDone
