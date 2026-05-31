@@ -56,10 +56,10 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
         if (!j.success) return;
         const root: string = j.data?.data_root ?? '';
         if (!root) {
-          setDataRootWarn('未配置本地数据路径（QUANT_DATA_ROOT），情绪分析指标无法计算。');
+          setDataRootWarn('未配置本地数据路径（QUANT_DATA_ROOT），历史情绪指标不可用。请在设置中填写数据目录。');
         } else if (isWindowsPath(root)) {
           setDataRootWarn(
-            `检测到 Windows 路径：${root}。若服务运行在 WSL/Linux 中，请改为 WSL 映射路径，例如将 C:\\Users\\xxx 改为 /mnt/c/Users/xxx。`
+            `数据路径看起来是 Windows 格式（${root}）。如果服务运行在 WSL/Linux，请改为 WSL 路径，例如 C:\\Users\\foo → /mnt/c/Users/foo。`
           );
         }
       })
@@ -159,7 +159,7 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
           {computing
             ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
             : <Zap className="w-3.5 h-3.5" />}
-          {computing ? '计算中...' : '⚡ 计算今日数据'}
+          {computing ? '计算中...' : '计算今日数据'}
         </button>
 
         {lastUpdate && (

@@ -101,13 +101,17 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
     ? fetchState.results[fetchState.results.length - 1].name
     : null;
 
+  const totalTasks = fetchState.results.length + (isRunning ? 1 : 0);
+
   // 同步状态指示
   const syncLabel = isRunning
-    ? `抓取中 ${done}/${done + (20 - done)}…`
+    ? `抓取中 ${done}/${totalTasks || '…'}…`
+    : isDone && failed > 0
+    ? `${done} 成功，${failed} 失败`
     : isDone
-    ? fetchState.ts ? `${fetchState.ts} 更新` : '已完成'
+    ? fetchState.ts ? `已更新 ${fetchState.ts}` : '已完成'
     : isAuto
-    ? fetchState.auto_task ? `自动更新: ${fetchState.auto_task}` : '自动更新中…'
+    ? fetchState.auto_task ? `自动：${fetchState.auto_task}` : '自动更新中…'
     : fetchState.auto_ts
     ? `自动更新 ${fetchState.auto_ts}`
     : '就绪';
@@ -134,8 +138,8 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
             <Sparkles className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">DataHub</h1>
-            <p className="text-xs text-gray-500">智能数据中心</p>
+            <h1 className="text-xl font-semibold text-gray-900">Market Radar</h1>
+            <p className="text-xs text-gray-500">A 股行情监控</p>
           </div>
         </div>
       </div>
@@ -199,7 +203,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
           style={{ boxShadow: '0 2px 8px var(--accent-glow)' }}
         >
           <RefreshCw className={`w-4 h-4 ${isRunning ? 'animate-spin' : ''}`} />
-          {isRunning ? '数据抓取中...' : '立即抓取数据'}
+          {isRunning ? '抓取中...' : '抓取最新数据'}
         </button>
 
         {/* 进度/结果 */}

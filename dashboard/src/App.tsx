@@ -92,7 +92,7 @@ function SettingsPage({ settings, onUpdate }: {
         setSaveMsg(`✗ ${json.error}`);
       }
     } catch {
-      setSaveMsg('✗ 请求失败，请确认服务已启动');
+      setSaveMsg('✗ 保存失败，请确认服务正在运行');
     } finally {
       setSaving(false);
     }
@@ -100,7 +100,7 @@ function SettingsPage({ settings, onUpdate }: {
 
   return (
     <>
-      <TabHeader title="⚙️ 系统设置" subtitle="点击底部保存按钮统一生效" />
+      <TabHeader title="系统设置" />
       <div className="space-y-6 max-w-2xl">
 
         {/* 所有设置合并为一张卡片 */}
@@ -209,7 +209,7 @@ function SettingsPage({ settings, onUpdate }: {
                 placeholder="/path/to/Quant_Data"
                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
               />
-              <p className="text-xs text-gray-400 mt-1">用于市场情绪计算（日线 parquet 文件所在目录）</p>
+              <p className="text-xs text-gray-400 mt-1">每日收盘后计算情绪指标时读取此目录的 CSV/parquet 文件</p>
             </div>
 
             {/* RSSHub 地址 */}
@@ -233,7 +233,7 @@ function SettingsPage({ settings, onUpdate }: {
                   disabled={rsshubTesting}
                   className="px-3 py-2 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-colors disabled:opacity-50 whitespace-nowrap"
                 >
-                  {rsshubTesting ? '测试中...' : '测试连通'}
+                  {rsshubTesting ? '检测中...' : '检测连接'}
                 </button>
               </div>
               <div className="flex items-center justify-between mt-1">
@@ -286,10 +286,10 @@ function SettingsPage({ settings, onUpdate }: {
                 type="text"
                 value={quantWorkersInput}
                 onChange={e => setQuantWorkersInput(e.target.value)}
-                placeholder="留空=自动，填 1=单进程"
+                placeholder="默认自动（CPU 核数 / 2）"
                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
               />
-              <span className="text-xs text-green-600 mt-1 block">✓ 修改后立即生效，无需重启</span>
+              <span className="text-xs text-green-600 mt-1 block">修改后立即生效，无需重启。填 1 可切换为单进程。</span>
             </div>
           </div>
 
@@ -299,7 +299,7 @@ function SettingsPage({ settings, onUpdate }: {
               disabled={saving}
               className="accent-solid px-4 py-2 text-sm rounded-lg shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {saving ? '保存中...' : '保存所有配置'}
+              {saving ? '保存中...' : '保存配置'}
             </button>
             {saveMsg && (
               <span className={`text-xs ${saveMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
@@ -340,7 +340,7 @@ export default function App() {
       case 'market':
         return (
           <>
-            <TabHeader title="📈 市场数据中心" subtitle="实时行情与本地量价数据" />
+            <TabHeader title="市场数据" />
             <FilterTabs
               tabs={[
                 { id: 'realtime', label: '市场实时数据', emoji: '🔴' },
