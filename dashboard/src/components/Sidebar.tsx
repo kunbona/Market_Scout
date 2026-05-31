@@ -124,14 +124,13 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
 
   return (
     <div className="w-72 bg-white h-screen flex flex-col relative overflow-hidden border-r border-gray-200/80 shadow-xl">
-      {/* Background decoration */}
-      <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-blue-500/5 to-purple-500/5 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-0 left-0 w-64 h-64 bg-gradient-to-br from-pink-500/5 to-orange-500/5 rounded-full blur-3xl pointer-events-none" />
+      {/* Subtle accent tint top-right */}
+      <div className="absolute top-0 right-0 w-48 h-48 rounded-full pointer-events-none" style={{ background: 'var(--accent-subtle)', filter: 'blur(48px)', opacity: 0.6 }} />
 
       {/* Logo */}
       <div className="p-6 border-b border-gray-200/80 relative z-10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30">
+          <div className="accent-logo w-10 h-10 rounded-xl flex items-center justify-center shadow-lg" style={{ boxShadow: '0 4px 12px var(--accent-glow)' }}>
             <Sparkles className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -142,15 +141,15 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 p-4 relative z-10 overflow-y-auto">
+      <nav aria-label="主导航" className="flex-1 p-4 relative z-10 overflow-y-auto">
         {/* 滑动活跃背景指示器 — CSS transition 驱动，无 React 重渲染延迟 */}
         <div
-          className="absolute left-4 right-4 rounded-xl bg-gradient-to-r from-blue-500 to-purple-600 nav-item-active pointer-events-none"
+          className="absolute left-4 right-4 rounded-xl accent-logo nav-item-active pointer-events-none"
           style={{
             height: '44px',
             top: '16px',
             transform: `translateY(${menuItems.findIndex(m => m.id === activeTab) * 50}px)`,
-            transition: 'transform 240ms cubic-bezier(0.25, 1, 0.5, 1)',
+            transition: 'transform 220ms var(--ease-move, cubic-bezier(0.25, 1, 0.5, 1))',
           }}
         />
         {menuItems.map((item) => {
@@ -160,6 +159,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
+              aria-current={isActive ? 'page' : undefined}
               className="nav-item relative z-10 w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1.5 text-sm font-medium"
               style={{
                 color: isActive ? 'white' : undefined,
@@ -193,11 +193,10 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
         <button
           onClick={handleFetch}
           disabled={isRunning}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium
-                     bg-gradient-to-r from-blue-500 to-purple-600 text-white
-                     hover:from-blue-600 hover:to-purple-700
-                     disabled:opacity-60 disabled:cursor-not-allowed
-                     shadow-[0_2px_8px_rgba(99,102,241,.30)]"
+          aria-busy={isRunning}
+          className="accent-solid w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium
+                     disabled:opacity-60 disabled:cursor-not-allowed"
+          style={{ boxShadow: '0 2px 8px var(--accent-glow)' }}
         >
           <RefreshCw className={`w-4 h-4 ${isRunning ? 'animate-spin' : ''}`} />
           {isRunning ? '数据抓取中...' : '立即抓取数据'}
@@ -221,14 +220,14 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
         )}
 
         {/* 时间状态卡片 */}
-        <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-3">
+        <div className="rounded-xl p-3" style={{ background: 'var(--accent-subtle)' }}>
           <div className="flex items-center justify-between">
             <span className="text-xs text-gray-500">当前时间</span>
             <span className="text-xs font-semibold text-gray-900 font-mono">{currentTime}</span>
           </div>
           <div className="mt-1.5 flex items-center gap-1.5">
             <div className={`w-1.5 h-1.5 rounded-full ${dotColor} ${(isRunning || isAuto) ? 'animate-pulse' : ''}`} />
-            <span className={`text-xs font-medium ${syncColor}`}>{syncLabel}</span>
+            <span aria-live="polite" aria-atomic="true" className={`text-xs font-medium ${syncColor}`}>{syncLabel}</span>
           </div>
         </div>
 

@@ -24,7 +24,7 @@ function numColor(v?: number | null) {
 // ─── 迷你条形图（各自用自己列的最大值）──────────────────────
 function MiniBar({ ratio, isInflow }: { ratio: number; isInflow: boolean }) {
   return (
-    <div className="w-7 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+    <div aria-hidden="true" className="w-7 h-1.5 bg-gray-100 rounded-full overflow-hidden">
       <div
         className="h-full rounded-full"
         style={{
@@ -71,6 +71,7 @@ function Widget({
   rows: React.ReactNode[][];
 }) {
   const [expanded, setExpanded] = useState(false);
+  const bodyId = `widget-body-${title.replace(/\s+/g, '-')}`;
   const cols = headers.length;
   const total = rows.length;
   const needFold = total > HEAD + TAIL;
@@ -93,6 +94,8 @@ function Widget({
           {needFold && (
             <button
               onClick={() => setExpanded(e => !e)}
+              aria-expanded={expanded}
+              aria-controls={bodyId}
               className="flex items-center gap-0.5 px-2 py-1 text-xs text-gray-400
                          hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
             >
@@ -113,23 +116,25 @@ function Widget({
         ))}
       </div>
 
-      {/* 前 HEAD 条 */}
-      <DataRows rows={needFold ? head : rows} cols={cols} />
+      {/* 前 HEAD 条 + 折叠区 */}
+      <div id={bodyId}>
+        <DataRows rows={needFold ? head : rows} cols={cols} />
 
-      {/* 中间折叠区 */}
-      {needFold && (
-        <>
-          {expanded ? (
-            <DataRows rows={middle} cols={cols} />
-          ) : (
-            <div className="flex items-center justify-center py-2 border-y border-dashed border-gray-200 bg-gray-50">
-              <span className="text-xs text-gray-400">—— 中间 {hiddenCount} 条已折叠 ——</span>
-            </div>
-          )}
-          {/* 后 TAIL 条 */}
-          <DataRows rows={tail} cols={cols} />
-        </>
-      )}
+        {/* 中间折叠区 */}
+        {needFold && (
+          <>
+            {expanded ? (
+              <DataRows rows={middle} cols={cols} />
+            ) : (
+              <div className="flex items-center justify-center py-2 border-y border-dashed border-gray-200 bg-gray-50">
+                <span className="text-xs text-gray-400">—— 中间 {hiddenCount} 条已折叠 ——</span>
+              </div>
+            )}
+            {/* 后 TAIL 条 */}
+            <DataRows rows={tail} cols={cols} />
+          </>
+        )}
+      </div>
     </div>
   );
 }

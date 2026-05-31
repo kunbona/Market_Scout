@@ -126,9 +126,9 @@ function SettingsPage({ settings, onUpdate }: {
                   <button
                     key={id}
                     onClick={() => onUpdate({ defaultTab: id as AppSettings['defaultTab'] })}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors transition-shadow ${
                       settings.defaultTab === id
-                        ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
+                        ? 'accent-solid shadow-sm'
                         : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
                     }`}
                   >
@@ -152,9 +152,9 @@ function SettingsPage({ settings, onUpdate }: {
                   <button
                     key={id}
                     onClick={() => onUpdate({ defaultMarketTab: id as AppSettings['defaultMarketTab'] })}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors transition-shadow ${
                       settings.defaultMarketTab === id
-                        ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
+                        ? 'accent-solid shadow-sm'
                         : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
                     }`}
                   >
@@ -175,9 +175,9 @@ function SettingsPage({ settings, onUpdate }: {
                   <button
                     key={size}
                     onClick={() => onUpdate({ pageSize: size })}
-                    className={`min-w-[40px] h-8 px-3 rounded-lg text-sm font-medium transition-all ${
+                    className={`min-w-[40px] h-8 px-3 rounded-lg text-sm font-medium transition-colors transition-shadow ${
                       size === settings.pageSize
-                        ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-sm'
+                        ? 'accent-solid shadow-sm'
                         : 'border border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'
                     }`}
                   >
@@ -297,7 +297,7 @@ function SettingsPage({ settings, onUpdate }: {
             <button
               onClick={handleSaveAll}
               disabled={saving}
-              className="px-4 py-2 text-sm text-white bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg hover:from-blue-600 hover:to-purple-700 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="accent-solid px-4 py-2 text-sm rounded-lg shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? '保存中...' : '保存所有配置'}
             </button>
@@ -369,13 +369,14 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#f8fafc] relative overflow-hidden">
-      {/* Decorative background glows */}
-      <div className="pointer-events-none absolute top-0 left-1/4 w-96 h-96 bg-gradient-to-br from-blue-400/10 to-cyan-400/10 rounded-full blur-3xl animate-pulse" />
-      <div className="pointer-events-none absolute bottom-0 right-1/4 w-96 h-96 bg-gradient-to-br from-purple-400/10 to-pink-400/10 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
-      <div className="pointer-events-none absolute top-1/2 left-1/2 w-96 h-96 bg-gradient-to-br from-orange-400/5 to-rose-400/5 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '2s' }} />
-
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-white focus:text-blue-600 focus:rounded-lg focus:shadow-lg focus:text-sm focus:font-medium"
+      >
+        跳至主内容
+      </a>
       <Sidebar activeTab={activeTab} setActiveTab={(tab) => setActiveTab(tab as TabId)} />
-      <main className="flex-1 overflow-y-auto relative z-10">
+      <main id="main-content" className="flex-1 overflow-y-auto relative z-10">
         <div key={activeTab} className="p-8 page-enter">
           {renderPage()}
         </div>

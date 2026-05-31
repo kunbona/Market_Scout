@@ -156,7 +156,7 @@ function TierBar({
       </div>
       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all duration-700 ${color}`}
+          className={`h-full rounded-full transition-[width] duration-700 ${color}`}
           style={{ width: loading ? '0%' : `${pct}%` }}
         />
       </div>
@@ -444,7 +444,7 @@ export function MarketSentimentPage() {
                 <div key={i} className="flex items-center gap-3 py-1.5">
                   <span className="text-xs text-gray-500 w-20">{label as string}</span>
                   <div className="flex-1 bg-gray-100 rounded-full h-1.5">
-                    <div className="h-1.5 rounded-full transition-all" style={{width:`${pct}%`, background: color as string}} />
+                    <div className="h-1.5 rounded-full transition-[width] duration-500" style={{width:`${pct}%`, background: color as string}} />
                   </div>
                   <span className="text-xs font-mono text-gray-700 w-6 text-right">{count as number}</span>
                 </div>

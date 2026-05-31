@@ -142,12 +142,19 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
 
   return (
     <div className="mb-6 space-y-3">
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {computing
+          ? `计算中，${currentTaskName || '准备中'}，${pct}%`
+          : done
+          ? `计算完成，${tradeDate}，共 ${results.length} 项${failedCount > 0 ? `，${failedCount} 项失败` : ''}`
+          : ''}
+      </div>
       {/* 按钮行 */}
       <div className="flex items-center gap-3">
         <button
           onClick={handleCompute}
           disabled={computing}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-gradient-to-r from-orange-500 to-red-500 rounded-lg hover:from-orange-600 hover:to-red-600 transition-all disabled:opacity-60 disabled:cursor-not-allowed shadow-sm"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-gradient-to-r from-orange-500 to-red-500 rounded-lg hover:from-orange-600 hover:to-red-600 transition-colors disabled:opacity-60 disabled:cursor-not-allowed shadow-sm"
         >
           {computing
             ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -183,7 +190,7 @@ export function ControlBar({ onRefresh, lastUpdate }: ControlBarProps) {
           </div>
           <div className="w-full bg-gray-100 rounded-full h-1.5">
             <div
-              className="h-1.5 rounded-full bg-gradient-to-r from-orange-400 to-red-500 transition-all duration-300"
+              className="h-1.5 rounded-full bg-gradient-to-r from-orange-400 to-red-500 transition-[width] duration-300"
               style={{ width: `${pct}%` }}
             />
           </div>

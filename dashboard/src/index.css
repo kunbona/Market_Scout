@@ -8,18 +8,30 @@
   /* 数值/代码用等宽字体，防止数字跳动 */
   --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 
+  /* ── Brand accent token (OKLCH) ──
+     单一 primary color，替代散落各处的 from-blue-500/to-purple-600 字面值。
+     oklch(58% 0.20 262) ≈ blue-600，饱和度适中，在白色背景上对比度 4.7:1，通过 WCAG AA。
+     hover/active 通过 lightness 降低实现，不引入第二个色调。               */
+  --accent:        oklch(58% 0.20 262);   /* primary — buttons, active nav, selected tab */
+  --accent-hover:  oklch(52% 0.20 262);   /* button hover */
+  --accent-active: oklch(47% 0.20 262);   /* button active/press */
+  --accent-subtle: oklch(96% 0.05 262);   /* tinted surface — bg-tint, hover bg */
+  --accent-muted:  oklch(70% 0.14 262);   /* muted text, secondary indicators */
+  --accent-glow:   oklch(58% 0.20 262 / 0.25); /* focus ring, shadow */
+
   /* ── Elevation 阴影层级 ── */
   --shadow-xs:  0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
   --shadow-sm:  0 1px 3px rgba(0,0,0,.08), 0 2px 6px rgba(0,0,0,.06);
   --shadow-md:  0 4px 12px rgba(0,0,0,.08), 0 2px 6px rgba(0,0,0,.06);
   --shadow-lg:  0 8px 24px rgba(0,0,0,.10), 0 4px 10px rgba(0,0,0,.06);
   --shadow-xl:  0 16px 40px rgba(0,0,0,.12), 0 6px 16px rgba(0,0,0,.08);
-  --shadow-focus: 0 0 0 3px rgba(99,102,241,.25);
+  --shadow-focus: 0 0 0 3px var(--accent-glow);
 
   /* ── 交互动画 ── */
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);   /* 弹性，用于按压反馈 */
-  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);         /* 快出，用于进入动画 */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);         /* 快出，用于进入动画与 hover */
+  --ease-move:   cubic-bezier(0.25, 1, 0.5, 1);         /* 位移，用于 slide/indicator */
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);          /* 平滑，用于状态切换 */
+  --ease-press:  cubic-bezier(0.34, 1.22, 0.64, 1);    /* 轻微弹性，仅用于按压 active，overshoot 极小 */
   --duration-fast: 120ms;
   --duration-base: 200ms;
   --duration-slow: 300ms;
@@ -35,26 +47,26 @@ td,
 .tabular-nums { font-family: var(--font-mono) !important; font-variant-numeric: tabular-nums; }
 
 /* ─── 卡片交互 ─────────────────────────────────────────────
-   press: active:scale-[0.985] 带 spring easing，有按下感
-   hover: 上浮 + 阴影增深，体现 elevation 变化
+   hover: 轻微上浮 1px + 阴影加深，传达 elevation 变化，不做 scale
+   press: 快速下压，transition-duration 缩短至 fast
    ────────────────────────────────────────────────────────── */
 .card-hover {
   position: relative;
   z-index: 0;
   cursor: pointer;
   transition:
-    transform var(--duration-base) var(--ease-spring),
+    transform var(--duration-base) var(--ease-out),
     box-shadow var(--duration-base) var(--ease-in-out),
     border-color var(--duration-fast) ease;
 }
 .card-hover:hover {
-  transform: translateY(-2px) scale(1.01);
-  box-shadow: var(--shadow-xl);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
   z-index: 10;
   border-color: rgb(203 213 225) !important;  /* gray-300 */
 }
 .card-hover:active {
-  transform: scale(0.985) translateY(0);
+  transform: translateY(0) scale(0.99);
   box-shadow: var(--shadow-sm);
   transition-duration: var(--duration-fast);
 }
@@ -73,7 +85,7 @@ td,
 button {
   cursor: pointer;
   transition:
-    transform var(--duration-fast) var(--ease-spring),
+    transform var(--duration-fast) var(--ease-press),
     box-shadow var(--duration-fast) var(--ease-in-out),
     background-color var(--duration-fast) ease,
     border-color var(--duration-fast) ease,
@@ -84,8 +96,9 @@ button:active:not(:disabled) {
   transition-duration: 80ms;
 }
 button:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-focus);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 button:disabled {
   cursor: not-allowed;
@@ -120,16 +133,31 @@ button:disabled {
 }
 .widget-card:hover { box-shadow: var(--shadow-md); }
 
+/* ─── Brand accent utilities ────────────────────────────────
+   将散落各处的 from-blue-500 to-purple-600 渐变字面值集中到此处管理。
+   使用方 只需写 class="accent-solid" 即可，修改品牌色只改这一处。
+   ────────────────────────────────────────────────────────── */
+.accent-solid {
+  background: var(--accent);
+  color: white;
+}
+.accent-solid:hover:not(:disabled) { background: var(--accent-hover); }
+.accent-solid:active:not(:disabled) { background: var(--accent-active); }
+
+.accent-logo {
+  background: var(--accent);
+}
+
 /* ─── FilterTab 胶囊按钮活跃态增强光泽 ──────────────────────  */
 .tab-active-glow {
-  box-shadow: 0 2px 12px rgba(99,102,241,.35), 0 1px 3px rgba(99,102,241,.25);
+  box-shadow: 0 2px 12px var(--accent-glow), 0 1px 3px var(--accent-glow);
 }
 
 /* ─── Sidebar 菜单项 ──────────────────────────────────────── */
 .nav-item {
   transition:
     background-color var(--duration-fast) ease,
-    transform var(--duration-fast) var(--ease-spring),
+    transform var(--duration-fast) var(--ease-press),
     box-shadow var(--duration-fast) ease;
 }
 .nav-item:hover:not(.nav-item-active) {
@@ -137,14 +165,14 @@ button:disabled {
 }
 .nav-item:active { transform: scale(0.97); }
 .nav-item-active {
-  box-shadow: 0 2px 10px rgba(99,102,241,.30);
+  box-shadow: 0 2px 10px var(--accent-glow);
 }
 
 /* ─── 翻页按钮 ───────────────────────────────────────────── */
 .page-btn {
   transition:
     background-color var(--duration-fast) ease,
-    transform var(--duration-fast) var(--ease-spring),
+    transform var(--duration-fast) var(--ease-press),
     box-shadow var(--duration-fast) ease;
 }
 .page-btn:hover:not(:disabled) {
@@ -157,7 +185,7 @@ button:disabled {
 input:focus, textarea:focus {
   outline: none;
   box-shadow: var(--shadow-focus);
-  border-color: rgb(99 102 241) !important;
+  border-color: var(--accent) !important;
   transition: box-shadow var(--duration-fast) ease, border-color var(--duration-fast) ease;
 }
 
