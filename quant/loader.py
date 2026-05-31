@@ -8,13 +8,18 @@ quant/loader.py — 本地量价数据读取工具
 
 不依赖 stg_cache / factors 目录，这些目录不保证在用户机器上存在。
 
-并发控制: QUANT_WORKERS 环境变量控制并行进程数（默认 CPU 核数的一半，最少 1）。
-  设为 1 则退化为单进程串行模式。
+并发控制: QUANT_WORKERS 环境变量控制并行工作数（默认 CPU 核数的一半，最少 1）。
+  设为 0 或 1 则退化为单线程/单进程串行模式。
+  并发后端自动选择:
+    - WSL 环境（检测 /proc/version 含 microsoft/WSL）: 使用 ThreadPoolExecutor（多线程），
+      避免 fork-after-threads 死锁（Flask 多线程服务器中 fork 子进程会继承锁状态导致死锁）。
+    - 其他系统（原生 Linux/macOS）: 使用 ProcessPoolExecutor（多进程），充分利用多核 CPU。
+  读取 CSV 属于 I/O 密集型操作，两种后端性能相近。
 """
 
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN as _ROUND_DOWN
 from pathlib import Path
 
@@ -26,11 +31,30 @@ _data_root_env = os.environ.get("QUANT_DATA_ROOT", "").strip()
 DATA_ROOT = Path(_data_root_env) if _data_root_env else None
 
 
+def _is_wsl() -> bool:
+    """检测当前是否运行在 WSL（Windows Subsystem for Linux）环境中。"""
+    try:
+        with open("/proc/version", "r") as f:
+            content = f.read().lower()
+            return "microsoft" in content or "wsl" in content
+    except OSError:
+        return False
+
+
+# 模块级缓存，避免重复读取 /proc/version
+_RUNNING_IN_WSL: bool = _is_wsl()
+
+
 def _get_workers() -> int:
-    """从 QUANT_WORKERS 环境变量读取进程数，默认 CPU 核数的一半（最少 1）。"""
+    """从 QUANT_WORKERS 环境变量读取并发工作数，默认 CPU 核数的一半（最少 1）。
+    设为 0 或 1 时退化为串行模式（返回 0 表示串行）。
+    """
     val = os.environ.get("QUANT_WORKERS", "").strip()
-    if val.isdigit() and int(val) >= 1:
-        return int(val)
+    if val.isdigit():
+        n = int(val)
+        if n == 0 or n == 1:
+            return 0  # 串行模式
+        return n
     cpu = os.cpu_count() or 2
     return max(1, cpu // 2)
 
@@ -160,9 +184,7 @@ def load_daily_range(trade_date: str, days: int = 25) -> pd.DataFrame:
 # ── 内部辅助 ─────────────────────────────────────────────────────────────────
 
 def _read_one_csv(args: tuple) -> "pd.DataFrame | None":
-    """子进程入口：读取单个 CSV，过滤到 trade_date <= cutoff 的 lookback 行。
-    必须是模块级函数才能被 ProcessPoolExecutor pickle。
-    """
+    """线程任务入口：读取单个 CSV，过滤到 trade_date <= cutoff 的 lookback 行。"""
     csv_path, trade_date, lookback, usecols, col_map = args
     try:
         df = pd.read_csv(
@@ -185,7 +207,13 @@ def _read_one_csv(args: tuple) -> "pd.DataFrame | None":
 
 
 def _load_window(trade_date: str, lookback: int) -> pd.DataFrame:
-    """从 stock-trading-data-pro 并行读取 lookback 天窗口数据。"""
+    """从 stock-trading-data-pro 并行读取 lookback 天窗口数据。
+
+    并发后端选择策略:
+      - WSL 环境: ThreadPoolExecutor（多线程），避免 fork-after-threads 死锁
+      - 其他系统: ProcessPoolExecutor（多进程），充分利用多核 CPU
+      - workers == 0: 串行模式（单线程）
+    """
     trading_dir = DATA_ROOT / "stock-trading-data-pro" if DATA_ROOT else None
     if not trading_dir or not trading_dir.exists():
         logger.warning("[loader] stock-trading-data-pro 目录不存在: %s", trading_dir)
@@ -193,19 +221,33 @@ def _load_window(trade_date: str, lookback: int) -> pd.DataFrame:
 
     csv_files = list(trading_dir.glob("*.csv"))
     workers = _get_workers()
-    logger.info("[loader] 读取 %d 个 CSV，窗口: %s 前 %d 天，workers=%d",
-                len(csv_files), trade_date, lookback, workers)
+    use_threads = _RUNNING_IN_WSL
+    backend = "thread" if use_threads else "process"
+    logger.info("[loader] 读取 %d 个 CSV，窗口: %s 前 %d 天，workers=%d，backend=%s%s",
+                len(csv_files), trade_date, lookback, workers, backend,
+                "（WSL 检测到，使用多线程避免 fork 死锁）" if use_threads else "")
 
     task_args = [(str(p), trade_date, lookback, _USECOLS, _TRADING_COL_MAP) for p in csv_files]
 
     all_dfs = []
-    if workers == 1:
-        # 单进程模式：直接串行，避免 fork 开销
+    if workers == 0:
+        # 串行模式：直接逐个处理
         for args in task_args:
             result = _read_one_csv(args)
             if result is not None:
                 all_dfs.append(result)
+    elif use_threads:
+        # WSL 环境：使用多线程，避免 fork-after-threads 死锁
+        with ThreadPoolExecutor(max_workers=workers) as exe:
+            try:
+                for result in exe.map(_read_one_csv, task_args, chunksize=64):
+                    if result is not None:
+                        all_dfs.append(result)
+            except BaseException:
+                exe.shutdown(wait=False, cancel_futures=True)
+                raise
     else:
+        # 原生 Linux/macOS：使用多进程，充分利用多核 CPU
         with ProcessPoolExecutor(max_workers=workers) as exe:
             try:
                 for result in exe.map(_read_one_csv, task_args, chunksize=64):
