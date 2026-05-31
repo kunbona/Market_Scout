@@ -967,10 +967,30 @@ def start_flask(port: int = 20026):
 
 
 if __name__ == "__main__":
+    import signal, multiprocessing
+
     _port = int(os.environ.get("FLASK_PORT", 20026))
 
     from scheduler import start_scheduler
     start_scheduler()
+    start_flask(_port)
     print(f"[server] 仪表盘已启动 → http://0.0.0.0:{_port}")
 
-    _serve(_port)
+    def _shutdown(signum, frame):
+        print("\n[server] 收到退出信号，正在终止子进程...")
+        # 强制杀掉所有由本进程 fork 出的子进程（ProcessPoolExecutor workers）
+        current = multiprocessing.current_process()
+        for child in multiprocessing.active_children():
+            child.terminate()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    # 主线程保持阻塞，让 daemon 子线程（flask/scheduler）持续运行
+    try:
+        signal.pause()          # Linux/macOS
+    except AttributeError:
+        import time             # Windows 没有 signal.pause
+        while True:
+            time.sleep(3600)

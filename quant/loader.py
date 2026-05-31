@@ -207,9 +207,13 @@ def _load_window(trade_date: str, lookback: int) -> pd.DataFrame:
                 all_dfs.append(result)
     else:
         with ProcessPoolExecutor(max_workers=workers) as exe:
-            for result in exe.map(_read_one_csv, task_args, chunksize=64):
-                if result is not None:
-                    all_dfs.append(result)
+            try:
+                for result in exe.map(_read_one_csv, task_args, chunksize=64):
+                    if result is not None:
+                        all_dfs.append(result)
+            except BaseException:
+                exe.shutdown(wait=False, cancel_futures=True)
+                raise
 
     if not all_dfs:
         logger.warning("[loader] stock-trading-data-pro: %s 前无数据", trade_date)
