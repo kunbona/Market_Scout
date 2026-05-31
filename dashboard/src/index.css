@@ -246,6 +246,63 @@ input:focus, textarea:focus {
   border-radius: 6px;
 }
 
+/* ─── KPI Gauge：成交额/MA20 水平 gauge bar ─────────────────
+   用 @property 注册 --gauge-pct，使 CSS 可以对数值进行插值。
+   JS 通过 element.style.setProperty('--gauge-target', value)
+   设定目标值，CSS 负责从 0 缓动到目标值。
+   ────────────────────────────────────────────────────────── */
+@property --gauge-pct {
+  syntax: '<number>';
+  initial-value: 0;
+  inherits: false;
+}
+
+@keyframes gaugeGrow {
+  from { --gauge-pct: 0; }
+  to   { --gauge-pct: var(--gauge-target, 0); }
+}
+
+.kpi-gauge-bar {
+  animation: gaugeGrow 800ms var(--ease-out) both;
+  /* width 由 JS 设定的 CSS 变量驱动 */
+  width: calc(min(var(--gauge-pct), 200) / 200 * 100%);
+}
+
+/* ─── KPI Ring：活跃度 SVG 环形指示器 ───────────────────────
+   stroke-dashoffset 从满圆缓动到实际值，传达"占比"感。
+   ────────────────────────────────────────────────────────── */
+@keyframes ringFill {
+  from { stroke-dashoffset: var(--ring-full, 251.2); }
+  to   { stroke-dashoffset: var(--ring-offset, 251.2); }
+}
+
+.kpi-ring-path {
+  animation: ringFill 900ms var(--ease-out) both;
+  animation-delay: 100ms;
+}
+
+/* ─── KPI 数值 Counter：slot-machine 滚入 ────────────────────
+   数字从上方滚入，配合 kpiEnter 入场动画一起触发。
+   使用方：给数值 span 加 .kpi-counter 类。
+   ────────────────────────────────────────────────────────── */
+@keyframes counterSlide {
+  from { opacity: 0; transform: translateY(-14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.kpi-counter {
+  display: inline-block;
+  animation: counterSlide 350ms var(--ease-out) both;
+}
+/* 配合 kpi-card nth-child stagger 延迟 */
+.kpi-card:nth-child(1) .kpi-counter { animation-delay:  80ms; }
+.kpi-card:nth-child(2) .kpi-counter { animation-delay: 120ms; }
+.kpi-card:nth-child(3) .kpi-counter { animation-delay: 160ms; }
+.kpi-card:nth-child(4) .kpi-counter { animation-delay: 200ms; }
+.kpi-card:nth-child(5) .kpi-counter { animation-delay: 240ms; }
+.kpi-card:nth-child(6) .kpi-counter { animation-delay: 280ms; }
+.kpi-card:nth-child(7) .kpi-counter { animation-delay: 320ms; }
+.kpi-card:nth-child(8) .kpi-counter { animation-delay: 360ms; }
+
 /* ─── prefers-reduced-motion：关闭所有动画 ───────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

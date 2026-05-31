@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { TrendingUp, TrendingDown, Zap, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -120,7 +120,9 @@ function StatCard({
       {loading ? (
         <div className="h-7 bg-gray-100 rounded animate-pulse w-2/3" />
       ) : (
-        <div className={`text-2xl font-semibold tracking-tight ${colorClass}`}>{value}</div>
+        <div className={`text-2xl font-semibold tracking-tight ${colorClass}`}>
+          <span className="kpi-counter">{value}</span>
+        </div>
       )}
       {sub && (
         <div className="text-xs text-gray-500 leading-snug">{loading ? <span className="text-gray-300">…</span> : sub}</div>
@@ -159,6 +161,101 @@ function TierBar({
           className={`h-full rounded-full transition-[width] duration-700 ${color}`}
           style={{ width: loading ? '0%' : `${pct}%` }}
         />
+      </div>
+    </div>
+  );
+}
+
+// ─── 成交额/MA20 水平 Gauge ───────────────────────────────────
+// ratio: 当日成交额 / MA20，1.0 = 均值，量程 0-2x（超过 2x clip）
+function AmountRatioGauge({ ratio, loading }: { ratio: number | null | undefined; loading?: boolean }) {
+  const gaugeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ratio != null && gaugeRef.current) {
+      gaugeRef.current.style.setProperty('--gauge-target', String(ratio * 100));
+    }
+  }, [ratio]);
+
+  const color = ratio == null ? '#d1d5db'
+    : ratio >= 1.5 ? '#16a34a'
+    : ratio >= 1.0 ? '#22c55e'
+    : ratio >= 0.8 ? '#f59e0b'
+    : '#ef4444';
+
+  return (
+    <div className="mt-1.5">
+      {/* 轨道 */}
+      <div className="relative h-2 bg-gray-100 rounded-full overflow-hidden">
+        {!loading && (
+          <div
+            ref={gaugeRef}
+            className="kpi-gauge-bar absolute left-0 top-0 h-full rounded-full"
+            style={{ background: color }}
+          />
+        )}
+        {/* 均值线：50% 处（即 ratio=1.0 时条形宽度的对应位置） */}
+        <div className="absolute top-0 bottom-0 w-px bg-gray-400/40" style={{ left: '50%' }} />
+      </div>
+      <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
+        <span>0</span>
+        <span>均值</span>
+        <span>2x</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── 活跃度 A/D 比 SVG 环形指示器 ──────────────────────────────
+// ratio: advance / (advance + decline)，范围 0-1，0.5 = 均衡
+function AdRatioRing({
+  advanceCount, declineCount, ratio, loading,
+}: {
+  advanceCount: number | null; declineCount: number | null; ratio: number | null; loading?: boolean;
+}) {
+  const r = 36;
+  const circumference = 2 * Math.PI * r; // ~226.2
+  const clampedRatio = ratio != null ? Math.min(Math.max(ratio, 0), 1) : 0;
+  // offset = circumference - (ratio * circumference)：ratio=1 → full, ratio=0 → empty
+  const offset = circumference - clampedRatio * circumference;
+
+  const strokeColor = ratio == null ? '#e5e7eb'
+    : ratio >= 0.6 ? '#16a34a'
+    : ratio >= 0.45 ? '#f59e0b'
+    : '#ef4444';
+
+  return (
+    <div className="flex items-center gap-2 mt-1">
+      <div className="relative flex-shrink-0" style={{ width: 44, height: 44 }}>
+        <svg width="44" height="44" viewBox="0 0 88 88" className="rotate-[-90deg]" aria-hidden="true">
+          {/* 背景轨道 */}
+          <circle cx="44" cy="44" r={r} fill="none" stroke="#f3f4f6" strokeWidth="8" />
+          {/* 活跃度弧 */}
+          {!loading && (
+            <circle
+              className="kpi-ring-path"
+              cx="44" cy="44" r={r}
+              fill="none"
+              stroke={strokeColor}
+              strokeWidth="8"
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              style={{
+                '--ring-full': circumference,
+                '--ring-offset': offset,
+              } as React.CSSProperties}
+            />
+          )}
+        </svg>
+        {/* 中心数值 */}
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-[11px] font-semibold text-gray-700">
+            {ratio != null ? `${(ratio * 100).toFixed(0)}%` : '--'}
+          </span>
+        </div>
+      </div>
+      <div className="text-xs text-gray-500 leading-relaxed">
+        <div className="text-red-500 font-medium">涨 {advanceCount ?? '--'}</div>
+        <div className="text-emerald-600 font-medium">跌 {declineCount ?? '--'}</div>
       </div>
     </div>
   );
@@ -292,9 +389,9 @@ export function MarketSentimentPage() {
             <div className="h-7 bg-gray-100 rounded animate-pulse w-2/3" />
           ) : (
             <div className="text-2xl font-semibold tracking-tight">
-              <span className="text-red-600">{emotion ? emotion.zt_total : '--'}</span>
+              <span className="kpi-counter text-red-600">{emotion ? emotion.zt_total : '--'}</span>
               <span className="text-gray-400 mx-1">/</span>
-              <span className="text-emerald-600">{emotion ? emotion.dt_total : '--'}</span>
+              <span className="kpi-counter text-emerald-600" style={{ animationDelay: '40ms' }}>{emotion ? emotion.dt_total : '--'}</span>
             </div>
           )}
           <div className="text-xs text-gray-500 leading-snug">
@@ -329,49 +426,74 @@ export function MarketSentimentPage() {
 
       {/* ── Row 1b: 新增 KPI 卡片 ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {/* 活跃度 A/D */}
+        {/* 活跃度 A/D — 环形进度指示器 */}
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
-          <div className="text-xs text-gray-500 mb-1">活跃度（A/D比）</div>
-          <div className="text-2xl text-gray-900 mb-1" style={{color: adData ? (adData.ad_ratio >= 1.5 ? '#16a34a' : adData.ad_ratio >= 0.8 ? '#f59e0b' : '#ef4444') : undefined}}>
-            {loading ? '--' : adData ? adData.ad_ratio?.toFixed(2) : '--'}
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-gray-500 font-medium">活跃度</span>
+            {adData && (
+              <span className="text-xs font-mono font-semibold" style={{color: adData.ad_ratio >= 1.5 ? '#16a34a' : adData.ad_ratio >= 0.8 ? '#f59e0b' : '#ef4444'}}>
+                {adData.ad_ratio?.toFixed(2)}
+              </span>
+            )}
           </div>
-          <div className="text-xs text-gray-600">涨{adData?.advance_count ?? '--'} / 跌{adData?.decline_count ?? '--'}</div>
+          {loading ? (
+            <div className="h-14 bg-gray-100 rounded animate-pulse" />
+          ) : (
+            <AdRatioRing
+              advanceCount={adData?.advance_count ?? null}
+              declineCount={adData?.decline_count ?? null}
+              ratio={adData ? (adData.advance_count / (adData.advance_count + adData.decline_count)) : null}
+              loading={loading}
+            />
+          )}
         </div>
 
-        {/* 成交额/MA20 */}
+        {/* 成交额/MA20 — 水平 gauge */}
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
-          <div className="text-xs text-gray-500 mb-1">全市场成交额/MA20</div>
-          <div className="text-2xl text-gray-900 mb-1" style={{color: adData ? (adData.amount_ratio >= 1.2 ? '#16a34a' : adData.amount_ratio >= 0.8 ? '#f59e0b' : '#ef4444') : undefined}}>
-            {loading ? '--' : fmtNum(adData?.total_amount, 0, '亿')}
-          </div>
-          <div className="text-xs text-gray-600">{loading ? '' : fmtNum(adData?.amount_ratio, 2, 'x')}</div>
+          <div className="text-xs text-gray-500 font-medium mb-1">全市场成交额</div>
+          {loading ? (
+            <div className="h-14 bg-gray-100 rounded animate-pulse" />
+          ) : (
+            <>
+              <div className="text-2xl font-semibold tracking-tight mb-0.5"
+                style={{color: adData ? (adData.amount_ratio >= 1.2 ? '#16a34a' : adData.amount_ratio >= 0.8 ? '#f59e0b' : '#ef4444') : undefined}}>
+                <span className="kpi-counter">{fmtNum(adData?.total_amount, 0, '亿')}</span>
+              </div>
+              <div className="text-xs text-gray-500 mb-1">
+                MA20 比 <span className="font-mono font-medium">{fmtNum(adData?.amount_ratio, 2, 'x')}</span>
+              </div>
+              <AmountRatioGauge ratio={adData?.amount_ratio} loading={loading} />
+            </>
+          )}
         </div>
 
         {/* 涨停换手中位 */}
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
-          <div className="text-xs text-gray-500 mb-1">涨停换手中位</div>
-          <div className="text-2xl text-gray-900 mb-1">
-            {loading ? '--' : fmtNum(toStats?.median_to, 1, '%')}
+          <div className="text-xs text-gray-500 font-medium mb-1">涨停换手中位</div>
+          <div className="text-2xl font-semibold tracking-tight text-gray-900 mb-1">
+            {loading ? <div className="h-7 bg-gray-100 rounded animate-pulse w-2/3" /> :
+              <span className="kpi-counter">{fmtNum(toStats?.median_to, 1, '%')}</span>}
           </div>
-          <div className="text-xs text-gray-600">
-            {loading ? '' : toStats ? (() => { const t = (toStats.high_count||0)+(toStats.mid_count||0)+(toStats.low_count||0); return t > 0 ? `高换手占${(toStats.high_count/t*100).toFixed(0)}%` : '--'; })() : '--'}
+          <div className="text-xs text-gray-500">
+            {loading ? '' : toStats ? (() => { const t = (toStats.high_count||0)+(toStats.mid_count||0)+(toStats.low_count||0); return t > 0 ? `高换手占 ${(toStats.high_count/t*100).toFixed(0)}%` : '--'; })() : '--'}
           </div>
         </div>
 
         {/* 市值偏好 */}
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-4">
-          <div className="text-xs text-gray-500 mb-1">涨停市值偏好</div>
-          <div className="text-2xl font-semibold mb-1" style={{color:
+          <div className="text-xs text-gray-500 font-medium mb-1">涨停市值偏好</div>
+          <div className="text-2xl font-semibold tracking-tight mb-1" style={{color:
             !mcData ? undefined :
             mcData.small_pct >= 0.5 ? '#ef4444' :
             mcData.large_pct >= 0.4 ? '#3b82f6' : '#f97316'
           }}>
-            {loading ? '--' : !mcData ? '--' :
-              mcData.small_pct >= 0.5 ? '偏小盘' :
-              mcData.large_pct >= 0.4 ? '偏大盘' : '偏中盘'}
+            {loading ? <div className="h-7 bg-gray-100 rounded animate-pulse w-2/3" /> :
+              <span className="kpi-counter">{!mcData ? '--' :
+                mcData.small_pct >= 0.5 ? '偏小盘' :
+                mcData.large_pct >= 0.4 ? '偏大盘' : '偏中盘'}</span>}
           </div>
           <div className="text-xs text-gray-400">
-            {loading ? '' : mcData ? `小${(mcData.small_pct*100).toFixed(0)}% 中${(mcData.mid_pct*100).toFixed(0)}% 大${(mcData.large_pct*100).toFixed(0)}%` : ''}
+            {loading ? '' : mcData ? `小 ${(mcData.small_pct*100).toFixed(0)}%  中 ${(mcData.mid_pct*100).toFixed(0)}%  大 ${(mcData.large_pct*100).toFixed(0)}%` : ''}
           </div>
         </div>
       </div>
