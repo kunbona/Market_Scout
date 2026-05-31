@@ -26,11 +26,26 @@ _data_root_env = os.environ.get("QUANT_DATA_ROOT", "").strip()
 DATA_ROOT = Path(_data_root_env) if _data_root_env else None
 
 
+def _is_wsl() -> bool:
+    """检测是否运行在 WSL 环境（WSL1/WSL2 均适用）。"""
+    try:
+        with open("/proc/version") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
 def _get_workers() -> int:
-    """从 QUANT_WORKERS 环境变量读取进程数，默认 CPU 核数的一半（最少 1）。"""
+    """从 QUANT_WORKERS 环境变量读取进程数，默认 CPU 核数的一半（最少 1）。
+    WSL 环境下 multiprocessing fork 有已知死锁问题，未显式设置时自动降为 1。
+    """
     val = os.environ.get("QUANT_WORKERS", "").strip()
     if val.isdigit() and int(val) >= 1:
         return int(val)
+    # WSL 未显式配置时，默认单进程避免子进程卡死
+    if _is_wsl():
+        logger.info("[loader] 检测到 WSL 环境，默认使用单进程模式（可在设置中手动调高）")
+        return 1
     cpu = os.cpu_count() or 2
     return max(1, cpu // 2)
 
