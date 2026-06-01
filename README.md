@@ -341,6 +341,8 @@ curl http://localhost:1200/wallstreetcn/live/a-stock
 | `zbgc_pool` | 炸板股池 | 7 天 |
 | `strong_pool` | 强势股池 | 7 天 |
 | `lhb_data` | 龙虎榜 | 90 天 |
+| `zt_pool` | 涨停池 | 90 天 |
+| `dt_pool` | 跌停池 | 90 天 |
 | `hot_rank_up` | 人气飙升榜 | 7 天 |
 | `northbound_flow` | 北向/南向资金 | 30 天 |
 | `xq_hot` | 雪球关注热度 top 50 | 7 天 |
@@ -356,14 +358,14 @@ curl http://localhost:1200/wallstreetcn/live/a-stock
 | `fundamentals_finance` | mootdx 基本面财务 | 7 天 |
 | `fundamentals_f10` | mootdx F10（公司概况/财务分析/股东研究） | 7 天 |
 | `agent_summary` | Agent 分析摘要 | 60 天 |
-| `market_emotion` | 涨停/跌停/炸板率/最高连板/溢价（日线） | 长期 |
+| `market_emotion` | 涨停/跌停/炸板率/最高连板/溢价（日线） | 1 年 |
 | `lianzban_stats` | 连板梯队分布 + 晋级率（日线） | 长期 |
 | `sector_zt_density` | 申万一级行业涨停密度（日线） | 90 天 |
 | `concept_zt_density` | 概念涨停热度（日线） | 90 天 |
 | `sector_flow_accel` | 机构资金加速度（日线） | 90 天 |
-| `turnover_stats` | 涨停股换手率分层（日线） | 长期 |
-| `market_cap_dist` | 涨停股流通市值分布（日线） | 长期 |
-| `advance_decline` | 全市场涨跌家数 + 成交额/MA20（日线） | 长期 |
+| `turnover_stats` | 涨停股换手率分层（日线） | 1 年 |
+| `market_cap_dist` | 涨停股流通市值分布（日线） | 1 年 |
+| `advance_decline` | 全市场涨跌家数 + 成交额/MA20（日线） | 1 年 |
 | `volume_breakout` | 成交额异动个股（5d/20d > 2x）（日线） | 90 天 |
 | `lianzban_chain` | 连板链条个股明细（2板+）（日线） | 90 天 |
 | `chip_status` | 筹码分布（日线） | 90 天 |

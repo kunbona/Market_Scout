@@ -574,12 +574,17 @@ def insert_quant_signal(signal_date, stock_code, signal_type, signal_value, extr
         )
 
 
-def insert_agent_summary(content, data_snapshot_json) -> None:
+def insert_agent_summary(content, data_snapshot_json, run_type: str = "") -> None:
     summary_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with sqlite3.connect(DB_PATH) as conn:
+        # 确保 run_type 列存在（兼容旧 DB）
+        try:
+            conn.execute("ALTER TABLE agent_summary ADD COLUMN run_type TEXT DEFAULT ''")
+        except Exception:
+            pass
         conn.execute(
-            "INSERT INTO agent_summary (summary_time, content, data_snapshot_json) VALUES (?, ?, ?)",
-            (summary_time, content, data_snapshot_json),
+            "INSERT INTO agent_summary (summary_time, run_type, content, data_snapshot_json) VALUES (?, ?, ?, ?)",
+            (summary_time, run_type, content, data_snapshot_json),
         )
 
 
@@ -705,6 +710,24 @@ def get_agent_summary_latest() -> dict | None:
         return rows[0] if rows else None
 
 
+def get_agent_summary_history(limit: int = 20, today_only: bool = False) -> list[dict]:
+    today = _today()
+    with sqlite3.connect(DB_PATH) as conn:
+        if today_only:
+            cur = conn.execute(
+                "SELECT id, summary_time, run_type, content FROM agent_summary "
+                "WHERE summary_time >= ? ORDER BY created_at DESC LIMIT ?",
+                (today, limit),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT id, summary_time, run_type, content FROM agent_summary "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        return _rows_to_dicts(cur)
+
+
 def get_research_reports(qtype: int = None, limit: int = 50, today_only: bool = False) -> list[dict]:
     today = datetime.now().strftime("%Y-%m-%d")
     with sqlite3.connect(DB_PATH) as conn:
@@ -760,17 +783,93 @@ def get_agent_context() -> dict:
             sector_top10 = _rows_to_dicts(cur)
 
         cur = conn.execute(
-            "SELECT stock_code, stock_name, zt_count, first_zt_time, sector "
+            "SELECT stock_code, stock_name, zt_count, first_zt_time, sector, "
+            "       last_zt_time, seal_amount, zb_count, turnover_rate, circ_mv "
             "FROM zt_pool WHERE trade_date = ? ORDER BY zt_count DESC",
             (today,),
         )
         zt_today = _rows_to_dicts(cur)
+
+        # market_emotion 今日记录
+        cur = conn.execute(
+            "SELECT * FROM market_emotion WHERE trade_date = ?", (today,)
+        )
+        rows = _rows_to_dicts(cur)
+        market_emotion_today = rows[0] if rows else None
+
+        # sector_zt_density 今日 top10
+        cur = conn.execute(
+            "SELECT * FROM sector_zt_density WHERE trade_date = ? ORDER BY zt_density DESC LIMIT 10",
+            (today,),
+        )
+        sector_zt_top10 = _rows_to_dicts(cur)
+
+        # sector_flow_accel 今日
+        cur = conn.execute(
+            "SELECT * FROM sector_flow_accel WHERE trade_date = ? ORDER BY acceleration DESC LIMIT 10",
+            (today,),
+        )
+        sector_flow_accel_today = _rows_to_dicts(cur)
+
+        # volume_breakout 今日
+        cur = conn.execute(
+            "SELECT * FROM volume_breakout WHERE trade_date = ? ORDER BY ratio_5_20 DESC LIMIT 30",
+            (today,),
+        )
+        volume_breakout_today = _rows_to_dicts(cur)
+
+        # lianzban_chain 今日（2板+）
+        cur = conn.execute(
+            "SELECT * FROM lianzban_chain WHERE trade_date = ? AND lianzban_cnt >= 2 "
+            "ORDER BY lianzban_cnt DESC",
+            (today,),
+        )
+        lianzban_chain_today = _rows_to_dicts(cur)
+
+        # lhb_data 今日（盘后才有，可能为空）
+        cur = conn.execute(
+            "SELECT stock_code, stock_name, reason, net_buy, net_buy_ratio "
+            "FROM lhb_data WHERE trade_date = ? ORDER BY net_buy DESC",
+            (today,),
+        )
+        lhb_today = _rows_to_dicts(cur)
+
+        # research_report 近3日评级上调
+        three_days_ago = (now - timedelta(days=3)).strftime("%Y-%m-%d")
+        cur = conn.execute(
+            "SELECT title, stock_code, stock_name, org_name, rating, publish_date "
+            "FROM research_report WHERE publish_date >= ? AND rating IS NOT NULL "
+            "ORDER BY publish_date DESC LIMIT 30",
+            (three_days_ago,),
+        )
+        recent_research = _rows_to_dicts(cur)
+
+        # fundamentals_f10：当日涨停股的基本面（供股票Agent判断主营业务相关性）
+        zt_codes = [r["stock_code"] for r in zt_today if r.get("stock_code")]
+        f10_today = []
+        if zt_codes:
+            placeholders = ",".join("?" * len(zt_codes))
+            cur = conn.execute(
+                f"SELECT stock_code, category, content FROM fundamentals_f10 "
+                f"WHERE fetch_date = ? AND stock_code IN ({placeholders}) AND category = '公司概况' "
+                f"ORDER BY stock_code",
+                [today] + zt_codes,
+            )
+            f10_today = _rows_to_dicts(cur)
 
     return {
         "recent_cls_news": recent_cls,
         "policy_news_today": policy_titles,
         "sector_flow_top10": sector_top10,
         "zt_pool_today": zt_today,
+        "market_emotion_today": market_emotion_today,
+        "sector_zt_density_top10": sector_zt_top10,
+        "sector_flow_accel_today": sector_flow_accel_today,
+        "volume_breakout_today": volume_breakout_today,
+        "lianzban_chain_today": lianzban_chain_today,
+        "lhb_today": lhb_today,
+        "recent_research": recent_research,
+        "f10_today": f10_today,
     }
 
 
@@ -781,7 +880,8 @@ def cleanup_old_data() -> None:
     cutoff_7d  = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     cutoff_30d = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     cutoff_60d = (now - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
-    cutoff_90d = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+    cutoff_90d  = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+    cutoff_365d = (now - timedelta(days=365)).strftime("%Y-%m-%d")
 
     with sqlite3.connect(DB_PATH) as conn:
         # 7 days
@@ -791,8 +891,12 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM market_pulse WHERE created_at < ?", (cutoff_30d,))
         # 60 days
         conn.execute("DELETE FROM agent_summary WHERE created_at < ?", (cutoff_60d,))
+        # 365 days (长期历史日线，保留一年)
+        conn.execute("DELETE FROM market_emotion WHERE trade_date < ?", (cutoff_365d,))
+        conn.execute("DELETE FROM advance_decline WHERE trade_date < ?", (cutoff_365d,))
+        conn.execute("DELETE FROM turnover_stats WHERE trade_date < ?", (cutoff_365d,))
+        conn.execute("DELETE FROM market_cap_dist WHERE trade_date < ?", (cutoff_365d,))
         # 90 days (trade_date columns, stored as TEXT 'YYYY-MM-DD')
-        conn.execute("DELETE FROM market_emotion WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM sector_zt_density WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM volume_breakout WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM chip_status WHERE trade_date < ?", (cutoff_90d,))
@@ -823,6 +927,13 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM dividend WHERE ex_dividend_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM industry_ranking WHERE fetch_time < ?", (cutoff_30d,))
         conn.execute("DELETE FROM ths_hot_stocks WHERE fetch_time < ?", (cutoff_7d,))
+        # 之前遗漏的表，补齐 90 天清理
+        conn.execute("DELETE FROM lhb_data WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM zt_pool WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM dt_pool WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM policy_news WHERE created_at < ?", (cutoff_30d,))
+        conn.execute("DELETE FROM research_report WHERE created_at < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM quant_signals WHERE created_at < ?", (cutoff_90d,))
 
 
 # ── market_pulse ──────────────────────────────────────────────────────────────
