@@ -228,18 +228,15 @@ def compute_chip_status(trade_date: str) -> None:
     """
     计算目标股票筹码状态并写入 chip_status 表。
 
-    目标股票范围: 当日涨停池 + volume_breakout 名单（取自 DB）。
+    目标股票范围: 本地量价 snapshot 中当日涨停股 + volume_breakout 名单。
     数据来源: stock-chip-distribution/{code}.csv
     """
-    from db.storage import get_zt_pool, get_volume_breakout, insert_chip_status
+    from db.storage import get_volume_breakout, insert_chip_status
 
-    zt_rows = get_zt_pool(trade_date)
+    snap = load_daily_snapshot(trade_date)
+    zt_codes = set(snap[snap["is_zt"] == 1]["code"].astype(str)) if not snap.empty else set()
     vb_rows = get_volume_breakout(trade_date)
-    target_codes = set()
-    for r in zt_rows:
-        target_codes.add(r["stock_code"])
-    for r in vb_rows:
-        target_codes.add(r["stock_code"])
+    target_codes = zt_codes | {r["stock_code"] for r in vb_rows}
 
     if not target_codes:
         logger.info("[daily_compute] chip_status %s: 无目标股票（涨停池和成交异动均为空）", trade_date)
@@ -514,16 +511,21 @@ def compute_concept_zt_density(trade_date: str) -> None:
 
 def compute_call_auction_stats(trade_date: str) -> None:
     """
-    计算今日涨停池股票的集合竞价委比，写入 call_auction_stats 表。
+    计算当日涨停股集合竞价委比，写入 call_auction_stats 表。
 
+    目标股票范围: 本地量价 snapshot 中当日涨停股（is_zt == 1）。
     数据来源: stock-call-auction-data/{code}.csv
     """
     try:
-        from db.storage import get_zt_pool, insert_call_auction_stats
+        from db.storage import insert_call_auction_stats
 
-        zt_rows = get_zt_pool(trade_date)
-        if not zt_rows:
-            logger.info("[daily_compute] call_auction_stats %s: 涨停池为空", trade_date)
+        snap = load_daily_snapshot(trade_date)
+        if snap.empty:
+            logger.info("[daily_compute] call_auction_stats %s: 本地量价无数据", trade_date)
+            return
+        zt_df = snap[snap["is_zt"] == 1]
+        if zt_df.empty:
+            logger.info("[daily_compute] call_auction_stats %s: 无涨停股", trade_date)
             return
 
         auction_dir = DATA_ROOT / "stock-call-auction-data"
@@ -535,9 +537,9 @@ def compute_call_auction_stats(trade_date: str) -> None:
         sell_cols = ["卖1量", "卖2量", "卖3量", "卖4量", "卖5量"]
 
         inserted = 0
-        for row in zt_rows:
-            code = row["stock_code"]
-            stock_name = row.get("stock_name", "")
+        for _, snap_row in zt_df.iterrows():
+            code = str(snap_row["code"])
+            stock_name = str(snap_row.get("name", "")) if pd.notna(snap_row.get("name")) else ""
             csv_path = auction_dir / f"{code}.csv"
             if not csv_path.exists():
                 continue
