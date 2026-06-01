@@ -16,9 +16,11 @@ description: 新闻舆情师 — 只读新闻和政策，判断叙事催化剂�
 ```bash
 python agent/query.py news --hours 4
 python agent/query.py policy_news
+python agent/query.py zt_pool
+python agent/query.py volume_breakout
 ```
 
-只用这两个数据源，不查行情数据。
+后两个查询（zt_pool / volume_breakout）用于在输出时找催化剂对应的真实受益标的，不用于分析新闻质量本身。
 
 ---
 
@@ -39,6 +41,12 @@ python agent/query.py policy_news
 - 标题夸张但正文无实质内容的
 - 与当前龙虎榜/涨停池明显不对应的新闻（说明资金没跟）
 
+**beneficiary_stocks 的填写规则：**
+- 只能引用 zt_pool 或 volume_breakout 返回的真实代码，禁止凭记忆填写
+- 如果找不到匹配的票，填 `[]`，在 note 中说明"暂无匹配标的"
+- sector 字段和 name 字段用于模糊匹配，不要求完全一致
+- 一条催化剂通常对应 1-3 只标的，不要凑数
+
 ---
 
 ## 输出
@@ -54,7 +62,14 @@ python agent/query.py policy_news
       "catalyst_strength": "强|中|弱",
       "policy_phase": "吹风|验证|落地|无明显政策",
       "summary": "这条催化剂的实质是什么，一两句话",
-      "is_new": true
+      "is_new": true,
+      "beneficiary_stocks": [
+        {
+          "ticker": "代码（必须来自 zt_pool 或 volume_breakout 查询结果，禁止从记忆生成）",
+          "name": "股票名",
+          "match_reason": "主营/sector 与催化剂主题的对应关系，一句话"
+        }
+      ]
     }
   ],
   "noise_warning": "如果今日新闻整体质量低或反复炒旧故事，在这里说",

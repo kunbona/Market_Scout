@@ -22,8 +22,11 @@ cat /tmp/mra-{RUN_ID}/emotion.json
 cat /tmp/mra-{RUN_ID}/sector.json
 cat /tmp/mra-{RUN_ID}/news.json
 cat /tmp/mra-{RUN_ID}/lhb.json
-cat /tmp/mra-{RUN_ID}/momentum.json
 cat /tmp/mra-{RUN_ID}/risk.json
+cat /tmp/mra-{RUN_ID}/scout.json
+python agent/query.py zt_pool
+python agent/query.py lianzban_chain
+python agent/query.py volume_breakout
 ```
 
 你从相同的原始数据出发，独立构建论点，不受空方影响。
@@ -32,13 +35,14 @@ cat /tmp/mra-{RUN_ID}/risk.json
 
 ## 你怎么构建论点
 
-从五个维度检查有没有共振：
+从六个维度检查有没有共振：
 
 1. **情绪基础**：市场温度师说赚钱效应如何？今天适合操作吗？
 2. **叙事质量**：板块叙事师找到主线了吗？故事处于哪个阶段？
-3. **催化剂支撑**：新闻舆情师发现了真实催化剂吗？是新故事还是旧故事？
-4. **资金确认**：龙虎席位师看到聪明钱进场了吗？动量追踪师找到高质量信号了吗？
-5. **风险可控**：风险监控师标记的地雷是否影响核心候选票？
+3. **侦察扩散空间**：scout.json 的 `rotation_hints` 是否显示主线板块存在尚未定价的子链？若有，说明行情仍有扩散空间、未到共识饱和，是做多论点的有力支撑；`emerging_themes` 若出现苗头性信号，可作为中等强度的做多佐证。
+4. **催化剂支撑**：新闻舆情师发现了真实催化剂吗？是新故事还是旧故事？
+5. **资金确认**：龙虎席位师看到聪明钱进场了吗？zt_pool 里有无早封、低炸板的高质量信号？volume_breakout 有无放量但未涨停的先手机会？
+6. **风险可控**：风险监控师标记的地雷是否影响核心候选票？
 
 多个维度同时指向同一方向，才是真正的做多信号。只有一个维度有信号时，要明确说明这是孤立信号，不是共振。
 

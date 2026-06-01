@@ -162,7 +162,7 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
 
     Step 0（同步）：生成 data_health.json 写入 /tmp/mra-{run_id}/，供所有 skill 读取。
     intraday：只跑 emotion + news + momentum，跳过辩论，mra-intraday 直接汇总。
-    其他：6位分析师并行 → 多空辩论 → 首席裁决。
+    其他：6位分析师并行 → 侦察师 → 多空辩论 → 首席裁决。
     """
     is_intraday = (run_type == "intraday")
 
@@ -215,15 +215,21 @@ def _run_intraday(run_type: str, run_id: str) -> None:
 
 
 def _run_full(run_type: str, run_id: str) -> None:
-    """完整三阶段管道：6位分析师并行 → 多空辩论 → 首席裁决。"""
+    """完整三阶段管道：5位分析师并行 → 侦察 → 多空辩论 → 首席裁决。"""
     with _state_lock:
         _agent_state["phase"] = "analysts"
         _agent_state["phase_detail"] = "6位分析师并行分析中"
 
-    analysts = ["mra-emotion", "mra-sector", "mra-news", "mra-lhb", "mra-momentum", "mra-risk"]
+    analysts = ["mra-emotion", "mra-sector", "mra-news", "mra-lhb", "mra-risk"]
     failed = _run_parallel(analysts, run_id, run_type, timeout=600)
     if failed:
         logger.warning("[orchestrator] 分析师失败: %s，继续后续阶段", failed)
+
+    # 新增：侦察师（串行，依赖 sector.json）
+    with _state_lock:
+        _agent_state["phase"] = "analysts"
+        _agent_state["phase_detail"] = "侦察师分析子链轮动机会"
+    _run_skill("mra-scout", run_id, run_type, timeout=300)
 
     with _state_lock:
         _agent_state["phase"] = "debate"

@@ -22,8 +22,11 @@ cat /tmp/mra-{RUN_ID}/emotion.json
 cat /tmp/mra-{RUN_ID}/sector.json
 cat /tmp/mra-{RUN_ID}/news.json
 cat /tmp/mra-{RUN_ID}/lhb.json
-cat /tmp/mra-{RUN_ID}/momentum.json
 cat /tmp/mra-{RUN_ID}/risk.json
+cat /tmp/mra-{RUN_ID}/scout.json
+python agent/query.py zt_pool
+python agent/query.py lianzban_chain
+python agent/query.py volume_breakout
 ```
 
 你从相同的原始数据出发，独立构建论点，不受多方影响。
@@ -32,13 +35,14 @@ cat /tmp/mra-{RUN_ID}/risk.json
 
 ## 你怎么构建论点
 
-从五个维度检查有没有风险信号：
+从六个维度检查有没有风险信号：
 
 1. **情绪透支**：市场是否处于高潮或退潮？炸板率是否在上升？溢价是否在收窄？
 2. **叙事老化**：主线故事是否已经连续多天、共识过于饱和？还是根本没有明确主线？
-3. **催化剂透支**：新闻是在炒旧消息吗？政策是否已经落地（兑现风险）？
-4. **资金质量存疑**：龙虎榜清一色游资而无机构？成交量异动但价格不跟？
-5. **地雷未排**：核心候选票有高风险解禁？板块内多只股票有减持公告？
+3. **侦察共识饱和**：scout.json 的 `no_opportunity = true` 或 `rotation_hints` 为空，说明侦察师找不到任何未定价方向，整个主线可能已到共识饱和期——这是做空/观望的支撑信号；`emerging_themes` 中新苗头催化剂质量弱或无，说明行情缺乏新弹药。
+4. **催化剂透支**：新闻是在炒旧消息吗？政策是否已经落地（兑现风险）？
+5. **资金质量存疑**：龙虎榜清一色游资而无机构？zt_pool 炸板率高、封板时间普遍偏晚？volume_breakout 放量但次日无跟进（成交量异动但价格不跟）？
+6. **地雷未排**：核心候选票有高风险解禁？板块内多只股票有减持公告？
 
 ---
 
