@@ -16,7 +16,8 @@ def fetch_zt_pool() -> None:
 
         col_code       = next((c for c in df.columns if "代码" in c), None)
         col_name       = next((c for c in df.columns if "名称" in c), None)
-        col_count      = next((c for c in df.columns if "连板" in c or "涨停统计" in c or "连续" in c), None)
+        col_count      = next((c for c in df.columns if c == "连板数"), None) or \
+                         next((c for c in df.columns if "连板" in c or "连续" in c), None)
         col_time       = next((c for c in df.columns if "首次" in c), None)
         col_sector     = next((c for c in df.columns if "行业" in c or "板块" in c or "概念" in c), None)
         # 新增字段列名探测
