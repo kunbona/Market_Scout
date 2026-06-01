@@ -600,6 +600,28 @@ def api_research_activity():
     except Exception as exc:
         return _err(exc)
 
+
+@app.route("/api/sector-chip-pressure")
+def api_sector_chip_pressure():
+    try:
+        from db.storage import get_sector_chip_pressure
+        trade_date = _computed_date()
+        rows = get_sector_chip_pressure(trade_date)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/sector-auction-sentiment")
+def api_sector_auction_sentiment():
+    try:
+        from db.storage import get_sector_auction_sentiment
+        trade_date = _computed_date()
+        rows = get_sector_auction_sentiment(trade_date)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
 @app.route("/api/turnover-stats")
 def api_turnover_stats():
     try:
@@ -643,23 +665,26 @@ def _run_compute():
         compute_concept_zt_density, compute_call_auction_stats,
         compute_turnover_stats, compute_market_cap_dist,
         compute_advance_decline,
+        compute_sector_chip_pressure, compute_sector_auction_sentiment,
     )
     from quant.loader import get_latest_trade_date
 
     tasks = [
-        ("市场情绪指标", compute_market_emotion),
-        ("连板梯队统计", compute_lianzban_stats),
-        ("板块涨停密度", compute_sector_zt_density),
-        ("资金流加速度", compute_sector_flow_acceleration),
-        ("成交额异动",   compute_volume_breakout),
-        ("筹码状态",     compute_chip_status),
-        ("连板链条",     compute_lianzban_chain),
-        ("机构调研热度", compute_research_activity),
-        ("概念涨停密度", compute_concept_zt_density),
-        ("集合竞价委比", compute_call_auction_stats),
-        ("换手率分层",   compute_turnover_stats),
-        ("市值分布",     compute_market_cap_dist),
-        ("市场宽度",     compute_advance_decline),
+        ("市场情绪指标",   compute_market_emotion),
+        ("连板梯队统计",   compute_lianzban_stats),
+        ("板块涨停密度",   compute_sector_zt_density),
+        ("资金流加速度",   compute_sector_flow_acceleration),
+        ("成交额异动",     compute_volume_breakout),
+        ("筹码状态",       compute_chip_status),
+        ("板块筹码压力",   compute_sector_chip_pressure),
+        ("集合竞价委比",   compute_call_auction_stats),
+        ("板块竞价情绪",   compute_sector_auction_sentiment),
+        ("连板链条",       compute_lianzban_chain),
+        ("机构调研热度",   compute_research_activity),
+        ("概念涨停密度",   compute_concept_zt_density),
+        ("换手率分层",     compute_turnover_stats),
+        ("市值分布",       compute_market_cap_dist),
+        ("市场宽度",       compute_advance_decline),
     ]
     import quant.loader as _loader
     # 前置检查：DATA_ROOT 未配置或路径不存在时，整批标为失败并附上明确原因

@@ -95,6 +95,21 @@ interface ResearchActivity {
   last_visit_date: string;
 }
 
+interface SectorChipPressure {
+  industry: string;
+  stock_count: number;
+  avg_overhead: number;
+  avg_win_rate: number;
+  high_overhead_cnt: number;
+}
+
+interface SectorAuctionSentiment {
+  industry: string;
+  stock_count: number;
+  avg_auction_ratio: number;
+  strong_cnt: number;
+}
+
 // ─── Semantic colors ─────────────────────────────────────────────────────────
 const C_UP     = '#16a34a';  // 涨/强 green
 const C_UP2    = '#22c55e';  // 涨/强 green lighter
@@ -357,6 +372,8 @@ export function MarketSentimentPage() {
   const [sfaData, setSfaData] = useState<SectorFlowAccel[]>([]);
   const [vbData, setVbData] = useState<VolumeBreakout[]>([]);
   const [raData, setRaData] = useState<ResearchActivity[]>([]);
+  const [chipPressure, setChipPressure] = useState<SectorChipPressure[]>([]);
+  const [auctionSentiment, setAuctionSentiment] = useState<SectorAuctionSentiment[]>([]);
 
   useEffect(() => {
     setLoading(true);
@@ -372,7 +389,9 @@ export function MarketSentimentPage() {
       safeApiFetch<VolumeBreakout[]>('/api/volume-breakout'),
       safeApiFetch<LianzbanStats[]>('/api/lianzban-stats?days=30'),
       safeApiFetch<ResearchActivity[]>('/api/research-activity'),
-    ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb, ra]) => {
+      safeApiFetch<SectorChipPressure[]>('/api/sector-chip-pressure'),
+      safeApiFetch<SectorAuctionSentiment[]>('/api/sector-auction-sentiment'),
+    ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb, ra, cp, as_]) => {
       if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
       if (s.status === 'fulfilled') {
         const raw = s.value ?? [];
@@ -389,6 +408,8 @@ export function MarketSentimentPage() {
       if (sfa.status === 'fulfilled') setSfaData(sfa.value ?? []);
       if (vb.status === 'fulfilled') setVbData(vb.value ?? []);
       if (ra.status === 'fulfilled') setRaData(ra.value ?? []);
+      if (cp.status === 'fulfilled') setChipPressure(cp.value ?? []);
+      if (as_.status === 'fulfilled') setAuctionSentiment(as_.value ?? []);
       if (lb.status === 'fulfilled') {
         const arr = lb.value;
         if (Array.isArray(arr) && arr.length > 0) setLbStats(arr[arr.length - 1]);
@@ -861,6 +882,72 @@ export function MarketSentimentPage() {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── 板块筹码压力 ── */}
+      {chipPressure.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-[var(--shadow-sm)]">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-1 h-4 rounded-full bg-amber-500" />
+            <h3 className="text-sm font-semibold text-gray-800">板块筹码压力</h3>
+            <span className="ml-auto text-xs text-gray-400">套牢压力 · 盈利占比</span>
+          </div>
+          <div className="space-y-2">
+            {chipPressure.slice(0, 10).map(row => {
+              const overheadPct = (row.avg_overhead * 100).toFixed(1);
+              const winPct = (row.avg_win_rate * 100).toFixed(1);
+              const barW = Math.min(row.avg_overhead * 100, 100);
+              return (
+                <div key={row.industry} className="flex items-center gap-3">
+                  <span className="w-24 text-xs text-gray-600 truncate shrink-0">{row.industry}</span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="h-1.5 rounded-full bg-amber-400 transition-all duration-300"
+                      style={{ width: `${barW}%` }}
+                    />
+                  </div>
+                  <span className="w-14 text-xs text-right font-mono text-amber-600 shrink-0">套{overheadPct}%</span>
+                  <span className="w-14 text-xs text-right font-mono text-green-600 shrink-0">盈{winPct}%</span>
+                  <span className="w-6 text-xs text-right text-gray-400 shrink-0">{row.stock_count}只</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── 板块竞价情绪 ── */}
+      {auctionSentiment.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-[var(--shadow-sm)]">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-1 h-4 rounded-full bg-indigo-500" />
+            <h3 className="text-sm font-semibold text-gray-800">板块竞价情绪</h3>
+            <span className="ml-auto text-xs text-gray-400">开盘前买盘强度（委比）</span>
+          </div>
+          <div className="space-y-2">
+            {auctionSentiment.slice(0, 10).map(row => {
+              const ratioPct = (row.avg_auction_ratio * 100).toFixed(1);
+              const isPos = row.avg_auction_ratio >= 0;
+              const barW = Math.min(Math.abs(row.avg_auction_ratio) * 100, 100);
+              return (
+                <div key={row.industry} className="flex items-center gap-3">
+                  <span className="w-24 text-xs text-gray-600 truncate shrink-0">{row.industry}</span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-1.5 rounded-full transition-all duration-300 ${isPos ? 'bg-red-400' : 'bg-green-400'}`}
+                      style={{ width: `${barW}%` }}
+                    />
+                  </div>
+                  <span className={`w-16 text-xs text-right font-mono shrink-0 ${isPos ? 'text-red-500' : 'text-green-600'}`}>
+                    {isPos ? '+' : ''}{ratioPct}%
+                  </span>
+                  <span className="w-8 text-xs text-right text-indigo-500 shrink-0 font-mono">{row.strong_cnt}强</span>
+                  <span className="w-6 text-xs text-right text-gray-400 shrink-0">{row.stock_count}只</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

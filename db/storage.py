@@ -302,6 +302,27 @@ CREATE TABLE IF NOT EXISTS call_auction_stats (
     UNIQUE(trade_date, stock_code)
 );
 
+CREATE TABLE IF NOT EXISTS sector_chip_pressure (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date      TEXT,
+    industry        TEXT,
+    stock_count     INTEGER,
+    avg_overhead    REAL,
+    avg_win_rate    REAL,
+    high_overhead_cnt INTEGER,
+    UNIQUE(trade_date, industry)
+);
+
+CREATE TABLE IF NOT EXISTS sector_auction_sentiment (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date      TEXT,
+    industry        TEXT,
+    stock_count     INTEGER,
+    avg_auction_ratio REAL,
+    strong_cnt      INTEGER,
+    UNIQUE(trade_date, industry)
+);
+
 CREATE TABLE IF NOT EXISTS turnover_stats (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_date  TEXT UNIQUE,
@@ -974,6 +995,8 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM sector_zt_density WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM volume_breakout WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM chip_status WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM sector_chip_pressure WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM sector_auction_sentiment WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM lianzban_chain WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM research_activity WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM sector_flow_accel WHERE trade_date < ?", (cutoff_90d,))
@@ -1758,6 +1781,51 @@ def get_ths_hot_stocks_latest(top_n: int = 50) -> list[dict]:
         cur = conn.execute(
             "SELECT * FROM ths_hot_stocks WHERE fetch_time=? ORDER BY change_pct DESC LIMIT ?",
             (row[0], top_n),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── sector_chip_pressure ──────────────────────────────────────────────────────
+
+def insert_sector_chip_pressure(trade_date: str, industry: str, stock_count: int,
+                                 avg_overhead: float, avg_win_rate: float,
+                                 high_overhead_cnt: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sector_chip_pressure "
+            "(trade_date, industry, stock_count, avg_overhead, avg_win_rate, high_overhead_cnt) "
+            "VALUES (?,?,?,?,?,?)",
+            (trade_date, industry, stock_count, avg_overhead, avg_win_rate, high_overhead_cnt),
+        )
+
+
+def get_sector_chip_pressure(trade_date: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM sector_chip_pressure WHERE trade_date = ? ORDER BY avg_overhead DESC",
+            (trade_date,),
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── sector_auction_sentiment ──────────────────────────────────────────────────
+
+def insert_sector_auction_sentiment(trade_date: str, industry: str, stock_count: int,
+                                     avg_auction_ratio: float, strong_cnt: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sector_auction_sentiment "
+            "(trade_date, industry, stock_count, avg_auction_ratio, strong_cnt) "
+            "VALUES (?,?,?,?,?)",
+            (trade_date, industry, stock_count, avg_auction_ratio, strong_cnt),
+        )
+
+
+def get_sector_auction_sentiment(trade_date: str) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM sector_auction_sentiment WHERE trade_date = ? ORDER BY avg_auction_ratio DESC",
+            (trade_date,),
         )
         return _rows_to_dicts(cur)
 

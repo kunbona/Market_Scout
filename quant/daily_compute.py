@@ -572,6 +572,101 @@ def compute_call_auction_stats(trade_date: str) -> None:
         logger.error("[daily_compute] call_auction_stats 失败: %s", e)
 
 
+# ── 板块筹码压力聚合 ──────────────────────────────────────────────────────────
+
+def compute_sector_chip_pressure(trade_date: str) -> None:
+    """
+    从 chip_status 按行业聚合筹码压力指标，写入 sector_chip_pressure 表。
+
+    指标：
+      avg_overhead   — 套牢压力均值（overhead_ratio 均值，越高卖压越重）
+      avg_win_rate   — 盈利持仓占比均值（win_rate 均值）
+      high_overhead_cnt — overhead_ratio > 0.2 的股票数（高套牢压力股数）
+    """
+    try:
+        from db.storage import get_chip_status, insert_sector_chip_pressure
+
+        rows = get_chip_status(trade_date)
+        if not rows:
+            logger.info("[daily_compute] sector_chip_pressure %s: chip_status 无数据", trade_date)
+            return
+
+        # 关联 snapshot 取 industry_l1
+        snap = load_daily_snapshot(trade_date)
+        if snap.empty:
+            return
+        code_to_industry = dict(zip(snap["code"].astype(str), snap["industry_l1"].fillna("未知")))
+
+        df = pd.DataFrame(rows)
+        df["industry"] = df["stock_code"].map(code_to_industry).fillna("未知")
+        df["overhead_ratio"] = pd.to_numeric(df["overhead_ratio"], errors="coerce")
+        df["win_rate"] = pd.to_numeric(df["win_rate"], errors="coerce")
+
+        written = 0
+        for industry, grp in df.groupby("industry"):
+            valid_oh = grp["overhead_ratio"].dropna()
+            valid_wr = grp["win_rate"].dropna()
+            if len(valid_oh) == 0:
+                continue
+            avg_overhead = float(valid_oh.mean())
+            avg_win_rate = float(valid_wr.mean()) if len(valid_wr) > 0 else 0.0
+            high_cnt = int((valid_oh > 0.2).sum())
+            insert_sector_chip_pressure(
+                trade_date, str(industry), len(grp),
+                avg_overhead, avg_win_rate, high_cnt,
+            )
+            written += 1
+
+        logger.info("[daily_compute] sector_chip_pressure %s: %d 个行业写入", trade_date, written)
+    except Exception as e:
+        logger.error("[daily_compute] sector_chip_pressure 失败: %s", e)
+
+
+# ── 板块竞价情绪聚合 ──────────────────────────────────────────────────────────
+
+def compute_sector_auction_sentiment(trade_date: str) -> None:
+    """
+    从 call_auction_stats 按行业聚合竞价情绪，写入 sector_auction_sentiment 表。
+
+    指标：
+      avg_auction_ratio — 竞价委比均值（(买量-卖量)/(买量+卖量)，正值表示开盘买盘强）
+      strong_cnt        — auction_ratio > 0.3 的股票数（强势竞价股数）
+    """
+    try:
+        from db.storage import get_call_auction_stats, insert_sector_auction_sentiment
+
+        rows = get_call_auction_stats(trade_date)
+        if not rows:
+            logger.info("[daily_compute] sector_auction_sentiment %s: call_auction_stats 无数据", trade_date)
+            return
+
+        snap = load_daily_snapshot(trade_date)
+        if snap.empty:
+            return
+        code_to_industry = dict(zip(snap["code"].astype(str), snap["industry_l1"].fillna("未知")))
+
+        df = pd.DataFrame(rows)
+        df["industry"] = df["stock_code"].map(code_to_industry).fillna("未知")
+        df["auction_ratio"] = pd.to_numeric(df["auction_ratio"], errors="coerce")
+
+        written = 0
+        for industry, grp in df.groupby("industry"):
+            valid = grp["auction_ratio"].dropna()
+            if len(valid) == 0:
+                continue
+            avg_ratio = float(valid.mean())
+            strong_cnt = int((valid > 0.3).sum())
+            insert_sector_auction_sentiment(
+                trade_date, str(industry), len(grp),
+                avg_ratio, strong_cnt,
+            )
+            written += 1
+
+        logger.info("[daily_compute] sector_auction_sentiment %s: %d 个行业写入", trade_date, written)
+    except Exception as e:
+        logger.error("[daily_compute] sector_auction_sentiment 失败: %s", e)
+
+
 # ── 补充任务1：涨停池换手率分层 ──────────────────────────────────────────────
 
 def compute_turnover_stats(trade_date: str) -> None:
@@ -743,17 +838,21 @@ def run_daily_compute(trade_date: str = None) -> None:
     logger.info("[daily_compute] 开始计算 %s", trade_date)
 
     tasks = [
-        ("market_emotion", compute_market_emotion),
-        ("sector_zt_density", compute_sector_zt_density),
-        ("sector_flow_acceleration", compute_sector_flow_acceleration),
-        ("volume_breakout", compute_volume_breakout),
-        ("lianzban_chain", compute_lianzban_chain),
-        ("lianzban_stats", compute_lianzban_stats),
-        ("concept_zt_density", compute_concept_zt_density),
-        ("research_activity", compute_research_activity),
-        ("turnover_stats", compute_turnover_stats),
-        ("market_cap_dist", compute_market_cap_dist),
-        ("advance_decline", compute_advance_decline),
+        ("market_emotion",              compute_market_emotion),
+        ("sector_zt_density",           compute_sector_zt_density),
+        ("sector_flow_acceleration",    compute_sector_flow_acceleration),
+        ("volume_breakout",             compute_volume_breakout),
+        ("chip_status",                 compute_chip_status),
+        ("sector_chip_pressure",        compute_sector_chip_pressure),
+        ("call_auction_stats",          compute_call_auction_stats),
+        ("sector_auction_sentiment",    compute_sector_auction_sentiment),
+        ("lianzban_chain",              compute_lianzban_chain),
+        ("lianzban_stats",              compute_lianzban_stats),
+        ("concept_zt_density",          compute_concept_zt_density),
+        ("research_activity",           compute_research_activity),
+        ("turnover_stats",              compute_turnover_stats),
+        ("market_cap_dist",             compute_market_cap_dist),
+        ("advance_decline",             compute_advance_decline),
     ]
 
     for name, fn in tasks:
