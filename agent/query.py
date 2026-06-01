@@ -95,9 +95,27 @@ def cmd_data_health(args):
         advance_decline_date, _ = _latest_date("advance_decline")
         lianzban_date, lianzban_count = _latest_date("lianzban_chain")
 
-    # ── 判断是否交易日
-    is_trade_day = (zt_date == today and zt_count > 0)
-    is_weekend = now.weekday() >= 5  # 周六=5, 周日=6
+    # ── 盘期判断
+    is_weekend = now.weekday() >= 5          # 周六=5, 周日=6
+    is_trade_day = (zt_date == today and zt_count > 0)  # zt_pool 有今日数据 = 确认交易日
+    # daily_compute 预计 09:30 前完成；盘前窗口定义为工作日 06:00–09:29
+    is_pre_market = (not is_weekend) and (not is_trade_day) and (now_h * 60 + now.minute < 9 * 60 + 30)
+    # 细粒度盘期标签，供 agent 决策
+    if is_trade_day:
+        if now_h < 9 or (now_h == 9 and now.minute < 15):
+            session = "pre_open"          # 交易日但还没到集合竞价（极罕见）
+        elif now_h < 15 or (now_h == 15 and now.minute == 0):
+            session = "intraday"          # 盘中
+        elif now_h < 17:
+            session = "post_close"        # 收盘后 ~ 17:00
+        else:
+            session = "evening"           # 17:00 以后（龙虎榜/本地数据应已就绪）
+    elif is_pre_market:
+        session = "pre_market"            # 工作日盘前，静态数据是昨天属正常
+    elif is_weekend:
+        session = "weekend"               # 周末
+    else:
+        session = "holiday_or_no_data"    # 工作日但无实时数据（节假日休市或抓取异常）
 
     status["realtime"] = {
         "zt_pool":        {"latest_date": zt_date, "count": zt_count, "fresh": zt_date == today},
@@ -125,10 +143,10 @@ def cmd_data_health(args):
         "lianzban_chain":    {"latest_date": lianzban_date, "count": lianzban_count, "fresh": lianzban_date == today},
     }
 
-    # ── 冲突检测
+    # ── 冲突检测（盘前 session 下静态数据是昨天属正常，不触发冲突）
     if is_trade_day and not status["static"]["market_emotion"]["fresh"]:
         conflicts.append(
-            f"【数据冲突】zt_pool今日有{zt_count}条（说明今天是交易日），"
+            f"【数据冲突】zt_pool今日有{zt_count}条（确认交易日），"
             f"但market_emotion最新日期是{emotion_date}（落后{emotion_gap}天）。"
             f"daily_compute可能未运行或QUANT_DATA_ROOT未配置。"
         )
@@ -136,23 +154,18 @@ def cmd_data_health(args):
     if is_trade_day and not status["static"]["sector_zt_density"]["fresh"]:
         conflicts.append(
             f"【数据冲突】zt_pool今日有数据，但sector_zt_density最新日期是{sector_density_date}，"
-            f"sector_zt_density无法用于今日板块分析。"
+            f"板块密度分析需切换到实时降级推算。"
+        )
+
+    if session == "holiday_or_no_data":
+        conflicts.append(
+            f"【注意】今天是工作日（{today}），收盘後zt_pool仍无今日数据，"
+            f"可能是节假日休市，或实时抓取未正常运行。"
         )
 
     if is_weekend and is_trade_day:
-        conflicts.append("【异常】当前是周末但zt_pool有今日数据，可能是节假日补班交易日。")
-
-    if not is_trade_day and not is_weekend:
-        # 工作日但zt_pool没有今日数据
-        if now_h >= 15:
-            conflicts.append(
-                f"【注意】今天是工作日（{today}），收盘后zt_pool仍无今日数据，"
-                f"可能是节假日休市，或实时抓取未正常运行。"
-            )
-        else:
-            conflicts.append(
-                f"【注意】今天{today}尚未开盘或盘中zt_pool为空，正常。"
-            )
+        # 节假日补班：周末有数据属特殊情况，提示而非冲突
+        conflicts.append("【提示】当前是周末但zt_pool有今日数据，可能是节假日补班交易日，请注意。")
 
     # ── 降级提示：静态数据不可用时如何用实时数据替代
     if not status["static"]["market_emotion"]["fresh"] and is_trade_day:
@@ -179,22 +192,54 @@ def cmd_data_health(args):
             "个股评级应降低置信度，data_gaps中标注'龙虎榜缺失'。"
         )
 
+    SESSION_INSTRUCTIONS = {
+        "pre_market": (
+            "当前为盘前时段（工作日 06:00–09:30）。"
+            "静态数据（market_emotion/sector_zt_density）显示昨日日期属正常——"
+            "daily_compute 尚未运行，数据将在 09:30 后刷新。"
+            "此时应基于昨日静态数据 + 今日新闻做前瞻判断，"
+            "重点关注催化剂质量和昨日情绪延续性，结论中注明'盘前预判'。"
+        ),
+        "intraday": (
+            "当前为盘中时段。"
+            "若 static 数据 stale 使用 fallback_hints 降级推算；"
+            "若 static 数据 fresh，以 static 为主、realtime 交叉验证。"
+        ),
+        "post_close": (
+            "当前为收盘后（15:00–17:00）。"
+            "龙虎榜尚未发布（17:30 后才有），个股评级置信度受限，"
+            "data_gaps 中标注'龙虎榜待出'。"
+        ),
+        "evening": (
+            "当前为盘后时段（17:00 后）。"
+            "龙虎榜应已发布；若 lhb_data.fresh=false 说明抓取失败，需标注。"
+            "静态数据应已由 daily_compute 更新；若仍 stale 说明 QUANT_DATA_ROOT 未配置，"
+            "使用 fallback_hints 降级推算。"
+        ),
+        "pre_open": (
+            "当前为交易日开盘前极早时段。静态数据显示昨日日期属正常，处理方式同 pre_market。"
+        ),
+        "weekend": (
+            "当前为周末。无实时交易数据，只能基于新闻/历史静态数据做下周前瞻判断，"
+            "结论中明确标注'周末前瞻，数据截至上周五收盘'。"
+        ),
+        "holiday_or_no_data": (
+            "工作日但无实时数据，可能是节假日休市或实时抓取故障。"
+            "只能基于历史静态数据和新闻做判断，结论中标注数据异常。"
+        ),
+    }
+
     _out({
         "check_time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "today": today,
+        "session": session,
         "is_trade_day": is_trade_day,
         "is_weekend": is_weekend,
         "realtime_data_status": status["realtime"],
         "static_data_status": status["static"],
         "conflicts": conflicts,
         "fallback_hints": fallback_hints,
-        "instruction": (
-            "根据以上检查结果调整分析策略：\n"
-            "1. is_trade_day=false → 今日无交易数据，只能基于新闻和历史数据做前瞻判断，明确告知用户\n"
-            "2. static数据stale但realtime数据fresh → 使用fallback_hints中的替代推算方式，结论中标注数据来源\n"
-            "3. 两者都fresh → 正常分析，以static为主、realtime为补充交叉验证\n"
-            "4. 发现conflicts → 在结论的data_completeness中如实记录，不要用流畅叙述掩盖数据空洞"
-        ),
+        "instruction": SESSION_INSTRUCTIONS.get(session, ""),
     })
 
 
