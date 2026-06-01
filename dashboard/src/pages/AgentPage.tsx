@@ -338,7 +338,7 @@ function MarketStatusCard({ ms }: { ms: MarketStatus }) {
         </div>
       )}
 
-      {ms.yesterday_premium != null && (
+      {ms.yesterday_premium != null && ms.yesterday_premium !== 'data_gap' && (
         <div className="text-xs text-gray-500 mb-3">
           昨日涨停溢价：<span className="font-semibold text-gray-700">{ms.yesterday_premium}</span>
         </div>
