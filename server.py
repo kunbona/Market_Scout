@@ -264,7 +264,7 @@ def api_concept_flow():
 @app.route("/api/lhb")
 def api_lhb():
     try:
-        trade_date = _date_param()
+        trade_date = _computed_date()
         rows = get_lhb_data(trade_date)
         # 附加席位明细
         seats = get_lhb_seat(trade_date)

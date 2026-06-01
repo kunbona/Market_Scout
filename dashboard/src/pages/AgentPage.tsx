@@ -518,8 +518,8 @@ function CandidatesCard({ c }: { c: Candidates }) {
                     {s.risk_note}
                   </p>
                 )}
-                {s.data_gaps.length > 0 && (
-                  <p className="text-xs text-gray-400 mt-1">数据缺口：{s.data_gaps.join('、')}</p>
+                {(s.data_gaps ?? []).length > 0 && (
+                  <p className="text-xs text-gray-400 mt-1">数据缺口：{(s.data_gaps ?? []).join('、')}</p>
                 )}
               </div>
             );
