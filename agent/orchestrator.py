@@ -1,18 +1,23 @@
 """
-Agent 编排层（薄封装）。
+多 Agent 编排层（三阶段）。
 
-真正的分析由 Claude CLI subprocess 完成：
-  claude -p "/market-radar-analysis --run-type <run_type>"
+第一阶段（并行）：6个分析师各自读数据，写中间结果到 /tmp/mra-{run_id}/
+  mra-emotion / mra-sector / mra-news / mra-lhb / mra-momentum / mra-risk
 
-本模块只负责：
-1. 维护运行状态（供 /api/agent/status 查询）
-2. 提供 run_agent_analysis() 供 server.py trigger 端点调用
+第二阶段（串行）：多空辩论
+  mra-bull → mra-bear（各自独立读原始分析结果）
+
+第三阶段：首席裁决
+  mra-chief → 读全部结果 → 调用 write_result 落库
+
+前端轮询 /api/agent/status 感知进度，/api/agent/latest 获取最终结果。
 """
 import logging
 import os
 import shutil
 import subprocess
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +27,8 @@ _PROJ_ROOT = Path(__file__).resolve().parent.parent
 
 _agent_state = {
     "running": False,
+    "phase": None,          # "analysts" | "debate" | "chief" | None
+    "phase_detail": None,   # 当前子阶段描述
     "last_run": None,
     "last_run_type": None,
     "last_error": None,
@@ -46,67 +53,136 @@ def _find_claude() -> str:
     return str(fallback)
 
 
-def run_agent_analysis(run_type: str) -> dict:
+def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) -> bool:
     """
-    启动 Claude CLI subprocess（非阻塞），立即返回 {"status": "started", "pid": ...}。
-    状态更新由后台监控线程完成，前端轮询 /api/agent/status 或 /api/agent/latest 感知结果。
+    同步运行一个 claude skill，返回是否成功。
+    调用者负责在后台线程里执行，不要在主线程调用。
     """
-    with _state_lock:
-        if _agent_state["running"]:
-            return {"status": "already_running", "run_type": _agent_state["last_run_type"]}
-        _agent_state["running"] = True
-        _agent_state["last_run_type"] = run_type
-        _agent_state["last_error"] = None
-        _agent_state["pid"] = None
-
     claude_bin = _find_claude()
+    env = os.environ.copy()
+    env["MRA_RUN_ID"] = run_id
+    env["MRA_RUN_TYPE"] = run_type
+
     try:
         proc = subprocess.Popen(
-            [claude_bin, "-p",
-             f"/market-radar-analysis --run-type {run_type}",
+            [claude_bin, "-p", f"/{skill_name}",
              "--verbose",
              "--output-format", "stream-json",
              "--dangerously-skip-permissions"],
             cwd=str(_PROJ_ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            env=env,
         )
-    except Exception as exc:
         with _state_lock:
-            _agent_state["running"] = False
-            _agent_state["last_error"] = str(exc)
-        raise
+            _agent_state["pid"] = proc.pid
 
+        _, stderr = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+        if rc != 0:
+            err = (stderr or b"").decode(errors="replace")[:300]
+            logger.warning("[orchestrator] %s failed rc=%d: %s", skill_name, rc, err)
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        logger.error("[orchestrator] %s timed out after %ds", skill_name, timeout)
+        return False
+    except Exception as exc:
+        logger.exception("[orchestrator] %s exception: %s", skill_name, exc)
+        return False
+    finally:
+        with _state_lock:
+            _agent_state["pid"] = None
+
+
+def _run_pipeline(run_type: str, run_id: str) -> None:
+    """三阶段管道，在后台线程中运行。"""
+
+    # --- 第一阶段：6个分析师并行 ---
     with _state_lock:
-        _agent_state["pid"] = proc.pid
+        _agent_state["phase"] = "analysts"
+        _agent_state["phase_detail"] = "6位分析师并行分析中"
 
-    # 后台线程等待进程结束，更新状态
-    def _monitor():
-        try:
-            _, stderr = proc.communicate(timeout=2700)
-            rc = proc.returncode
-            with _state_lock:
-                if rc != 0:
-                    err = (stderr or b"").decode(errors="replace")[:500]
-                    logger.error("Agent CLI failed run_type=%s rc=%d: %s", run_type, rc, err)
-                    _agent_state["last_error"] = err
-                else:
-                    _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
-                    _agent_state["last_error"] = None
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            with _state_lock:
-                _agent_state["last_error"] = f"Agent timed out after 2700s (run_type={run_type})"
-            logger.error(_agent_state["last_error"])
-        except Exception as exc:
-            with _state_lock:
-                _agent_state["last_error"] = str(exc)
-            logger.exception("Agent monitor thread failed: run_type=%s", run_type)
-        finally:
-            with _state_lock:
-                _agent_state["running"] = False
-                _agent_state["pid"] = None
+    analysts = ["mra-emotion", "mra-sector", "mra-news", "mra-lhb", "mra-momentum", "mra-risk"]
+    results = [None] * len(analysts)
 
-    threading.Thread(target=_monitor, daemon=True, name=f"agent-monitor-{run_type}").start()
+    def _run_one(i, skill):
+        results[i] = _run_skill(skill, run_id, run_type, timeout=600)
 
-    return {"status": "started", "run_type": run_type, "pid": proc.pid}
+    threads = [
+        threading.Thread(target=_run_one, args=(i, s), daemon=True)
+        for i, s in enumerate(analysts)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    failed = [analysts[i] for i, ok in enumerate(results) if not ok]
+    if failed:
+        logger.warning("[orchestrator] 分析师失败: %s，继续后续阶段", failed)
+
+    # --- 第二阶段：多空辩论（串行，各自独立读原始数据）---
+    with _state_lock:
+        _agent_state["phase"] = "debate"
+        _agent_state["phase_detail"] = "多空辩论中"
+
+    _run_skill("mra-bull", run_id, run_type, timeout=600)
+    _run_skill("mra-bear", run_id, run_type, timeout=600)
+
+    # --- 第三阶段：首席裁决 ---
+    with _state_lock:
+        _agent_state["phase"] = "chief"
+        _agent_state["phase_detail"] = "首席裁决，生成最终报告"
+
+    ok = _run_skill("mra-chief", run_id, run_type, timeout=900)
+
+    # 收尾
+    with _state_lock:
+        _agent_state["running"] = False
+        _agent_state["phase"] = None
+        _agent_state["phase_detail"] = None
+        _agent_state["pid"] = None
+        if ok:
+            _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
+            _agent_state["last_error"] = None
+        else:
+            _agent_state["last_error"] = "首席裁决阶段失败"
+
+    # 清理临时目录
+    tmp_dir = Path(f"/tmp/mra-{run_id}")
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def run_agent_analysis(run_type: str) -> dict:
+    """
+    启动三阶段 multi-agent 管道（非阻塞），立即返回 {"status": "started", ...}。
+    """
+    with _state_lock:
+        if _agent_state["running"]:
+            return {
+                "status": "already_running",
+                "run_type": _agent_state["last_run_type"],
+                "phase": _agent_state["phase"],
+            }
+        _agent_state["running"] = True
+        _agent_state["last_run_type"] = run_type
+        _agent_state["last_error"] = None
+        _agent_state["phase"] = None
+        _agent_state["pid"] = None
+
+    run_id = uuid.uuid4().hex[:8]
+    # 预建临时目录
+    Path(f"/tmp/mra-{run_id}").mkdir(parents=True, exist_ok=True)
+
+    t = threading.Thread(
+        target=_run_pipeline,
+        args=(run_type, run_id),
+        daemon=True,
+        name=f"mra-pipeline-{run_type}-{run_id}",
+    )
+    t.start()
+
+    return {"status": "started", "run_type": run_type, "run_id": run_id}
