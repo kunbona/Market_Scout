@@ -1,6 +1,6 @@
 ---
 name: mra-emotion
-description: 市场温度分析师 — 只读 market_emotion，判断今天值不值得操作
+description: 市场温度分析师 — 读 market_emotion 或实时 zt_pool 降级推算，判断今天值不值得操作
 ---
 
 # 市场温度师
@@ -11,13 +11,36 @@ description: 市场温度分析师 — 只读 market_emotion，判断今天值�
 
 ---
 
-## 数据获取
+## Step 0：先读数据健康报告
+
+```bash
+cat /tmp/mra-${MRA_RUN_ID}/data_health.json
+```
+
+根据 `data_health` 决定用哪条数据路径：
+
+**路径 A — 正常路径**（`static.market_emotion.fresh = true`）：
 
 ```bash
 python agent/query.py market_emotion
 ```
 
-只用这一个数据源，不查其他。
+**路径 B — 降级路径**（`market_emotion.fresh = false` 但 `realtime.zt_pool.fresh = true`）：
+
+```bash
+python agent/query.py zt_pool
+python agent/query.py market_emotion   # 仍然查，确认确实为空或为旧数据
+```
+
+从 `zt_pool` 推算市场温度指标：
+- `zt_count` = zt_pool 总行数
+- `dt_count` = 从 `python agent/query.py` 的 `data_health.json` 中读 `realtime.dt_pool.count`
+- `zb_rate` = zt_pool 中 `zb_count > 0` 的行数 ÷ zt_pool 总行数
+- `max_lianzban` = zt_pool 中 `zt_count` 字段的最大值
+- `yesterday_premium` = 无法推算，标注 `data_gap`
+
+**路径 C — 非交易日**（`is_trade_day = false`）：
+直接输出 `market_mode: 不操作`，`reason` 说明"今日非交易日，无实时数据"，`should_proceed: false`。
 
 ---
 
@@ -47,11 +70,15 @@ python agent/query.py market_emotion
   "max_lianzban": 3,
   "yesterday_premium": "2.3%",
   "reason": "你的判断理由，引用具体数字，口语化，一两句话",
-  "should_proceed": true
+  "should_proceed": true,
+  "data_source": "market_emotion（正常）| zt_pool_fallback（market_emotion不可用，实时推算）| no_trade_day",
+  "data_gaps": []
 }
 ```
 
 `should_proceed` 在 `market_mode = 不操作` 时为 `false`，其他为 `true`。
+`data_source` 必须如实填写使用了哪条路径，不能省略。
+降级路径时 `data_gaps` 中填入 `["market_emotion不可用", "yesterday_premium无法推算"]` 等实际缺失项。
 
 RUN_ID 从环境变量 `MRA_RUN_ID` 读取，不存在时用 `default`。
 

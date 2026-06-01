@@ -11,14 +11,30 @@ description: 板块叙事师 — 只读量化信号（涨停密度+资金流）�
 
 ---
 
-## 数据获取
+## Step 0：先读数据健康报告
 
 ```bash
-python agent/query.py sector_zt_density
-python agent/query.py sector_flow_accel
+cat /tmp/mra-${MRA_RUN_ID}/data_health.json
 ```
 
-只用这两个数据源。新闻数据由新闻舆情师单独分析，你不查新闻。
+检查 `static.sector_zt_density.fresh`：
+
+- **fresh = true**：正常查询
+  ```bash
+  python agent/query.py sector_zt_density
+  python agent/query.py sector_flow_accel
+  ```
+
+- **fresh = false 但 `realtime.zt_pool.fresh = true`**：降级路径
+  ```bash
+  python agent/query.py zt_pool        # 从涨停池按 sector 字段分组统计板块热度
+  python agent/query.py sector_flow_accel  # 仍可用（实时数据）
+  ```
+  从 `zt_pool` 统计：对 `sector` 字段分组，出现次数最多的板块视为主线候选。无法计算精确密度，在 `evidence` 中标注"基于 zt_pool 统计，sector_zt_density 不可用"。
+
+- **`is_trade_day = false`**：无实时数据，只能做前瞻性叙事描述，不输出具体密度数字。
+
+新闻数据由新闻舆情师单独分析，你不查新闻。
 
 ---
 

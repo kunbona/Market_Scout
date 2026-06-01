@@ -5,6 +5,7 @@
   python agent/query.py <command> [options]
 
 Commands:
+  data_health             【必须最先调用】数据健康检查：实时 vs 静态数据一致性，冲突检测，降级提示
   market_emotion          今日市场情绪（涨停/跌停/炸板率/连板/溢价）
   zt_pool                 今日涨停池
   sector_zt_density       行业涨停密度 Top10
@@ -32,6 +33,169 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 def _out(data):
     print(json.dumps(data, ensure_ascii=False, default=str))
+
+
+def cmd_data_health(args):
+    """
+    数据健康检查（Pre-flight hook）。
+    检查实时数据与静态数据的新鲜度，检测两者冲突，输出降级建议。
+    必须在所有其他查询之前调用。
+    """
+    import sqlite3
+    from db.storage import DB_PATH
+
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    now_h = now.hour
+
+    status = {}
+    conflicts = []
+    fallback_hints = {}
+
+    with sqlite3.connect(DB_PATH) as conn:
+        def _latest_date(table, date_col="trade_date"):
+            try:
+                row = conn.execute(
+                    f"SELECT {date_col}, COUNT(*) FROM {table} WHERE {date_col} = "
+                    f"(SELECT MAX({date_col}) FROM {table})"
+                ).fetchone()
+                return (row[0], row[1]) if row and row[0] else (None, 0)
+            except Exception:
+                return (None, 0)
+
+        def _latest_ts(table, ts_col):
+            try:
+                row = conn.execute(
+                    f"SELECT MAX({ts_col}) FROM {table}"
+                ).fetchone()
+                return row[0] if row else None
+            except Exception:
+                return None
+
+        def _gap_days(date_str):
+            if not date_str:
+                return None
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d")
+                return (now - d).days
+            except Exception:
+                return None
+
+        # ── 实时数据（东财抓取，盘中更新）
+        zt_date, zt_count = _latest_date("zt_pool")
+        dt_date, dt_count = _latest_date("dt_pool")
+        news_ts = _latest_ts("cls_news", "pub_time")
+        sector_flow_ts = _latest_ts("sector_flow", "fetch_time")
+        lhb_date, lhb_count = _latest_date("lhb_data")
+        northbound_ts = _latest_ts("northbound_flow", "fetch_time")
+
+        # ── 静态数据（本地量化日线，daily_compute 每日09:00生成）
+        emotion_date, _ = _latest_date("market_emotion")
+        sector_density_date, _ = _latest_date("sector_zt_density")
+        advance_decline_date, _ = _latest_date("advance_decline")
+        lianzban_date, lianzban_count = _latest_date("lianzban_chain")
+
+    # ── 判断是否交易日
+    is_trade_day = (zt_date == today and zt_count > 0)
+    is_weekend = now.weekday() >= 5  # 周六=5, 周日=6
+
+    status["realtime"] = {
+        "zt_pool":        {"latest_date": zt_date, "count": zt_count, "fresh": zt_date == today},
+        "dt_pool":        {"latest_date": dt_date, "count": dt_count, "fresh": dt_date == today},
+        "cls_news":       {"latest_time": news_ts, "fresh": bool(news_ts and news_ts[:10] == today)},
+        "sector_flow":    {"latest_time": sector_flow_ts, "fresh": bool(sector_flow_ts and sector_flow_ts[:10] == today)},
+        "lhb_data":       {
+            "latest_date": lhb_date, "count": lhb_count,
+            "fresh": lhb_date == today,
+            "note": "17:30后才有，盘中为空属正常" if now_h < 17 else ("已出榜" if lhb_date == today else "盘后仍为空，可能抓取失败"),
+        },
+        "northbound":     {"latest_time": northbound_ts, "fresh": bool(northbound_ts and northbound_ts[:10] == today)},
+    }
+
+    emotion_gap = _gap_days(emotion_date)
+    status["static"] = {
+        "market_emotion":   {
+            "latest_date": emotion_date,
+            "fresh": emotion_date == today,
+            "gap_days": emotion_gap,
+            "note": "由 daily_compute 每日09:00生成，依赖 QUANT_DATA_ROOT 本地量价文件",
+        },
+        "sector_zt_density": {"latest_date": sector_density_date, "fresh": sector_density_date == today, "gap_days": _gap_days(sector_density_date)},
+        "advance_decline":   {"latest_date": advance_decline_date, "fresh": advance_decline_date == today, "gap_days": _gap_days(advance_decline_date)},
+        "lianzban_chain":    {"latest_date": lianzban_date, "count": lianzban_count, "fresh": lianzban_date == today},
+    }
+
+    # ── 冲突检测
+    if is_trade_day and not status["static"]["market_emotion"]["fresh"]:
+        conflicts.append(
+            f"【数据冲突】zt_pool今日有{zt_count}条（说明今天是交易日），"
+            f"但market_emotion最新日期是{emotion_date}（落后{emotion_gap}天）。"
+            f"daily_compute可能未运行或QUANT_DATA_ROOT未配置。"
+        )
+
+    if is_trade_day and not status["static"]["sector_zt_density"]["fresh"]:
+        conflicts.append(
+            f"【数据冲突】zt_pool今日有数据，但sector_zt_density最新日期是{sector_density_date}，"
+            f"sector_zt_density无法用于今日板块分析。"
+        )
+
+    if is_weekend and is_trade_day:
+        conflicts.append("【异常】当前是周末但zt_pool有今日数据，可能是节假日补班交易日。")
+
+    if not is_trade_day and not is_weekend:
+        # 工作日但zt_pool没有今日数据
+        if now_h >= 15:
+            conflicts.append(
+                f"【注意】今天是工作日（{today}），收盘后zt_pool仍无今日数据，"
+                f"可能是节假日休市，或实时抓取未正常运行。"
+            )
+        else:
+            conflicts.append(
+                f"【注意】今天{today}尚未开盘或盘中zt_pool为空，正常。"
+            )
+
+    # ── 降级提示：静态数据不可用时如何用实时数据替代
+    if not status["static"]["market_emotion"]["fresh"] and is_trade_day:
+        fallback_hints["emotion_proxy"] = (
+            "market_emotion缺失时，可从zt_pool/dt_pool直接推算市场温度：\n"
+            f"  - zt_count = {zt_count}（来自zt_pool实时数据）\n"
+            f"  - dt_count = {dt_count}（来自dt_pool实时数据）\n"
+            "  - zb_rate = zt_pool中zb_count>0的行数 / zt_pool总行数\n"
+            "  - max_lianzban = zt_pool中zt_count的最大值\n"
+            "  注意：这是实时快照推算，精度低于日线静态数据，请在结论中标注"
+        )
+
+    if not status["static"]["sector_zt_density"]["fresh"] and is_trade_day:
+        fallback_hints["sector_proxy"] = (
+            "sector_zt_density缺失时，可从zt_pool按sector字段分组统计：\n"
+            "  - 同一行业/板块涨停数 ÷ 该行业总股票数（粗估）\n"
+            "  - 或直接按sector出现频次排序，找高频板块作为主线线索\n"
+            "  注意：这是粗略估算，结论中需标注sector_zt_density数据不可用"
+        )
+
+    if not status["realtime"]["lhb_data"]["fresh"] and now_h >= 18:
+        fallback_hints["lhb_missing"] = (
+            "当前时间已过18:00但龙虎榜仍无今日数据，可能抓取失败。"
+            "个股评级应降低置信度，data_gaps中标注'龙虎榜缺失'。"
+        )
+
+    _out({
+        "check_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "today": today,
+        "is_trade_day": is_trade_day,
+        "is_weekend": is_weekend,
+        "realtime_data_status": status["realtime"],
+        "static_data_status": status["static"],
+        "conflicts": conflicts,
+        "fallback_hints": fallback_hints,
+        "instruction": (
+            "根据以上检查结果调整分析策略：\n"
+            "1. is_trade_day=false → 今日无交易数据，只能基于新闻和历史数据做前瞻判断，明确告知用户\n"
+            "2. static数据stale但realtime数据fresh → 使用fallback_hints中的替代推算方式，结论中标注数据来源\n"
+            "3. 两者都fresh → 正常分析，以static为主、realtime为补充交叉验证\n"
+            "4. 发现conflicts → 在结论的data_completeness中如实记录，不要用流畅叙述掩盖数据空洞"
+        ),
+    })
 
 
 def cmd_market_emotion(args):
@@ -282,6 +446,7 @@ def cmd_context(args):
 
 
 COMMANDS = {
+    "data_health":       cmd_data_health,
     "market_emotion":    cmd_market_emotion,
     "zt_pool":           cmd_zt_pool,
     "sector_zt_density": cmd_sector_zt_density,

@@ -130,14 +130,47 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
                 _agent_state["pids"].discard(proc.pid)
 
 
+def _write_data_health(run_id: str) -> None:
+    """
+    在管道启动时生成 data_health.json 并写入 run 目录，供所有 skill 共享。
+    即使失败也不阻断管道（静默忽略异常）。
+    """
+    import subprocess as _sp
+    tmp_dir = Path(f"/tmp/mra-{run_id}")
+    out_path = tmp_dir / "data_health.json"
+    try:
+        result = _sp.run(
+            ["python", "agent/query.py", "data_health"],
+            cwd=str(_PROJ_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            out_path.write_text(result.stdout.strip(), encoding="utf-8")
+            logger.info("[orchestrator] data_health written to %s", out_path)
+        else:
+            err = result.stderr[:200] if result.stderr else "no output"
+            logger.warning("[orchestrator] data_health query failed: %s", err)
+    except Exception as exc:
+        logger.warning("[orchestrator] data_health generation failed (non-fatal): %s", exc)
+
+
 def _run_pipeline(run_type: str, run_id: str) -> None:
     """
     三阶段完整管道（morning / evening）或轻量盘中管道（intraday）。
 
+    Step 0（同步）：生成 data_health.json 写入 /tmp/mra-{run_id}/，供所有 skill 读取。
     intraday：只跑 emotion + news + momentum，跳过辩论，mra-intraday 直接汇总。
     其他：6位分析师并行 → 多空辩论 → 首席裁决。
     """
     is_intraday = (run_type == "intraday")
+
+    # Step 0：Pre-flight data health check（同步，30秒内完成，非阻塞管道）
+    with _state_lock:
+        _agent_state["phase"] = "preflight"
+        _agent_state["phase_detail"] = "数据健康检查中"
+    _write_data_health(run_id)
 
     try:
         if is_intraday:

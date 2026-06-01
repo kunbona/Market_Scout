@@ -32,6 +32,11 @@ claude -p "/market-radar-analysis --run-type evening"
 所有市场数据通过以下命令查询，结果为 JSON 输出到 stdout：
 
 ```bash
+# 【Step 0 必须最先调用】数据健康检查（实时 vs 静态一致性）
+python agent/query.py data_health
+# 或读取 orchestrator 已生成的缓存（推荐）：
+cat /tmp/mra-${MRA_RUN_ID}/data_health.json
+
 # 市场情绪（涨停/跌停/炸板率/连板/溢价）
 python agent/query.py market_emotion
 
@@ -86,11 +91,31 @@ A股情绪行情的演化路径，你需要判断现在处于哪一段：
 
 你按以下顺序收集信息，但每一步都用判断力而不是公式：
 
+**Step 0（必须）：读取数据健康报告**
+
+```bash
+cat /tmp/mra-${MRA_RUN_ID}/data_health.json
+```
+
+根据结果做出以下判断，**再进行后续步骤**：
+
+| 情况 | 处理方式 |
+|------|---------|
+| `is_trade_day = false` | 今日无交易。只基于新闻/历史数据做前瞻判断，在结论开头明确告知"今日非交易日" |
+| 静态数据 stale（`market_emotion.fresh = false`）但实时数据 fresh（`zt_pool.fresh = true`） | **切换到实时替代推算**：从 `zt_pool/dt_pool` 推算 zt_count/dt_count/zb_rate/max_lianzban，在结论中标注"market_emotion 不可用，以 zt_pool 实时推算替代" |
+| 静态数据 stale 且实时数据也 stale | 数据双空。结论明确标注数据缺失，不做具体个股推荐 |
+| 两者都 fresh | 正常分析。以静态数据为主，实时数据作交叉验证 |
+| `conflicts` 字段非空 | 在 `data_completeness.conflicts` 里原文记录，不要用流畅叙述掩盖 |
+
+`fallback_hints` 字段如果不为空，按其中的说明做降级推算。
+
+---
+
 **第一步：感知市场温度**  
-先查 `market_emotion`，读懂今天有没有赚钱效应。参考 `references/risk_agent.md` 中的判断框架。如果市场明显不适合操作，简短说明原因后直接写入结论。
+先查 `market_emotion`（若 fresh）或使用 Step 0 fallback 推算，读懂今天有没有赚钱效应。参考 `references/risk_agent.md` 中的判断框架。如果市场明显不适合操作，简短说明原因后直接写入结论。
 
 **第二步：找到最有叙事潜力的板块**  
-查 `sector_zt_density` + `sector_flow_accel` + `news`，按 `references/sector_agent.md` 的方式读懂"市场在押注什么故事"。最多 3 个，宁少勿滥。
+查 `sector_zt_density`（若 fresh）+ `sector_flow_accel` + `news`，按 `references/sector_agent.md` 的方式读懂"市场在押注什么故事"。最多 3 个，宁少勿滥。若 `sector_zt_density` 不可用，从 `zt_pool` 按 `sector` 字段分组统计代替，结论中标注。
 
 **第三步：锁定龙头候选**  
 查 `zt_pool` + `lianzban_chain` + `lhb` + `volume_breakout` + `f10`，按 `references/stock_agent.md` 的方式识别哪只股票最像这个故事的主角。输出 T0-T3 名单。
@@ -99,7 +124,7 @@ A股情绪行情的演化路径，你需要判断现在处于哪一段：
 如果叙事逻辑不清晰，可以再查 `policy_news` 或补查 `news`。
 
 **第五步：写入结果**  
-调用 `write_result`，完成本次分析。
+调用 `write_result`，完成本次分析。`data_completeness` 中必须包含 Step 0 发现的所有冲突和降级说明。
 
 ---
 
