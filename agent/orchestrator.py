@@ -97,33 +97,65 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
 
 
 def _run_pipeline(run_type: str, run_id: str) -> None:
-    """三阶段管道，在后台线程中运行。"""
+    """
+    三阶段完整管道（morning / evening）或轻量盘中管道（intraday）。
 
-    # --- 第一阶段：6个分析师并行 ---
+    intraday：只跑 emotion + news + momentum，跳过辩论，mra-intraday 直接汇总。
+    其他：6位分析师并行 → 多空辩论 → 首席裁决。
+    """
+    is_intraday = (run_type == "intraday")
+
+    try:
+        if is_intraday:
+            _run_intraday(run_type, run_id)
+        else:
+            _run_full(run_type, run_id)
+    finally:
+        with _state_lock:
+            _agent_state["running"] = False
+            _agent_state["phase"] = None
+            _agent_state["phase_detail"] = None
+            _agent_state["pid"] = None
+
+        tmp_dir = Path(f"/tmp/mra-{run_id}")
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _run_intraday(run_type: str, run_id: str) -> None:
+    """轻量盘中管道：3个分析师并行 → intraday 汇总。"""
+    with _state_lock:
+        _agent_state["phase"] = "analysts"
+        _agent_state["phase_detail"] = "盘中快速分析（情绪/新闻/动量）"
+
+    analysts = ["mra-emotion", "mra-news", "mra-momentum"]
+    _run_parallel(analysts, run_id, run_type, timeout=600)
+
+    with _state_lock:
+        _agent_state["phase"] = "chief"
+        _agent_state["phase_detail"] = "生成盘中盘感摘要"
+
+    ok = _run_skill("mra-intraday", run_id, run_type, timeout=600)
+
+    with _state_lock:
+        if ok:
+            _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
+            _agent_state["last_error"] = None
+        else:
+            _agent_state["last_error"] = "盘中汇总失败"
+
+
+def _run_full(run_type: str, run_id: str) -> None:
+    """完整三阶段管道：6位分析师并行 → 多空辩论 → 首席裁决。"""
     with _state_lock:
         _agent_state["phase"] = "analysts"
         _agent_state["phase_detail"] = "6位分析师并行分析中"
 
     analysts = ["mra-emotion", "mra-sector", "mra-news", "mra-lhb", "mra-momentum", "mra-risk"]
-    results = [None] * len(analysts)
-
-    def _run_one(i, skill):
-        results[i] = _run_skill(skill, run_id, run_type, timeout=600)
-
-    threads = [
-        threading.Thread(target=_run_one, args=(i, s), daemon=True)
-        for i, s in enumerate(analysts)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    failed = [analysts[i] for i, ok in enumerate(results) if not ok]
+    failed = _run_parallel(analysts, run_id, run_type, timeout=600)
     if failed:
         logger.warning("[orchestrator] 分析师失败: %s，继续后续阶段", failed)
 
-    # --- 第二阶段：多空辩论（串行，各自独立读原始数据）---
     with _state_lock:
         _agent_state["phase"] = "debate"
         _agent_state["phase_detail"] = "多空辩论中"
@@ -131,29 +163,37 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
     _run_skill("mra-bull", run_id, run_type, timeout=600)
     _run_skill("mra-bear", run_id, run_type, timeout=600)
 
-    # --- 第三阶段：首席裁决 ---
     with _state_lock:
         _agent_state["phase"] = "chief"
         _agent_state["phase_detail"] = "首席裁决，生成最终报告"
 
     ok = _run_skill("mra-chief", run_id, run_type, timeout=900)
 
-    # 收尾
     with _state_lock:
-        _agent_state["running"] = False
-        _agent_state["phase"] = None
-        _agent_state["phase_detail"] = None
-        _agent_state["pid"] = None
         if ok:
             _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
             _agent_state["last_error"] = None
         else:
             _agent_state["last_error"] = "首席裁决阶段失败"
 
-    # 清理临时目录
-    tmp_dir = Path(f"/tmp/mra-{run_id}")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def _run_parallel(skills: list, run_id: str, run_type: str, timeout: int) -> list:
+    """并行运行多个 skill，返回失败的 skill 名称列表。"""
+    results = [None] * len(skills)
+
+    def _run_one(i, skill):
+        results[i] = _run_skill(skill, run_id, run_type, timeout=timeout)
+
+    threads = [
+        threading.Thread(target=_run_one, args=(i, s), daemon=True)
+        for i, s in enumerate(skills)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    return [skills[i] for i, ok in enumerate(results) if not ok]
 
 
 def run_agent_analysis(run_type: str) -> dict:

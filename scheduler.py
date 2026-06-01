@@ -123,14 +123,11 @@ def start_scheduler() -> None:
         def _run_agent(run_type: str) -> None:
             _auto_run(f"Agent-{run_type}", lambda: run_agent_analysis(run_type))
 
+        # 每日4次：盘前完整 / 盘中轻量x2 / 盘后完整（21:00龙虎榜已稳定）
         scheduler.add_job(lambda: _run_agent("morning"),  "cron", hour=6,  minute=0)
-        scheduler.add_job(lambda: _run_agent("auction"),  "cron", hour=9,  minute=25)
-        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=10, minute=30)
-        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=11, minute=30)
+        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=10, minute=0)
         scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=13, minute=30)
-        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=14, minute=30)
-        scheduler.add_job(lambda: _run_agent("closing"),  "cron", hour=15, minute=30)
-        scheduler.add_job(lambda: _run_agent("evening"),  "cron", hour=18, minute=0)
+        scheduler.add_job(lambda: _run_agent("evening"),  "cron", hour=21, minute=0)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
