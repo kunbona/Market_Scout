@@ -20,8 +20,9 @@ function SettingsPage({ settings, onUpdate }: {
   settings: AppSettings;
   onUpdate: (patch: Partial<AppSettings>) => void;
 }) {
-  const [serverConfig, setServerConfig] = useState<{ data_root: string; rsshub_url: string; flask_port: string; quant_workers: string; agent_enabled: string } | null>(null);
+  const [serverConfig, setServerConfig] = useState<{ data_root: string; rsshub_url: string; flask_port: string; quant_workers: string; agent_enabled: string; compute_enabled: string } | null>(null);
   const [agentEnabledMsg, setAgentEnabledMsg] = useState('');
+  const [computeEnabledMsg, setComputeEnabledMsg] = useState('');
   const [dataRootInput, setDataRootInput] = useState('');
   const [rsshubInput, setRsshubInput] = useState('');
   const [flaskPortInput, setFlaskPortInput] = useState('');
@@ -344,6 +345,57 @@ function SettingsPage({ settings, onUpdate }: {
                 <span
                   className={`inline-block h-5 w-5 mt-0.5 rounded-full bg-white shadow transform transition-transform duration-200 ${
                     serverConfig?.agent_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mt-4">
+            <div>
+              <p className="text-sm text-gray-700">每日计算定时自动执行</p>
+              <p className="text-xs text-gray-400 mt-0.5">关闭后每日计算不会自动触发（手动计算仍可用），重启后生效</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {computeEnabledMsg && (
+                <span className={`text-xs ${computeEnabledMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
+                  {computeEnabledMsg}
+                </span>
+              )}
+              <button
+                role="switch"
+                aria-checked={serverConfig?.compute_enabled === 'true'}
+                onClick={async () => {
+                  if (!serverConfig) return;
+                  const newVal = serverConfig.compute_enabled !== 'true';
+                  setServerConfig(prev => prev ? { ...prev, compute_enabled: String(newVal) } : prev);
+                  setComputeEnabledMsg('');
+                  try {
+                    const res = await fetch('/api/config', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ compute_enabled: newVal }),
+                    });
+                    const json = await res.json();
+                    if (json.success) {
+                      setComputeEnabledMsg('✓ 已保存，重启后生效');
+                    } else {
+                      setComputeEnabledMsg(`✗ ${json.error}`);
+                      setServerConfig(prev => prev ? { ...prev, compute_enabled: String(!newVal) } : prev);
+                    }
+                  } catch {
+                    setComputeEnabledMsg('✗ 保存失败');
+                    setServerConfig(prev => prev ? { ...prev, compute_enabled: String(!newVal) } : prev);
+                  }
+                  setTimeout(() => setComputeEnabledMsg(''), 3000);
+                }}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus:outline-none ${
+                  serverConfig?.compute_enabled === 'true' ? 'bg-indigo-500' : 'bg-gray-200'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 mt-0.5 rounded-full bg-white shadow transform transition-transform duration-200 ${
+                    serverConfig?.compute_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5'
                   }`}
                 />
               </button>

@@ -96,7 +96,11 @@ def start_scheduler() -> None:
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=0)
     scheduler.add_job(lambda: _guarded("实时行情",   fetch_realtime_snapshot),"interval", seconds=30)
     scheduler.add_job(lambda: _guarded("概念资金流", fetch_concept_flow),     "interval", minutes=15)
-    scheduler.add_job(run_daily_compute, "cron", hour=9, minute=0)
+    # ── 静态数据每日计算（两次：盘前 + 盘后）──────────────────────────────────
+    _compute_enabled = os.environ.get("COMPUTE_ENABLED", "true").lower() == "true"
+    if _compute_enabled:
+        scheduler.add_job(lambda: _auto_run("每日计算", run_daily_compute), "cron", hour=9,  minute=0)
+        scheduler.add_job(lambda: _auto_run("每日计算", run_daily_compute), "cron", hour=21, minute=0)
     scheduler.add_job(lambda: _guarded("炸板池",     fetch_zbgc_pool),        "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("强势股",     fetch_strong_pool),      "interval", minutes=15)
     scheduler.add_job(lambda: _guarded("人气飙升",   fetch_hot_rank_up),      "interval", minutes=30)

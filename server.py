@@ -733,12 +733,14 @@ def api_config_get():
     flask_port = os.environ.get("FLASK_PORT", "20026")
     quant_workers = os.environ.get("QUANT_WORKERS", "")
     agent_enabled = os.environ.get("AGENT_ENABLED", "true")
+    compute_enabled = os.environ.get("COMPUTE_ENABLED", "true")
     return _ok({
         "data_root": data_root,
         "rsshub_url": rsshub_global,
         "flask_port": flask_port,
         "quant_workers": quant_workers,
         "agent_enabled": agent_enabled,
+        "compute_enabled": compute_enabled,
     })
 
 
@@ -814,6 +816,16 @@ def api_config_set():
         os.environ["AGENT_ENABLED"] = val
         env_updates["AGENT_ENABLED"] = val
         changed.append(f"AGENT_ENABLED → {val}（立即生效）")
+
+    if "compute_enabled" in body:
+        raw = body["compute_enabled"]
+        if isinstance(raw, bool):
+            val = "true" if raw else "false"
+        else:
+            val = "true" if str(raw).strip().lower() in ("true", "1", "yes") else "false"
+        os.environ["COMPUTE_ENABLED"] = val
+        env_updates["COMPUTE_ENABLED"] = val
+        changed.append(f"COMPUTE_ENABLED → {val}（重启后生效）")
 
     if env_updates:
         try:
