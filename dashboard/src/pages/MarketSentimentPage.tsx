@@ -110,11 +110,30 @@ interface SectorAuctionSentiment {
   strong_cnt: number;
 }
 
+interface LhbSeat {
+  seat_name:   string;
+  seat_type:   string | null;
+  buy_amount:  number;
+  sell_amount: number;
+  net_amount:  number;
+  buy_ratio:   number | null;
+  sell_ratio:  number | null;
+}
+
+interface LhbRow {
+  stock_code:  string;
+  stock_name:  string;
+  reason:      string | null;
+  net_buy:     number;
+  seat_nature: string | null;
+  seats:       LhbSeat[];
+}
+
 // ─── Semantic colors ─────────────────────────────────────────────────────────
-const C_UP     = '#16a34a';  // 涨/强 green
-const C_UP2    = '#22c55e';  // 涨/强 green lighter
+const C_UP     = '#ef4444';  // 涨/强 red（A股红涨）
+const C_UP2    = '#f87171';  // 涨/强 red lighter
 const C_WARN   = '#f59e0b';  // 警示 amber
-const C_DOWN   = '#ef4444';  // 跌/弱 red
+const C_DOWN   = '#16a34a';  // 跌/弱 green（A股绿跌）
 const C_BLUE   = '#3b82f6';  // 信息 blue
 const C_ORANGE = '#f97316';  // 中性偏暖 orange
 const C_MUTED  = '#d1d5db';  // 无数据 gray
@@ -331,7 +350,7 @@ function AdRatioRing({
         </svg>
         {/* 中心数值 */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-[11px] font-semibold text-gray-700">
+          <span className="text-[11px] font-semibold" style={{ color: ratio != null ? strokeColor : '#9ca3af' }}>
             {ratio != null ? `${(ratio * 100).toFixed(0)}%` : '--'}
           </span>
         </div>
@@ -374,6 +393,7 @@ export function MarketSentimentPage() {
   const [raData, setRaData] = useState<ResearchActivity[]>([]);
   const [chipPressure, setChipPressure] = useState<SectorChipPressure[]>([]);
   const [auctionSentiment, setAuctionSentiment] = useState<SectorAuctionSentiment[]>([]);
+  const [lhbRows, setLhbRows] = useState<LhbRow[]>([]);
 
   useEffect(() => {
     setLoading(true);
@@ -391,7 +411,8 @@ export function MarketSentimentPage() {
       safeApiFetch<ResearchActivity[]>('/api/research-activity'),
       safeApiFetch<SectorChipPressure[]>('/api/sector-chip-pressure'),
       safeApiFetch<SectorAuctionSentiment[]>('/api/sector-auction-sentiment'),
-    ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb, ra, cp, as_]) => {
+      safeApiFetch<LhbRow[]>('/api/lhb'),
+    ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb, ra, cp, as_, lhb]) => {
       if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
       if (s.status === 'fulfilled') {
         const raw = s.value ?? [];
@@ -410,6 +431,7 @@ export function MarketSentimentPage() {
       if (ra.status === 'fulfilled') setRaData(ra.value ?? []);
       if (cp.status === 'fulfilled') setChipPressure(cp.value ?? []);
       if (as_.status === 'fulfilled') setAuctionSentiment(as_.value ?? []);
+      if (lhb.status === 'fulfilled') setLhbRows([...(lhb.value ?? [])].sort((a, b) => b.net_buy - a.net_buy));
       if (lb.status === 'fulfilled') {
         const arr = lb.value;
         if (Array.isArray(arr) && arr.length > 0) setLbStats(arr[arr.length - 1]);
@@ -648,7 +670,7 @@ export function MarketSentimentPage() {
             <span className="text-xs text-gray-400 font-normal ml-2">中位 {toStats?.median_to?.toFixed(1) ?? '--'}%</span>
           </h3>
           {loading ? <div className="text-sm text-gray-400">--</div> : toStats ? (
-            [['低(<5%)', toStats.low_count, C_UP2], ['中(5-20%)', toStats.mid_count, C_WARN], ['高(≥20%)', toStats.high_count, C_DOWN]].map(([label, count, color], i) => {
+            [['低(<5%)', toStats.low_count, '#93c5fd'], ['中(5-20%)', toStats.mid_count, C_WARN], ['高(≥20%)', toStats.high_count, '#6366f1']].map(([label, count, color], i) => {
               const total = (toStats.low_count||0) + (toStats.mid_count||0) + (toStats.high_count||0);
               const pct = total > 0 ? (count as number) / total * 100 : 0;
               return (
@@ -949,6 +971,71 @@ export function MarketSentimentPage() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* ── Row 8: 龙虎榜 ── */}
+      {(lhbRows.length > 0 || loading) && (
+        <div className="bg-white rounded-xl border border-gray-100">
+          <SectionHeader
+            title="龙虎榜"
+            badge={lhbRows.length > 0 ? `共 ${lhbRows.length} 只` : undefined}
+          />
+          {loading ? (
+            <div className="p-4 space-y-2">
+              {[1,2,3].map(i => <div key={i} className="h-10 bg-gray-100 rounded animate-pulse" />)}
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-50">
+              {lhbRows.map(row => {
+                const netPos = row.net_buy >= 0;
+                const nature = row.seat_nature;
+                const natureBadgeClass =
+                  nature === '机构主导'    ? 'bg-blue-50 text-blue-600 border-blue-200' :
+                  nature === '游资+机构'   ? 'bg-purple-50 text-purple-600 border-purple-200' :
+                  nature === '游资主导'    ? 'bg-orange-50 text-orange-600 border-orange-200' :
+                  'bg-gray-50 text-gray-400 border-gray-200';
+                const topSeats = row.seats.slice(0, 3);
+                return (
+                  <div key={row.stock_code} className="px-4 py-3">
+                    <div className="flex items-center gap-3 mb-1.5">
+                      {/* 股票名+代码 */}
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm font-semibold text-gray-900">{row.stock_name}</span>
+                        <span className="text-xs text-gray-400 ml-1.5">{row.stock_code}</span>
+                        {row.reason && (
+                          <span className="ml-2 text-xs text-gray-400 truncate">{row.reason}</span>
+                        )}
+                      </div>
+                      {/* 净买入 */}
+                      <span className={`text-sm font-mono font-semibold shrink-0 ${netPos ? 'text-red-600' : 'text-emerald-600'}`}>
+                        {netPos ? '+' : ''}{(row.net_buy / 1e4).toFixed(0)}万
+                      </span>
+                      {/* 席位性质 badge */}
+                      {nature && (
+                        <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${natureBadgeClass}`}>
+                          {nature}
+                        </span>
+                      )}
+                    </div>
+                    {/* 席位明细 */}
+                    {topSeats.length > 0 && (
+                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 pl-0.5">
+                        {topSeats.map((s, i) => (
+                          <div key={i} className="flex items-center gap-1 text-xs text-gray-500">
+                            <span className="truncate max-w-[140px]">{s.seat_name}</span>
+                            <span className={s.net_amount >= 0 ? 'text-red-500 font-mono' : 'text-emerald-600 font-mono'}>
+                              {s.net_amount >= 0 ? '+' : ''}{(s.net_amount / 1e4).toFixed(0)}万
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

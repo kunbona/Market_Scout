@@ -38,7 +38,7 @@ from db.storage import (
     get_policy_news,
     count_policy_news_by_source,
     get_sector_flow_latest,
-    get_lhb_data,
+    get_lhb_data, get_lhb_seat,
     get_zt_pool,
     get_dt_pool,
     get_zbgc_pool,
@@ -266,6 +266,26 @@ def api_lhb():
     try:
         trade_date = _date_param()
         rows = get_lhb_data(trade_date)
+        # 附加席位明细
+        seats = get_lhb_seat(trade_date)
+        seat_map: dict = {}
+        for s in seats:
+            seat_map.setdefault(s["stock_code"], []).append(s)
+        for row in rows:
+            code = row.get("stock_code", "")
+            row_seats = seat_map.get(code, [])
+            row["seats"] = row_seats
+            types = {s.get("seat_type") for s in row_seats}
+            if "游资" in types and "机构" in types:
+                row["seat_nature"] = "游资+机构"
+            elif "机构" in types:
+                row["seat_nature"] = "机构主导"
+            elif "游资" in types:
+                row["seat_nature"] = "游资主导"
+            elif row_seats:
+                row["seat_nature"] = "其他"
+            else:
+                row["seat_nature"] = None
         return _ok(rows)
     except Exception as exc:
         return _err(exc)
@@ -1061,6 +1081,7 @@ def _run_fetch_all():
             fetch_concept_heat,
         )
         from fetcher.eastmoney import fetch_sector_flow, fetch_lhb
+        from fetcher.lhb_local import fetch_lhb_local
         from fetcher.market_sentiment import (
             fetch_northbound_flow, fetch_hot_rank_up, fetch_xq_hot,
             fetch_big_deal,
@@ -1093,6 +1114,7 @@ def _run_fetch_all():
         ("强势股",            fetch_strong_pool),
         ("概念热度",          fetch_concept_heat),
         ("龙虎榜",            fetch_lhb),
+        ("龙虎榜席位",        fetch_lhb_local),
         ("北向资金",          fetch_northbound_flow),
         ("人气飙升",          fetch_hot_rank_up),
         ("雪球热度",          fetch_xq_hot),
