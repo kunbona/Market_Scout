@@ -8,6 +8,7 @@ import { PolicyPage } from './pages/PolicyPage';
 import { ResearchPage } from './pages/ResearchPage';
 import { MarketRealtimePage } from './pages/MarketRealtimePage';
 import { MarketSentimentPage } from './pages/MarketSentimentPage';
+import { AgentPage } from './pages/AgentPage';
 import { useSettings } from './lib/useSettings';
 
 import type { AppSettings } from './lib/useSettings';
@@ -19,7 +20,8 @@ function SettingsPage({ settings, onUpdate }: {
   settings: AppSettings;
   onUpdate: (patch: Partial<AppSettings>) => void;
 }) {
-  const [serverConfig, setServerConfig] = useState<{ data_root: string; rsshub_url: string; flask_port: string; quant_workers: string } | null>(null);
+  const [serverConfig, setServerConfig] = useState<{ data_root: string; rsshub_url: string; flask_port: string; quant_workers: string; agent_enabled: string } | null>(null);
+  const [agentEnabledMsg, setAgentEnabledMsg] = useState('');
   const [dataRootInput, setDataRootInput] = useState('');
   const [rsshubInput, setRsshubInput] = useState('');
   const [flaskPortInput, setFlaskPortInput] = useState('');
@@ -293,6 +295,61 @@ function SettingsPage({ settings, onUpdate }: {
             </div>
           </div>
 
+          <hr className="border-gray-100 my-5" />
+
+          {/* ── Agent 分析 ── */}
+          <p className="text-xs font-medium text-gray-500 mb-3">Agent 分析</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-700">Agent 定时自动分析</p>
+              <p className="text-xs text-gray-400 mt-0.5">关闭后 Agent 不会按计划自动执行（手动触发仍可用）</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {agentEnabledMsg && (
+                <span className={`text-xs ${agentEnabledMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
+                  {agentEnabledMsg}
+                </span>
+              )}
+              <button
+                role="switch"
+                aria-checked={serverConfig?.agent_enabled === 'true'}
+                onClick={async () => {
+                  if (!serverConfig) return;
+                  const newVal = serverConfig.agent_enabled !== 'true';
+                  setServerConfig(prev => prev ? { ...prev, agent_enabled: String(newVal) } : prev);
+                  setAgentEnabledMsg('');
+                  try {
+                    const res = await fetch('/api/config', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ agent_enabled: newVal }),
+                    });
+                    const json = await res.json();
+                    if (json.success) {
+                      setAgentEnabledMsg('✓ 已保存');
+                    } else {
+                      setAgentEnabledMsg(`✗ ${json.error}`);
+                      setServerConfig(prev => prev ? { ...prev, agent_enabled: String(!newVal) } : prev);
+                    }
+                  } catch {
+                    setAgentEnabledMsg('✗ 保存失败');
+                    setServerConfig(prev => prev ? { ...prev, agent_enabled: String(!newVal) } : prev);
+                  }
+                  setTimeout(() => setAgentEnabledMsg(''), 3000);
+                }}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus:outline-none ${
+                  serverConfig?.agent_enabled === 'true' ? 'bg-indigo-500' : 'bg-gray-200'
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 mt-0.5 rounded-full bg-white shadow transform transition-transform duration-200 ${
+                    serverConfig?.agent_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
           <div className="flex items-center gap-3 mt-5 pt-4 border-t border-gray-100">
             <button
               onClick={handleSaveAll}
@@ -361,7 +418,7 @@ export default function App() {
       case 'research':
         return <ResearchPage />;
       case 'ai-analysis':
-        return <div>TODO: AI Analysis Page</div>;
+        return <AgentPage />;
       case 'settings':
         return <SettingsPage settings={settings} onUpdate={updateSettings} />;
     }

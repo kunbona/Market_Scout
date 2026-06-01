@@ -509,6 +509,17 @@ def api_agent_status():
         return _err(exc)
 
 
+@app.route("/api/agent/stop", methods=["POST"])
+def api_agent_stop():
+    """请求停止当前正在运行的 Agent 分析。"""
+    try:
+        from agent.orchestrator import stop_agent_analysis
+        stop_agent_analysis()
+        return _ok({"stopped": True})
+    except Exception as exc:
+        return _err(exc)
+
+
 def _infer_run_type() -> str:
     """根据当前时间推断 run_type。"""
     now = datetime.now()
@@ -688,11 +699,13 @@ def api_config_get():
     data_root = str(loader.DATA_ROOT) if loader.DATA_ROOT else ""
     flask_port = os.environ.get("FLASK_PORT", "20026")
     quant_workers = os.environ.get("QUANT_WORKERS", "")
+    agent_enabled = os.environ.get("AGENT_ENABLED", "true")
     return _ok({
         "data_root": data_root,
         "rsshub_url": rsshub_global,
         "flask_port": flask_port,
         "quant_workers": quant_workers,
+        "agent_enabled": agent_enabled,
     })
 
 
@@ -758,6 +771,16 @@ def api_config_set():
             changed.append(f"QUANT_WORKERS → {val}（立即生效）")
         else:
             return _err(f"并发数无效: {val}，需为 0-64 之间的整数（0 或 1 表示串行）", 400)
+
+    if "agent_enabled" in body:
+        raw = body["agent_enabled"]
+        if isinstance(raw, bool):
+            val = "true" if raw else "false"
+        else:
+            val = "true" if str(raw).strip().lower() in ("true", "1", "yes") else "false"
+        os.environ["AGENT_ENABLED"] = val
+        env_updates["AGENT_ENABLED"] = val
+        changed.append(f"AGENT_ENABLED → {val}（立即生效）")
 
     if env_updates:
         try:

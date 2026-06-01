@@ -14,6 +14,7 @@
 """
 import logging
 import os
+import signal
 import shutil
 import subprocess
 import threading
@@ -35,11 +36,27 @@ _agent_state = {
     "pid": None,
 }
 _state_lock = threading.Lock()
+_stop_requested = False
 
 
 def get_agent_state() -> dict:
     with _state_lock:
-        return dict(_agent_state)
+        state = dict(_agent_state)
+        state["stop_requested"] = _stop_requested
+        return state
+
+
+def stop_agent_analysis() -> None:
+    """请求停止当前正在运行的 Agent 分析。"""
+    global _stop_requested
+    with _state_lock:
+        _stop_requested = True
+        pid = _agent_state.get("pid")
+    if pid is not None:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 def _find_claude() -> str:
@@ -79,6 +96,13 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
 
         _, stderr = proc.communicate(timeout=timeout)
         rc = proc.returncode
+
+        # 检查 stop flag，若已请求停止则直接中断管道
+        with _state_lock:
+            if _stop_requested:
+                logger.info("[orchestrator] stop requested, aborting after %s", skill_name)
+                return False
+
         if rc != 0:
             err = (stderr or b"").decode(errors="replace")[:300]
             logger.warning("[orchestrator] %s failed rc=%d: %s", skill_name, rc, err)
@@ -111,11 +135,13 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
         else:
             _run_full(run_type, run_id)
     finally:
+        global _stop_requested
         with _state_lock:
             _agent_state["running"] = False
             _agent_state["phase"] = None
             _agent_state["phase_detail"] = None
             _agent_state["pid"] = None
+            _stop_requested = False
 
         tmp_dir = Path(f"/tmp/mra-{run_id}")
         if tmp_dir.exists():
