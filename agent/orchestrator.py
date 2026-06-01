@@ -33,7 +33,7 @@ _agent_state = {
     "last_run": None,
     "last_run_type": None,
     "last_error": None,
-    "pid": None,
+    "pids": set(),
 }
 _state_lock = threading.Lock()
 _stop_requested = False
@@ -42,6 +42,8 @@ _stop_requested = False
 def get_agent_state() -> dict:
     with _state_lock:
         state = dict(_agent_state)
+        state["pids"] = list(_agent_state.get("pids", set()))
+        state["pid"] = state["pids"]   # 兼容前端原有 "pid" 字段，值改为 list
         state["stop_requested"] = _stop_requested
         return state
 
@@ -51,8 +53,8 @@ def stop_agent_analysis() -> None:
     global _stop_requested
     with _state_lock:
         _stop_requested = True
-        pid = _agent_state.get("pid")
-    if pid is not None:
+        pids = set(_agent_state.get("pids", set()))
+    for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -80,6 +82,7 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
     env["MRA_RUN_ID"] = run_id
     env["MRA_RUN_TYPE"] = run_type
 
+    proc = None
     try:
         proc = subprocess.Popen(
             [claude_bin, "-p", f"/{skill_name}",
@@ -91,8 +94,13 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
             stderr=subprocess.PIPE,
             env=env,
         )
+        # Bug2 修复：Popen 返回后立刻加锁，若 stop 已被请求则直接 kill 新进程
         with _state_lock:
-            _agent_state["pid"] = proc.pid
+            if _stop_requested:
+                proc.kill()
+                proc.communicate()
+                return False
+            _agent_state["pids"].add(proc.pid)
 
         _, stderr = proc.communicate(timeout=timeout)
         rc = proc.returncode
@@ -110,14 +118,16 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
         return True
     except subprocess.TimeoutExpired:
         proc.kill()
+        proc.communicate()   # Bug3 修复：drain pipe，防止下一个 Popen 阻塞
         logger.error("[orchestrator] %s timed out after %ds", skill_name, timeout)
         return False
     except Exception as exc:
         logger.exception("[orchestrator] %s exception: %s", skill_name, exc)
         return False
     finally:
-        with _state_lock:
-            _agent_state["pid"] = None
+        if proc is not None:
+            with _state_lock:
+                _agent_state["pids"].discard(proc.pid)
 
 
 def _run_pipeline(run_type: str, run_id: str) -> None:
@@ -140,7 +150,7 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
             _agent_state["running"] = False
             _agent_state["phase"] = None
             _agent_state["phase_detail"] = None
-            _agent_state["pid"] = None
+            _agent_state["pids"] = set()
             _stop_requested = False
 
         tmp_dir = Path(f"/tmp/mra-{run_id}")
@@ -237,7 +247,7 @@ def run_agent_analysis(run_type: str) -> dict:
         _agent_state["last_run_type"] = run_type
         _agent_state["last_error"] = None
         _agent_state["phase"] = None
-        _agent_state["pid"] = None
+        _agent_state["pids"] = set()
 
     run_id = uuid.uuid4().hex[:8]
     # 预建临时目录

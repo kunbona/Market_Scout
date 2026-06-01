@@ -70,6 +70,8 @@ def _migrate(conn):
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript("""
 CREATE TABLE IF NOT EXISTS cls_news (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1001,6 +1003,7 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM ths_hot_stocks WHERE fetch_time < ?", (cutoff_7d,))
         # 之前遗漏的表，补齐 90 天清理
         conn.execute("DELETE FROM lhb_data WHERE trade_date < ?", (cutoff_90d,))
+        conn.execute("DELETE FROM lhb_seat WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM zt_pool WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM dt_pool WHERE trade_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM policy_news WHERE created_at < ?", (cutoff_30d,))

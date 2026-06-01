@@ -614,7 +614,9 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
   const RUN_TYPE_LABEL: Record<string, string> = {
     intraday: '盘中',
     evening:  '盘后',
-    morning:  '早盘',
+    morning:  '早盘前',
+    auction:  '竞价',
+    closing:  '收盘后',
   };
 
   const handleToggle = async (id: number | string) => {
@@ -739,7 +741,7 @@ function AgentPageInner() {
   const [error, setError]       = useState<string | null>(null);
 
   const pollRef         = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stopConfirmRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopConfirmRef  = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPoll = () => {
     if (pollRef.current) {
@@ -791,7 +793,7 @@ function AgentPageInner() {
     });
     return () => {
       stopPoll();
-      if (stopConfirmRef.current) clearTimeout(stopConfirmRef.current);
+      if (stopConfirmRef.current) clearInterval(stopConfirmRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -817,6 +819,10 @@ function AgentPageInner() {
   };
 
   const handleStop = async () => {
+    if (stopConfirmRef.current) {
+      clearInterval(stopConfirmRef.current);
+      stopConfirmRef.current = null;
+    }
     try {
       await fetch('/api/agent/stop', { method: 'POST' });
     } catch {
@@ -832,13 +838,20 @@ function AgentPageInner() {
         if (s && !s.running) await loadLatest();
       }
     }, 2000);
-    stopConfirmRef.current = confirm as unknown as ReturnType<typeof setTimeout>;
+    stopConfirmRef.current = confirm;
   };
 
   const isRunning = status?.running ?? false;
 
+  const RUN_TYPE_LABEL_STATUS: Record<string, string> = {
+    intraday: '盘中',
+    evening:  '盘后',
+    morning:  '早盘前',
+    auction:  '竞价',
+    closing:  '收盘后',
+  };
   const lastRunLabel = status?.last_run
-    ? `${status.last_run}${status.last_run_type ? `（${status.last_run_type === 'intraday' ? '盘中' : '盘后'}）` : ''}`
+    ? `${status.last_run}${status.last_run_type ? `（${RUN_TYPE_LABEL_STATUS[status.last_run_type] ?? status.last_run_type}）` : ''}`
     : undefined;
 
   return (

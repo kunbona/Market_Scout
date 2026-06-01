@@ -94,6 +94,12 @@ def serve_spa(path):
         from flask import abort
         abort(404)
     full = os.path.join(DIST, path)
+    # 防路径穿越：确保解析后的绝对路径仍在 DIST 目录下
+    real_full = os.path.realpath(full)
+    real_dist = os.path.realpath(DIST)
+    if path and not real_full.startswith(real_dist + os.sep):
+        from flask import abort
+        abort(403)
     if path and os.path.exists(full):
         # Hashed assets: cache aggressively
         resp = send_from_directory(DIST, path)
@@ -517,6 +523,9 @@ def api_agent_trigger():
         from agent.orchestrator import run_agent_analysis
         body = request.get_json(silent=True) or {}
         run_type = body.get("run_type") or _infer_run_type()
+        _VALID_RUN_TYPES = {"morning", "auction", "intraday", "closing", "evening"}
+        if run_type not in _VALID_RUN_TYPES:
+            return _err(f"无效的 run_type: {run_type}", 400)
         result = run_agent_analysis(run_type)
         return _ok(result)
     except Exception as exc:
@@ -963,7 +972,11 @@ def api_research_pdf():
     import requests as _req
     from flask import Response, stream_with_context
     pdf_url = request.args.get("url", "").strip()
-    if not pdf_url or not pdf_url.startswith("https://pdf.dfcfw.com/"):
+    if not pdf_url:
+        return _err("无效的 PDF 地址", 400)
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(pdf_url)
+    if _parsed.scheme != "https" or _parsed.netloc != "pdf.dfcfw.com":
         return _err("无效的 PDF 地址", 400)
     try:
         r = _req.get(
