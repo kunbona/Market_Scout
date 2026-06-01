@@ -56,6 +56,7 @@ from db.storage import (
     get_concept_flow_latest,
     get_agent_summary_latest,
     get_agent_summary_history,
+    get_agent_summary_by_id,
     get_sector_flow_accel,
     get_volume_breakout,
     get_turnover_stats,
@@ -482,6 +483,29 @@ def api_agent_history():
                 "summary_text": summary_text or row.get("content", ""),
             })
         return _ok(results)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/history/<int:row_id>")
+def api_agent_history_detail(row_id: int):
+    """返回单条报告的完整结构化数据。"""
+    try:
+        import json
+        row = get_agent_summary_by_id(row_id)
+        if not row:
+            return _err("not found"), 404
+        snap = row.get("data_snapshot_json")
+        if snap:
+            try:
+                data = json.loads(snap)
+            except Exception:
+                data = {"content": row.get("content")}
+        else:
+            data = {"content": row.get("content")}
+        data["summary_time"] = row.get("summary_time")
+        data["run_type"] = row.get("run_type", "")
+        return _ok(data)
     except Exception as exc:
         return _err(exc)
 

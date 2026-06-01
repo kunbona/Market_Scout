@@ -775,6 +775,13 @@ def get_agent_summary_latest() -> dict | None:
         return rows[0] if rows else None
 
 
+def get_agent_summary_by_id(row_id: int) -> dict | None:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute("SELECT * FROM agent_summary WHERE id = ?", (row_id,))
+        rows = _rows_to_dicts(cur)
+        return rows[0] if rows else None
+
+
 def get_agent_summary_history(limit: int = 20, today_only: bool = False) -> list[dict]:
     today = _today()
     with sqlite3.connect(DB_PATH) as conn:

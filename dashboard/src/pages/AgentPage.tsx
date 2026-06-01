@@ -607,11 +607,27 @@ function FullReportView({ r }: { r: FullReport }) {
 
 function HistoryPanel({ items }: { items: HistoryItem[] }) {
   const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState<number | string | null>(null);
+  const [detailCache, setDetailCache] = useState<Record<string | number, AgentReport>>({});
+  const [loadingId, setLoadingId] = useState<number | string | null>(null);
 
   const RUN_TYPE_LABEL: Record<string, string> = {
     intraday: '盘中',
     evening:  '盘后',
     morning:  '早盘',
+  };
+
+  const handleToggle = async (id: number | string) => {
+    if (expanded === id) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(id);
+    if (detailCache[id]) return;
+    setLoadingId(id);
+    const data = await safeFetch<AgentReport>(`/api/agent/history/${id}`);
+    if (data) setDetailCache(prev => ({ ...prev, [id]: data }));
+    setLoadingId(null);
   };
 
   return (
@@ -636,21 +652,53 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
             <div className="px-6 py-8 text-center text-sm text-gray-400">暂无历史记录</div>
           ) : (
             <div className="divide-y divide-gray-50">
-              {items.map(item => (
-                <div key={item.id} className="flex items-center gap-4 px-6 py-3.5">
-                  <span className={`shrink-0 text-xs px-2 py-0.5 rounded font-semibold ${
-                    item.run_type === 'intraday'
-                      ? 'bg-blue-50 text-blue-600'
-                      : 'bg-indigo-50 text-indigo-600'
-                  }`}>
-                    {RUN_TYPE_LABEL[item.run_type] ?? item.run_type}
-                  </span>
-                  <span className="shrink-0 text-xs font-mono text-gray-500">{item.run_time}</span>
-                  {item.summary && (
-                    <span className="text-xs text-gray-400 truncate flex-1">{item.summary}</span>
-                  )}
-                </div>
-              ))}
+              {items.map(item => {
+                const isExpanded = expanded === item.id;
+                const detail = detailCache[item.id];
+                const isLoading = loadingId === item.id;
+                return (
+                  <div key={item.id}>
+                    <button
+                      onClick={() => handleToggle(item.id)}
+                      className="w-full flex items-center gap-3 px-6 py-3.5 hover:bg-gray-50 transition-colors text-left"
+                    >
+                      <span className={`shrink-0 text-xs px-2 py-0.5 rounded font-semibold ${
+                        item.run_type === 'intraday'
+                          ? 'bg-blue-50 text-blue-600'
+                          : 'bg-indigo-50 text-indigo-600'
+                      }`}>
+                        {RUN_TYPE_LABEL[item.run_type] ?? item.run_type}
+                      </span>
+                      <span className="shrink-0 text-xs font-mono text-gray-500">{item.run_time}</span>
+                      {item.summary && (
+                        <span className="text-xs text-gray-400 truncate flex-1">{item.summary}</span>
+                      )}
+                      <span className="ml-auto shrink-0">
+                        {isExpanded
+                          ? <ChevronUp className="w-3.5 h-3.5 text-gray-400" />
+                          : <ChevronDown className="w-3.5 h-3.5 text-gray-400" />}
+                      </span>
+                    </button>
+
+                    {isExpanded && (
+                      <div className="px-6 pb-6 pt-4 bg-gray-50 border-t border-gray-100">
+                        {isLoading ? (
+                          <div className="py-8 flex items-center justify-center gap-2 text-sm text-gray-400">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            加载中…
+                          </div>
+                        ) : detail ? (
+                          isFullReport(detail)
+                            ? <FullReportView r={detail} />
+                            : <IntradayReportView r={detail} />
+                        ) : (
+                          <div className="py-6 text-center text-sm text-gray-400">加载失败，请重试</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
