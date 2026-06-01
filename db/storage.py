@@ -48,6 +48,24 @@ def _migrate(conn):
     # reason 字段已存在于建表语句，仅在确实缺失时才补充（理论上不会触发）
     if "reason" not in lhb_cols:
         conn.execute("ALTER TABLE lhb_data ADD COLUMN reason TEXT")
+    # lhb_seat 表（本地量化数据营业部席位明细）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS lhb_seat (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date   TEXT,
+            stock_code   TEXT,
+            seat_name    TEXT,
+            buy_amount   REAL,
+            sell_amount  REAL,
+            net_amount   REAL,
+            buy_ratio    REAL,
+            sell_ratio   REAL,
+            seat_type    TEXT,
+            reason       TEXT,
+            rank         INTEGER,
+            UNIQUE(trade_date, stock_code, seat_name)
+        )
+    """)
 
 
 def init_db():
@@ -91,6 +109,22 @@ CREATE TABLE IF NOT EXISTS lhb_data (
     reason      TEXT,
     net_buy     REAL,
     UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS lhb_seat (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date   TEXT,
+    stock_code   TEXT,
+    seat_name    TEXT,
+    buy_amount   REAL,
+    sell_amount  REAL,
+    net_amount   REAL,
+    buy_ratio    REAL,
+    sell_ratio   REAL,
+    seat_type    TEXT,
+    reason       TEXT,
+    rank         INTEGER,
+    UNIQUE(trade_date, stock_code, seat_name)
 );
 
 CREATE TABLE IF NOT EXISTS zt_pool (
@@ -538,6 +572,37 @@ def insert_lhb_data(trade_date, stock_code, stock_name, reason, net_buy,
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (trade_date, stock_code, stock_name, reason, net_buy, change_pct, interpret, net_buy_ratio),
         )
+
+
+def insert_lhb_seat(trade_date, stock_code, seat_name, buy_amount, sell_amount,
+                    net_amount, buy_ratio, sell_ratio, seat_type, reason, rank) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO lhb_seat "
+            "(trade_date,stock_code,seat_name,buy_amount,sell_amount,net_amount,"
+            " buy_ratio,sell_ratio,seat_type,reason,rank) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (trade_date, stock_code, seat_name, buy_amount, sell_amount,
+             net_amount, buy_ratio, sell_ratio, seat_type, reason, rank),
+        )
+
+
+def get_lhb_seat(trade_date=None, stock_code=None) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        date = trade_date or _latest_trade_date(conn, "lhb_seat")
+        if not date:
+            return []
+        if stock_code:
+            cur = conn.execute(
+                "SELECT * FROM lhb_seat WHERE trade_date=? AND stock_code=? ORDER BY net_amount DESC",
+                (date, stock_code),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT * FROM lhb_seat WHERE trade_date=? ORDER BY net_amount DESC",
+                (date,),
+            )
+        return _rows_to_dicts(cur)
 
 
 def insert_zt_pool(trade_date, stock_code, stock_name, zt_count, first_zt_time, sector,
@@ -1596,6 +1661,17 @@ def get_lockup_expiry(days: int = 30) -> list[dict]:
         cur = conn.execute(
             "SELECT * FROM lockup_expiry WHERE free_date >= ? AND free_date <= ? ORDER BY free_date ASC",
             (today, end),
+        )
+        return _rows_to_dicts(cur)
+
+
+def get_lockup_expiry_by_code(stock_code: str, days: int = 30) -> list[dict]:
+    today = _today()
+    end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT * FROM lockup_expiry WHERE stock_code=? AND free_date >= ? AND free_date <= ? ORDER BY free_date ASC",
+            (stock_code, today, end),
         )
         return _rows_to_dicts(cur)
 

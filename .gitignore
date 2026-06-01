@@ -47,8 +47,12 @@ Thumbs.db
 dashboard/dist/
 dashboard/.vite/
 
-# Claude Code 本地配置
-.claude/
+# Claude Code 本地配置（settings 含密钥，不提交）
+.claude/settings.json
+.claude/settings.local.json
+.claude/projects/
+.claude/todos/
+.claude/plans/
 
 # pnpm
 dashboard/node_modules/

@@ -18,6 +18,7 @@ from fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
 from fetcher.cls_news import fetch as fetch_cls
 from fetcher.policy_rss import fetch as fetch_policy, fetch_cninfo
 from fetcher.eastmoney import fetch_sector_flow, fetch_lhb
+from fetcher.lhb_local import fetch_lhb_local
 from fetcher.sector_heat import fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_zbgc_pool, fetch_strong_pool
 from fetcher.global_news import fetch_cls_red, fetch_em, fetch_ths, fetch_wscn, fetch_yicai, fetch_jin10, fetch_gelonghui
 from fetcher.research import fetch as fetch_research
@@ -88,6 +89,7 @@ def start_scheduler() -> None:
     scheduler.add_job(lambda: _auto_run("研究报告",    fetch_research),    "interval", minutes=30)
     scheduler.add_job(lambda: _guarded("行业资金流", fetch_sector_flow),      "interval", minutes=15)
     scheduler.add_job(fetch_lhb, "cron", hour=17, minute=30)
+    scheduler.add_job(lambda: _auto_run("龙虎榜本地", fetch_lhb_local), "cron", hour=18, minute=30)
     scheduler.add_job(lambda: _guarded("涨停池",     fetch_zt_pool),          "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("跌停池",     fetch_dt_pool),          "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("概念热度",   fetch_concept_heat),     "interval", minutes=5)
@@ -111,6 +113,59 @@ def start_scheduler() -> None:
     # 解禁/减持和分红历史变动慢，每天早上更新一次
     scheduler.add_job(lambda: _auto_run("解禁减持", fetch_lockup_expiry), "cron", hour=9, minute=10)
     scheduler.add_job(lambda: _auto_run("分红历史", fetch_dividend_history), "cron", hour=9, minute=12)
+
+    # ── Agent 分析定时任务（8次/天）────────────────────────────────────────────
+    # Claude CLI 作为 subprocess 运行，享有完整 agentic 能力（Bash/Read/Write 工具链）
+    _agent_enabled = os.environ.get("AGENT_ENABLED", "true").lower() == "true"
+    if _agent_enabled:
+        import subprocess
+        import shutil
+
+        _PROJ_ROOT = Path(__file__).parent
+
+        def _find_claude() -> str:
+            # 优先读环境变量，其次 PATH 查找
+            custom = os.environ.get("CLAUDE_BIN", "")
+            if custom and Path(custom).is_file():
+                return custom
+            found = shutil.which("claude")
+            if found:
+                return found
+            # 常见 nvm 路径兜底
+            fallback = Path.home() / ".nvm/versions/node/v20.20.2/bin/claude"
+            return str(fallback)
+
+        _CLAUDE_BIN = _find_claude()
+
+        def _run_agent(run_type: str) -> None:
+            def _invoke():
+                result = subprocess.run(
+                    [_CLAUDE_BIN, "-p",
+                     f"/market-radar-analysis --run-type {run_type}",
+                     "--verbose",
+                     "--output-format", "stream-json",
+                     "--dangerously-skip-permissions"],
+                    cwd=str(_PROJ_ROOT),
+                    timeout=2700,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    import logging
+                    logging.getLogger(__name__).error(
+                        "Agent run_type=%s failed (rc=%d): %s",
+                        run_type, result.returncode, result.stderr[:500]
+                    )
+            _auto_run(f"Agent{run_type}", _invoke)
+
+        scheduler.add_job(lambda: _run_agent("morning"),  "cron", hour=6,  minute=0)
+        scheduler.add_job(lambda: _run_agent("auction"),  "cron", hour=9,  minute=25)
+        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=10, minute=30)
+        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=11, minute=30)
+        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=13, minute=30)
+        scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=14, minute=30)
+        scheduler.add_job(lambda: _run_agent("closing"),  "cron", hour=15, minute=30)
+        scheduler.add_job(lambda: _run_agent("evening"),  "cron", hour=18, minute=0)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)

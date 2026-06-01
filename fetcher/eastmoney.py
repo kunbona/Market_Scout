@@ -27,7 +27,7 @@ def eastmoney_datacenter(report_name: str, columns: str = "ALL", filter_str: str
                          headers={"User-Agent": _UA, "Referer": "https://data.eastmoney.com/"},
                          timeout=15)
         j = r.json()
-        return j.get("data", {}).get("data") or []
+        return (j.get("result") or j.get("data") or {}).get("data") or []
     except Exception as e:
         logger.warning("[eastmoney_datacenter] %s failed: %s", report_name, e)
         return []
@@ -123,7 +123,7 @@ def fetch_margin() -> None:
     fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows = eastmoney_datacenter(
         "RPTA_WEB_RZRQ_GGMX",
-        columns="TRADE_DATE,SCODE,SNAME,RZYE,RZMRE,RZCHE,RQYE,RQMCL,RQCHL,RZRQYE",
+        columns="DATE,SCODE,SECNAME,RZYE,RZMRE,RZCHE,RQYE,RQMCL,RQCHL,RZRQYE",
         sort_columns="RZYE", sort_types="-1",
         page_size=100,
     )
@@ -131,9 +131,9 @@ def fetch_margin() -> None:
         try:
             insert_margin(
                 fetch_time,
-                str(row.get("TRADE_DATE", ""))[:10],
+                str(row.get("DATE", ""))[:10],
                 str(row.get("SCODE", "")),
-                str(row.get("SNAME", "")),
+                str(row.get("SECNAME", "")),
                 float(row.get("RZYE") or 0),
                 float(row.get("RZMRE") or 0),
                 float(row.get("RZCHE") or 0),
@@ -152,7 +152,7 @@ def fetch_block_trade() -> None:
     rows = eastmoney_datacenter(
         "RPT_DATA_BLOCKTRADE",
         columns="TRADE_DATE,SECURITY_CODE,SECURITY_NAME,DEAL_PRICE,CLOSE_PRICE,DEAL_VOLUME,DEAL_AMT,BUYER_NAME,SELLER_NAME",
-        filter_str=f'(TRADE_DATE>="{today}")',
+        filter_str=f"(TRADE_DATE>='{today}')",
         sort_columns="TRADE_DATE,DEAL_AMT", sort_types="-1,-1",
         page_size=100,
     )
@@ -178,7 +178,7 @@ def fetch_holder_count() -> None:
     from db.storage import insert_holder_count
     rows = eastmoney_datacenter(
         "RPT_HOLDERNUMLATEST",
-        columns="END_DATE,SECURITY_CODE,SECURITY_NAME,HOLDER_NUM,HOLDER_NUM_CHANGE,HOLDER_NUM_RATIO,AVG_FREE_SHARES",
+        columns="END_DATE,SECURITY_CODE,SECURITY_NAME_ABBR,HOLDER_NUM,HOLDER_NUM_CHANGE,HOLDER_NUM_RATIO,AVG_HOLD_NUM",
         sort_columns="END_DATE", sort_types="-1",
         page_size=100,
     )
@@ -187,11 +187,11 @@ def fetch_holder_count() -> None:
             insert_holder_count(
                 str(row.get("END_DATE", ""))[:10],
                 str(row.get("SECURITY_CODE", "")),
-                str(row.get("SECURITY_NAME", "")),
+                str(row.get("SECURITY_NAME_ABBR", "")),
                 int(float(row.get("HOLDER_NUM") or 0)),
                 float(row.get("HOLDER_NUM_CHANGE") or 0),
                 float(row.get("HOLDER_NUM_RATIO") or 0),
-                float(row.get("AVG_FREE_SHARES") or 0),
+                float(row.get("AVG_HOLD_NUM") or 0),
             )
         except Exception:
             continue
@@ -203,10 +203,11 @@ def fetch_lockup_expiry() -> None:
     from datetime import datetime, timedelta
     today = datetime.now().strftime("%Y-%m-%d")
     future = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
+    # 日期过滤必须用单引号，双引号会被接口拒绝
     rows = eastmoney_datacenter(
         "RPT_LIFT_STAGE",
-        columns="SECURITY_CODE,SECURITY_NAME,FREE_DATE,LIFT_SHARES,LIFT_MARKET_CAP,LIFT_RATIO,HOLD_NUM,LIFT_TYPE",
-        filter_str=f'(FREE_DATE>="{today}")(FREE_DATE<="{future}")',
+        columns="SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,FREE_SHARES,LIFT_MARKET_CAP,FREE_RATIO,BATCH_HOLDER_NUM,FREE_SHARES_TYPE",
+        filter_str=f"(FREE_DATE>='{today}')(FREE_DATE<='{future}')",
         sort_columns="FREE_DATE", sort_types="1",
         page_size=200,
     )
@@ -215,12 +216,12 @@ def fetch_lockup_expiry() -> None:
             insert_lockup_expiry(
                 str(row.get("FREE_DATE", ""))[:10],
                 str(row.get("SECURITY_CODE", "")),
-                str(row.get("SECURITY_NAME", "")),
-                float(row.get("LIFT_SHARES") or 0),
+                str(row.get("SECURITY_NAME_ABBR", "")),
+                float(row.get("FREE_SHARES") or 0),
                 float(row.get("LIFT_MARKET_CAP") or 0),
-                float(row.get("LIFT_RATIO") or 0),
-                int(float(row.get("HOLD_NUM") or 0)),
-                str(row.get("LIFT_TYPE", "")),
+                float(row.get("FREE_RATIO") or 0),
+                int(float(row.get("BATCH_HOLDER_NUM") or 0)),
+                str(row.get("FREE_SHARES_TYPE", "")),
             )
         except Exception:
             continue

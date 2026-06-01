@@ -55,6 +55,7 @@ from db.storage import (
     get_xq_hot_latest,
     get_concept_flow_latest,
     get_agent_summary_latest,
+    get_agent_summary_history,
     get_sector_flow_accel,
     get_volume_breakout,
     get_turnover_stats,
@@ -424,6 +425,104 @@ def api_ai_summary():
         return _ok(data)
     except Exception as exc:
         return _err(exc)
+
+
+# ---------------------------------------------------------------------------
+# Agent analysis endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/agent/latest")
+def api_agent_latest():
+    """返回最新完整报告的结构化 JSON（data_snapshot_json 反序列化后返回）。"""
+    try:
+        import json
+        row = get_agent_summary_latest()
+        if not row:
+            return _ok(None)
+        snapshot = row.get("data_snapshot_json")
+        if snapshot:
+            try:
+                data = json.loads(snapshot)
+            except Exception:
+                data = {"content": row.get("content"), "summary_time": row.get("summary_time")}
+        else:
+            data = {"content": row.get("content"), "summary_time": row.get("summary_time")}
+        data["summary_time"] = row.get("summary_time")
+        data["run_type"] = row.get("run_type", "")
+        return _ok(data)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/history")
+def api_agent_history():
+    """返回最近 N 条报告摘要（run_type、run_time、summary_text）。"""
+    try:
+        import json
+        limit = int(request.args.get("limit", 20))
+        today_only = request.args.get("today", "false").lower() == "true"
+        rows = get_agent_summary_history(limit=limit, today_only=today_only)
+        results = []
+        for row in rows:
+            snap = row.get("data_snapshot_json") if "data_snapshot_json" in row else None
+            summary_text = None
+            run_time = None
+            if snap:
+                try:
+                    d = json.loads(snap)
+                    summary_text = d.get("summary_text") or (d.get("changes", [""])[0] if d.get("changes") else None)
+                    run_time = d.get("run_time")
+                except Exception:
+                    pass
+            results.append({
+                "id": row.get("id"),
+                "summary_time": row.get("summary_time"),
+                "run_type": row.get("run_type", ""),
+                "run_time": run_time or row.get("summary_time"),
+                "summary_text": summary_text or row.get("content", ""),
+            })
+        return _ok(results)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/trigger", methods=["POST"])
+def api_agent_trigger():
+    """手动触发 Agent 分析（非阻塞）。body: {"run_type": "evening"}"""
+    try:
+        from agent.orchestrator import run_agent_analysis
+        body = request.get_json(silent=True) or {}
+        run_type = body.get("run_type") or _infer_run_type()
+        result = run_agent_analysis(run_type)
+        return _ok(result)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/status")
+def api_agent_status():
+    """返回当前 Agent 运行状态。"""
+    try:
+        from agent.orchestrator import get_agent_state
+        return _ok(get_agent_state())
+    except Exception as exc:
+        return _err(exc)
+
+
+def _infer_run_type() -> str:
+    """根据当前时间推断 run_type。"""
+    now = datetime.now()
+    h, m = now.hour, now.minute
+    total = h * 60 + m
+    if total < 7 * 60:
+        return "morning"
+    if total < 9 * 60 + 30:
+        return "auction"
+    if total < 15 * 60:
+        return "intraday"
+    if total < 17 * 60:
+        return "closing"
+    return "evening"
 
 
 # ---------------------------------------------------------------------------
