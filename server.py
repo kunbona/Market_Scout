@@ -494,7 +494,7 @@ def api_agent_history_detail(row_id: int):
         import json
         row = get_agent_summary_by_id(row_id)
         if not row:
-            return _err("not found"), 404
+            return _err("not found", 404)
         snap = row.get("data_snapshot_json")
         if snap:
             try:
