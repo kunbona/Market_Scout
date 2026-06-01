@@ -115,48 +115,13 @@ def start_scheduler() -> None:
     scheduler.add_job(lambda: _auto_run("分红历史", fetch_dividend_history), "cron", hour=9, minute=12)
 
     # ── Agent 分析定时任务（8次/天）────────────────────────────────────────────
-    # Claude CLI 作为 subprocess 运行，享有完整 agentic 能力（Bash/Read/Write 工具链）
+    # 通过 orchestrator.run_agent_analysis() 触发三阶段 multi-agent 管道（非阻塞）
     _agent_enabled = os.environ.get("AGENT_ENABLED", "true").lower() == "true"
     if _agent_enabled:
-        import subprocess
-        import shutil
-
-        _PROJ_ROOT = Path(__file__).parent
-
-        def _find_claude() -> str:
-            # 优先读环境变量，其次 PATH 查找
-            custom = os.environ.get("CLAUDE_BIN", "")
-            if custom and Path(custom).is_file():
-                return custom
-            found = shutil.which("claude")
-            if found:
-                return found
-            # 常见 nvm 路径兜底
-            fallback = Path.home() / ".nvm/versions/node/v20.20.2/bin/claude"
-            return str(fallback)
-
-        _CLAUDE_BIN = _find_claude()
+        from agent.orchestrator import run_agent_analysis
 
         def _run_agent(run_type: str) -> None:
-            def _invoke():
-                result = subprocess.run(
-                    [_CLAUDE_BIN, "-p",
-                     f"/market-radar-analysis --run-type {run_type}",
-                     "--verbose",
-                     "--output-format", "stream-json",
-                     "--dangerously-skip-permissions"],
-                    cwd=str(_PROJ_ROOT),
-                    timeout=2700,
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    import logging
-                    logging.getLogger(__name__).error(
-                        "Agent run_type=%s failed (rc=%d): %s",
-                        run_type, result.returncode, result.stderr[:500]
-                    )
-            _auto_run(f"Agent{run_type}", _invoke)
+            _auto_run(f"Agent-{run_type}", lambda: run_agent_analysis(run_type))
 
         scheduler.add_job(lambda: _run_agent("morning"),  "cron", hour=6,  minute=0)
         scheduler.add_job(lambda: _run_agent("auction"),  "cron", hour=9,  minute=25)
