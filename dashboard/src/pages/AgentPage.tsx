@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, Component } from 'react';
+import type { ReactNode } from 'react';
 import {
   AlertTriangle,
   Brain,
@@ -581,12 +582,22 @@ function IntradayReportView({ r }: { r: IntradayReport }) {
 // ─── Full Report ──────────────────────────────────────────────────────────────
 
 function FullReportView({ r }: { r: FullReport }) {
+  const safeCandidates: Candidates = {
+    T0: r.candidates?.T0 ?? [],
+    T1: r.candidates?.T1 ?? [],
+    T2: r.candidates?.T2 ?? [],
+    T3: r.candidates?.T3 ?? [],
+  };
+  const safeTheme: MainTheme = {
+    sectors: r.main_theme?.sectors ?? [],
+    tomorrow_focus: r.main_theme?.tomorrow_focus ?? '',
+  };
   return (
     <div className="space-y-4">
-      <MarketStatusCard ms={r.market_status} />
-      <DebateCard d={r.debate_summary} />
-      <MainThemeCard t={r.main_theme} />
-      <CandidatesCard c={r.candidates} />
+      {r.market_status && <MarketStatusCard ms={r.market_status} />}
+      {r.debate_summary && <DebateCard d={r.debate_summary} />}
+      <MainThemeCard t={safeTheme} />
+      <CandidatesCard c={safeCandidates} />
       {r.summary_text && <SummaryCard text={r.summary_text} />}
     </div>
   );
@@ -648,9 +659,32 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
   );
 }
 
+// ─── Error Boundary ───────────────────────────────────────────────────────────
+
+class AgentErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null };
+  static getDerivedStateFromError(e: Error) { return { error: e.message }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-8 text-center">
+          <AlertTriangle className="w-8 h-8 text-red-400 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-red-700 mb-1">页面渲染出错</p>
+          <p className="text-xs text-red-500 font-mono">{this.state.error}</p>
+          <button
+            className="mt-4 px-4 py-2 text-xs bg-red-100 text-red-700 rounded-lg hover:bg-red-200"
+            onClick={() => this.setState({ error: null })}
+          >重试</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-export function AgentPage() {
+function AgentPageInner() {
   const [status, setStatus]     = useState<AgentStatus | null>(null);
   const [report, setReport]     = useState<AgentReport | null>(null);
   const [history, setHistory]   = useState<HistoryItem[]>([]);
@@ -807,5 +841,13 @@ export function AgentPage() {
         <HistoryPanel items={history} />
       </div>
     </div>
+  );
+}
+
+export function AgentPage() {
+  return (
+    <AgentErrorBoundary>
+      <AgentPageInner />
+    </AgentErrorBoundary>
   );
 }
