@@ -58,7 +58,7 @@ def _auto_run(name: str, fn) -> None:
 
 def _in_trade_hours() -> bool:
     now = datetime.now().time()
-    return time(9, 15) <= now <= time(15, 5)
+    return time(9, 15) <= now <= time(15, 0)
 
 
 def _guarded(name: str, fn) -> None:
