@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { BarChart3, FileText, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
+import { BarChart3, FileText, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle, BookMarked } from 'lucide-react';
 
 interface FetchResult { name: string; ok: boolean; error?: string; }
 interface FetchState { status: 'idle' | 'running' | 'done' | 'auto'; results: FetchResult[]; ts: string; auto_ts: string; auto_task: string; }
@@ -86,8 +86,9 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
     { id: 'news',        icon: FileText,   label: '财经快讯' },
     { id: 'policy',      icon: BarChart3,  label: '政策动态' },
     { id: 'research',    icon: FileText,   label: '研究报告' },
-    { id: 'ai-analysis', icon: Sparkles,   label: 'AI智能分析' },
-    { id: 'settings',    icon: Settings,   label: '设置' },
+    { id: 'ai-analysis',    icon: Sparkles,    label: 'AI智能分析' },
+    { id: 'research-board', icon: BookMarked,  label: '投研看板' },
+    { id: 'settings',       icon: Settings,    label: '设置' },
   ];
 
   const isRunning = fetchState.status === 'running';

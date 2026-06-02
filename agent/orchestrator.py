@@ -1,14 +1,13 @@
 """
-多 Agent 编排层（三阶段）。
+多 Agent 编排层（两阶段）。
 
 第一阶段（并行）：4个分析师各自读数据，写中间结果到 /tmp/mra-{run_id}/
   mra-emotion / mra-sector / mra-news / mra-risk
 
-第二阶段（串行）：多空辩论
-  mra-bull → mra-bear（各自独立读原始分析结果）
+  串行追加：mra-scout（依赖 sector.json）
 
-第三阶段：首席裁决
-  mra-chief → 读全部结果 → 调用 write_result 落库
+第二阶段：首席裁决
+  mra-chief → 读全部结果 → 自主多空裁决 → 调用 write_result 落库
 
 前端轮询 /api/agent/status 感知进度，/api/agent/latest 获取最终结果。
 """
@@ -284,18 +283,11 @@ def _run_full(run_type: str, run_id: str) -> None:
     if failed:
         logger.warning("[orchestrator] 分析师失败: %s，继续后续阶段", failed)
 
-    # 新增：侦察师（串行，依赖 sector.json）
+    # 侦察师（串行，依赖 sector.json）
     with _state_lock:
         _agent_state["phase"] = "analysts"
         _agent_state["phase_detail"] = "侦察师分析子链轮动机会"
     _run_skill("mra-scout", run_id, run_type, timeout=300)
-
-    with _state_lock:
-        _agent_state["phase"] = "debate"
-        _agent_state["phase_detail"] = "多空辩论中"
-
-    _run_skill("mra-bull", run_id, run_type, timeout=600)
-    _run_skill("mra-bear", run_id, run_type, timeout=600)
 
     with _state_lock:
         _agent_state["phase"] = "chief"

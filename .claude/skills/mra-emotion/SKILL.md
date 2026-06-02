@@ -41,27 +41,21 @@ python agent/query.py market_emotion   # 仍然查，确认确实为空或为旧
 - `max_lianzban` = zt_pool 中 `zt_count` 字段的最大值
 - `yesterday_premium` = 无法推算，标注 `data_gap`
 
-**路径 C — session = unknown（本地无法判断交易状态）**：
+**路径 C — session = holiday 或 weekend（非交易日）**：
 
-`data_health.json` 中 `session = "unknown"` 说明：本地 zt_pool 无今日数据，但无法从本地判断原因（可能是节假日、可能是正常盘后次日、可能是抓取故障）。
+`data_health.json` 中 `is_trade_day = false` 且 session 为 `holiday` 或 `weekend`，由 AKShare 交易日历确认。
 
-**必须先联网确认今天是否为 A 股交易日**，再决定路径：
+读最近一次静态数据做前瞻分析：
 
+```bash
+python agent/query.py market_emotion
 ```
-WebSearch: "A股 {today} 交易日 是否开盘" 或 "上交所 {today} 休市"
-```
 
-- 确认是交易日（正常开盘）→ 走路径 A 或 B（静态/实时数据），标注"zt_pool 数据未入库，可能抓取延迟"
-- 确认是非交易日（节假日/周末补休）→ 读最近一次静态数据做前瞻分析：
-  ```bash
-  python agent/query.py market_emotion
-  ```
-  输出时：
-  - `market_mode` 根据上一交易日情绪正常判断
-  - `should_proceed: true`（允许后续做前瞻分析）
-  - `data_source` 填 `"static_last_trade_day"`
-  - `reason` 注明"今日非交易日（{具体原因}），数据截至 {zt_date}，以下为下一交易日前瞻"
-- 无法确认（网络不通）→ 保守处理，`should_proceed: true`，`data_source: "unknown"`，在 reason 中说明无法确认交易日状态
+输出时：
+- `market_mode` 根据上一交易日情绪正常判断
+- `should_proceed: true`（允许后续做前瞻分析）
+- `data_source` 填 `"static_last_trade_day"`
+- `reason` 注明"今日非交易日（session={session}），数据截至上一交易日，以下为下一交易日前瞻"
 
 ---
 
