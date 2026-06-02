@@ -1,5 +1,7 @@
 # 数据库
 db/market.db
+db/market.db-shm
+db/market.db-wal
 
 # 本地环境变量
 .env.local
