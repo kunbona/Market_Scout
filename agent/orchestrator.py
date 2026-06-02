@@ -1,8 +1,8 @@
 """
 多 Agent 编排层（三阶段）。
 
-第一阶段（并行）：6个分析师各自读数据，写中间结果到 /tmp/mra-{run_id}/
-  mra-emotion / mra-sector / mra-news / mra-lhb / mra-momentum / mra-risk
+第一阶段（并行）：4个分析师各自读数据，写中间结果到 /tmp/mra-{run_id}/
+  mra-emotion / mra-sector / mra-news / mra-risk
 
 第二阶段（串行）：多空辩论
   mra-bull → mra-bear（各自独立读原始分析结果）
@@ -156,13 +156,86 @@ def _write_data_health(run_id: str) -> None:
         logger.warning("[orchestrator] data_health generation failed (non-fatal): %s", exc)
 
 
+def _check_data_gate(run_id: str, run_type: str) -> bool:
+    """
+    读取 data_health.json，检查数据是否满足分析最低条件。
+
+    满足条件（返回 True，可以继续分析）：
+    - 实时数据：zt_pool 或 dt_pool 至少有一个今日有数据（is_trade_day = true）
+      OR session 是 pre_market / weekend（非交易时段，允许用历史数据前瞻）
+    - 静态数据：market_emotion 或 sector_zt_density 的数据日期不超过 3 天前
+      （gap_days <= 3，容忍周末和节假日的正常滞后）
+
+    不满足条件（返回 False，直接 abort）：
+    - 实时数据：session = "unknown" 且 is_trade_day = false（既不是交易日也不是已知非交易时段）
+      → 说明数据抓取可能故障，不应消耗 token
+    - 静态数据：market_emotion 的 gap_days > 7（静态数据超过一周没更新）
+      → 说明 QUANT_DATA_ROOT 未配置或路径错误，分析会严重缺失上下文
+    """
+    import json
+    from pathlib import Path
+
+    health_path = Path(f"/tmp/mra-{run_id}/data_health.json")
+    if not health_path.exists():
+        # data_health 生成失败，保守放行（允许 agent 自行判断）
+        return True
+
+    try:
+        health = json.loads(health_path.read_text())
+    except Exception:
+        return True
+
+    session = health.get("session", "")
+    is_trade_day = health.get("is_trade_day", False)
+    static_status = health.get("static_data_status", {})
+    emotion_gap = static_status.get("market_emotion", {}).get("gap_days")
+
+    # 非交易时段前瞻分析，允许
+    if session in ("pre_market", "weekend", "pre_open"):
+        return True
+
+    # 交易日但数据正常，允许
+    if is_trade_day:
+        # 检查静态数据是否过于陈旧（>7天说明根本没配置）
+        if emotion_gap is not None and emotion_gap > 7:
+            _write_abort_summary(run_type, f"静态数据 market_emotion 已超过 {emotion_gap} 天未更新，QUANT_DATA_ROOT 可能未配置")
+            return False
+        return True
+
+    # session=unknown 且非交易日 → 数据状态不明，abort
+    if session == "unknown":
+        _write_abort_summary(run_type, "无法确认今日市场状态（zt_pool 无今日数据，session=unknown），跳过分析避免浪费 token")
+        return False
+
+    return True
+
+
+def _write_abort_summary(run_type: str, reason: str) -> None:
+    """写入一条 abort 记录到 agent_summary 表。"""
+    try:
+        import json
+        from db.storage import insert_agent_summary
+        data = {
+            "run_type": run_type,
+            "market_status": {"mode": "不操作", "reason": reason},
+            "summary_text": f"跳过分析：{reason}",
+        }
+        insert_agent_summary(
+            content=f"跳过分析：{reason}",
+            data_snapshot_json=json.dumps(data, ensure_ascii=False),
+            run_type=run_type,
+        )
+    except Exception as exc:
+        logger.warning("[orchestrator] abort summary write failed: %s", exc)
+
+
 def _run_pipeline(run_type: str, run_id: str) -> None:
     """
     三阶段完整管道（morning / evening）或轻量盘中管道（intraday）。
 
     Step 0（同步）：生成 data_health.json 写入 /tmp/mra-{run_id}/，供所有 skill 读取。
-    intraday：只跑 emotion + news + momentum，跳过辩论，mra-intraday 直接汇总。
-    其他：6位分析师并行 → 侦察师 → 多空辩论 → 首席裁决。
+    intraday：只跑 emotion + news，跳过辩论，mra-intraday 直接汇总。
+    其他：4位分析师并行 → 侦察师 → 多空辩论 → 首席裁决。
     """
     is_intraday = (run_type == "intraday")
 
@@ -173,6 +246,15 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
     _write_data_health(run_id)
 
     try:
+        # 数据 Gate：不满足最低条件直接 abort
+        if not _check_data_gate(run_id, run_type):
+            logger.info("[orchestrator] data gate blocked run_type=%s, aborting", run_type)
+            with _state_lock:
+                _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
+                _agent_state["last_run_type"] = run_type
+                _agent_state["last_error"] = "数据条件不满足，跳过本次分析"
+            return
+
         if is_intraday:
             _run_intraday(run_type, run_id)
         else:
@@ -192,12 +274,12 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
 
 
 def _run_intraday(run_type: str, run_id: str) -> None:
-    """轻量盘中管道：3个分析师并行 → intraday 汇总。"""
+    """轻量盘中管道：2个分析师并行 → intraday 汇总。"""
     with _state_lock:
         _agent_state["phase"] = "analysts"
-        _agent_state["phase_detail"] = "盘中快速分析（情绪/新闻/动量）"
+        _agent_state["phase_detail"] = "盘中快速分析（情绪/新闻）"
 
-    analysts = ["mra-emotion", "mra-news", "mra-momentum"]
+    analysts = ["mra-emotion", "mra-news"]
     _run_parallel(analysts, run_id, run_type, timeout=600)
 
     with _state_lock:
@@ -215,12 +297,12 @@ def _run_intraday(run_type: str, run_id: str) -> None:
 
 
 def _run_full(run_type: str, run_id: str) -> None:
-    """完整三阶段管道：5位分析师并行 → 侦察 → 多空辩论 → 首席裁决。"""
+    """完整三阶段管道：4位分析师并行 → 侦察 → 多空辩论 → 首席裁决。"""
     with _state_lock:
         _agent_state["phase"] = "analysts"
-        _agent_state["phase_detail"] = "6位分析师并行分析中"
+        _agent_state["phase_detail"] = "4位分析师并行分析中"
 
-    analysts = ["mra-emotion", "mra-sector", "mra-news", "mra-lhb", "mra-risk"]
+    analysts = ["mra-emotion", "mra-sector", "mra-news", "mra-risk"]
     failed = _run_parallel(analysts, run_id, run_type, timeout=600)
     if failed:
         logger.warning("[orchestrator] 分析师失败: %s，继续后续阶段", failed)

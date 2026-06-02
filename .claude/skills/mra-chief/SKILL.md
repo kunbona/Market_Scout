@@ -27,12 +27,12 @@ python agent/read_wiki.py --last 5
 cat /tmp/mra-{RUN_ID}/emotion.json
 cat /tmp/mra-{RUN_ID}/sector.json
 cat /tmp/mra-{RUN_ID}/news.json
-cat /tmp/mra-{RUN_ID}/lhb.json
 cat /tmp/mra-{RUN_ID}/risk.json
 cat /tmp/mra-{RUN_ID}/bull.json
 cat /tmp/mra-{RUN_ID}/bear.json
 cat /tmp/mra-{RUN_ID}/scout.json
 python agent/query.py zt_pool
+python agent/query.py lhb
 python agent/query.py lianzban_chain
 python agent/query.py volume_breakout
 ```
@@ -83,6 +83,13 @@ python agent/query.py f10 --codes 300XXX,600XXX
 
 **如果写不出这句话**（数据不足、主线模糊、多空无法裁决），直接输出观望，不强行选股。叙事不清晰比没有叙事更危险。
 
+### Step 2.5：龙虎榜辅助判断（盘后时段才有效）
+
+如果 `python agent/query.py lhb` 返回有效数据（lhb_available=true）：
+- 机构主导/游资+机构混合席位的个股：做多置信度可上调，降低观望门槛
+- 纯游资席位且无机构：短打性质，不影响板块判断，不能作为叙事链的基础依据
+- lhb 数据为空（盘中或未出榜）：跳过此步，不影响分析流程
+
 ### Step 3：多空裁决
 
 读 `bull.json` 和 `bear.json`，判断哪方论点更扎实。裁决结果服务于叙事链，而不是服务于投票：
@@ -97,7 +104,7 @@ python agent/query.py f10 --codes 300XXX,600XXX
 1. **scout.json 的 `rotation_hints.candidate_tickers`**：子链轮动方向，定价缺口最大，最优
 2. **news.json 的 `beneficiary_stocks`**，且与叙事链主题匹配：催化剂直接受益，高确定性
 3. **主线板块内，来自 `volume_breakout`**，今日量价启动但尚未封板：发现视角，有先手优势
-4. **主线板块内，momentum 信号强的涨停股**：确认视角，错过先手，可入 T1/T2
+4. **主线板块内，zt_pool 中封板质量好的涨停股**（早封、低炸板、封单大）：确认视角，错过先手，可入 T1/T2
 
 **T 档定义（重新校准）：**
 
