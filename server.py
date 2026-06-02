@@ -264,7 +264,7 @@ def api_concept_flow():
 @app.route("/api/lhb")
 def api_lhb():
     try:
-        trade_date = _computed_date()
+        trade_date = _date_or_none()
         rows = get_lhb_data(trade_date)
         # 附加席位明细
         seats = get_lhb_seat(trade_date)
@@ -287,6 +287,45 @@ def api_lhb():
             else:
                 row["seat_nature"] = None
         return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/lhb-local")
+def api_lhb_local():
+    """龙虎榜本地版：只读 lhb_seat 表（由本地 CSV 写入），无数据返回空列表。"""
+    try:
+        trade_date = _date_or_none()
+        seats = get_lhb_seat(trade_date)
+        # 按 stock_code 聚合席位
+        stock_map: dict = {}
+        for s in seats:
+            code = s["stock_code"]
+            if code not in stock_map:
+                stock_map[code] = {
+                    "stock_code": code,
+                    "seats": [],
+                    "net_buy": 0.0,
+                }
+            stock_map[code]["seats"].append(s)
+            stock_map[code]["net_buy"] += s.get("net_amount") or 0.0
+        # 附加席位性质
+        result = []
+        for row in stock_map.values():
+            types = {s.get("seat_type") for s in row["seats"]}
+            if "游资" in types and "机构" in types:
+                row["seat_nature"] = "游资+机构"
+            elif "机构" in types:
+                row["seat_nature"] = "机构主导"
+            elif "游资" in types:
+                row["seat_nature"] = "游资主导"
+            elif row["seats"]:
+                row["seat_nature"] = "其他"
+            else:
+                row["seat_nature"] = None
+            result.append(row)
+        result.sort(key=lambda r: r["net_buy"], reverse=True)
+        return _ok(result)
     except Exception as exc:
         return _err(exc)
 

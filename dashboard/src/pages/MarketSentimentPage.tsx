@@ -120,10 +120,9 @@ interface LhbSeat {
   sell_ratio:  number | null;
 }
 
-interface LhbRow {
+// 本地龙虎榜：来自 lhb_seat 表（本地 CSV），无 stock_name / reason
+interface LhbLocalRow {
   stock_code:  string;
-  stock_name:  string;
-  reason:      string | null;
   net_buy:     number;
   seat_nature: string | null;
   seats:       LhbSeat[];
@@ -393,7 +392,7 @@ export function MarketSentimentPage() {
   const [raData, setRaData] = useState<ResearchActivity[]>([]);
   const [chipPressure, setChipPressure] = useState<SectorChipPressure[]>([]);
   const [auctionSentiment, setAuctionSentiment] = useState<SectorAuctionSentiment[]>([]);
-  const [lhbRows, setLhbRows] = useState<LhbRow[]>([]);
+  const [lhbRows, setLhbRows] = useState<LhbLocalRow[]>([]);
 
   useEffect(() => {
     setLoading(true);
@@ -411,7 +410,7 @@ export function MarketSentimentPage() {
       safeApiFetch<ResearchActivity[]>('/api/research-activity'),
       safeApiFetch<SectorChipPressure[]>('/api/sector-chip-pressure'),
       safeApiFetch<SectorAuctionSentiment[]>('/api/sector-auction-sentiment'),
-      safeApiFetch<LhbRow[]>('/api/lhb'),
+      safeApiFetch<LhbLocalRow[]>('/api/lhb-local'),
     ]).then(([e, s, c, l, ad, to, mc, sfa, vb, lb, ra, cp, as_, lhb]) => {
       if (e.status === 'fulfilled') setEmotion(nonEmpty(e.value) as MarketEmotion | null);
       if (s.status === 'fulfilled') {
@@ -974,68 +973,52 @@ export function MarketSentimentPage() {
         </div>
       )}
 
-      {/* ── Row 8: 龙虎榜 ── */}
-      {(lhbRows.length > 0 || loading) && (
+      {/* ── Row 8: 龙虎榜（本地数据）── */}
+      {lhbRows.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-100">
           <SectionHeader
-            title="龙虎榜"
-            badge={lhbRows.length > 0 ? `共 ${lhbRows.length} 只` : undefined}
+            title="龙虎榜（本地席位）"
+            badge={`共 ${lhbRows.length} 只`}
           />
-          {loading ? (
-            <div className="p-4 space-y-2">
-              {[1,2,3].map(i => <div key={i} className="h-10 bg-gray-100 rounded animate-pulse" />)}
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-50">
-              {lhbRows.map(row => {
-                const netPos = row.net_buy >= 0;
-                const nature = row.seat_nature;
-                const natureBadgeClass =
-                  nature === '机构主导'    ? 'bg-blue-50 text-blue-600 border-blue-200' :
-                  nature === '游资+机构'   ? 'bg-purple-50 text-purple-600 border-purple-200' :
-                  nature === '游资主导'    ? 'bg-orange-50 text-orange-600 border-orange-200' :
-                  'bg-gray-50 text-gray-400 border-gray-200';
-                const topSeats = row.seats.slice(0, 3);
-                return (
-                  <div key={row.stock_code} className="px-4 py-3">
-                    <div className="flex items-center gap-3 mb-1.5">
-                      {/* 股票名+代码 */}
-                      <div className="min-w-0 flex-1">
-                        <span className="text-sm font-semibold text-gray-900">{row.stock_name}</span>
-                        <span className="text-xs text-gray-400 ml-1.5">{row.stock_code}</span>
-                        {row.reason && (
-                          <span className="ml-2 text-xs text-gray-400 truncate">{row.reason}</span>
-                        )}
-                      </div>
-                      {/* 净买入 */}
-                      <span className={`text-sm font-mono font-semibold shrink-0 ${netPos ? 'text-red-600' : 'text-emerald-600'}`}>
-                        {netPos ? '+' : ''}{(row.net_buy / 1e4).toFixed(0)}万
+          <div className="divide-y divide-gray-50">
+            {lhbRows.map(row => {
+              const netPos = row.net_buy >= 0;
+              const nature = row.seat_nature;
+              const natureBadgeClass =
+                nature === '机构主导'  ? 'bg-blue-50 text-blue-600 border-blue-200' :
+                nature === '游资+机构' ? 'bg-purple-50 text-purple-600 border-purple-200' :
+                nature === '游资主导'  ? 'bg-orange-50 text-orange-600 border-orange-200' :
+                'bg-gray-50 text-gray-400 border-gray-200';
+              const topSeats = row.seats.slice(0, 3);
+              return (
+                <div key={row.stock_code} className="px-4 py-3">
+                  <div className="flex items-center gap-3 mb-1.5">
+                    <span className="text-sm font-semibold text-gray-900 font-mono">{row.stock_code}</span>
+                    <span className={`text-sm font-mono font-semibold shrink-0 ${netPos ? 'text-red-600' : 'text-emerald-600'}`}>
+                      {netPos ? '+' : ''}{(row.net_buy / 1e4).toFixed(0)}万
+                    </span>
+                    {nature && (
+                      <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${natureBadgeClass}`}>
+                        {nature}
                       </span>
-                      {/* 席位性质 badge */}
-                      {nature && (
-                        <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${natureBadgeClass}`}>
-                          {nature}
-                        </span>
-                      )}
-                    </div>
-                    {/* 席位明细 */}
-                    {topSeats.length > 0 && (
-                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 pl-0.5">
-                        {topSeats.map((s, i) => (
-                          <div key={i} className="flex items-center gap-1 text-xs text-gray-500">
-                            <span className="truncate max-w-[140px]">{s.seat_name}</span>
-                            <span className={s.net_amount >= 0 ? 'text-red-500 font-mono' : 'text-emerald-600 font-mono'}>
-                              {s.net_amount >= 0 ? '+' : ''}{(s.net_amount / 1e4).toFixed(0)}万
-                            </span>
-                          </div>
-                        ))}
-                      </div>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          )}
+                  {topSeats.length > 0 && (
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 pl-0.5">
+                      {topSeats.map((s, i) => (
+                        <div key={i} className="flex items-center gap-1 text-xs text-gray-500">
+                          <span className="truncate max-w-[140px]">{s.seat_name}</span>
+                          <span className={s.net_amount >= 0 ? 'text-red-500 font-mono' : 'text-emerald-600 font-mono'}>
+                            {s.net_amount >= 0 ? '+' : ''}{(s.net_amount / 1e4).toFixed(0)}万
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
