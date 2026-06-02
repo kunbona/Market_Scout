@@ -40,6 +40,13 @@ cat /tmp/mra-${MRA_RUN_ID}/data_health.json
 
 - **`is_trade_day = false`**：读上一交易日静态数据，在 `evidence` 中标注"数据截至上一交易日"。
 
+- **`static_emotion_date < today AND is_trading_time = true`（路径 D）**：静态板块密度是 T-1 的数据，但今日行情已在进行。实时重建：
+  ```bash
+  python agent/query.py zt_pool
+  python agent/query.py sector_flow_accel
+  ```
+  从 zt_pool 按 `sector` 字段分组统计今日实时板块密度（粗估）。`sector_zt_density` 静态数据仅作昨日参考，不作今日主要依据。在 `evidence` 中标注"板块密度为实时 zt_pool 估算，精度低于静态数据"。
+
 新闻数据由新闻分析师单独处理，产业链背景需要时可以直接联网搜索。
 
 ---

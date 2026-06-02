@@ -406,14 +406,17 @@ def cmd_data_health(args):
         ),
     }
 
+    # static_emotion_date：skill 用此字段判断静态数据是否与今日匹配
+    # 若 static_emotion_date < today 且处于交易时段 → 触发路径 D（实时重建）
     _out({
         "check_time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "today": today,
         "session": session,
         "is_trade_day": is_trade_day,
         "is_trading_time": is_trading_time,
-        "data_alerts": data_alerts,        # 前端直接展示，level=error 时用户可见
-        "abort_reason": abort_reason,      # 非空时 orchestrator 应跳过分析
+        "static_emotion_date": emotion_date,   # 静态 market_emotion 实际对应的交易日
+        "data_alerts": data_alerts,            # 前端直接展示，level=error 时用户可见
+        "abort_reason": abort_reason,          # 非空时 orchestrator 应跳过分析
         "realtime_data_status": status["realtime"],
         "static_data_status": status["static"],
         "conflicts": conflicts,
@@ -436,6 +439,102 @@ def cmd_market_emotion(args):
     emotion["zb_count"] = emotion.pop("zb_total", None)
     emotion["yesterday_premium"] = emotion.pop("zt_yesterday_premium", None)
     _out(emotion)
+
+
+def cmd_yesterday_premium(args):
+    """
+    实时推算隔日溢价率（ZTBX）。
+
+    取昨日（最近一个有数据的交易日）涨停股名单，用 market_pulse 中最新实时价格
+    计算均值收益率。盘中结果为未收盘近似值，标注 intraday_estimate=true。
+    收盘后结果为收盘价，标注 intraday_estimate=false。
+
+    用途：当 static_emotion_date < today（路径 D）时，替代静态 yesterday_premium。
+    """
+    import sqlite3 as _sql
+    from db.storage import DB_PATH, get_zt_pool
+
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    is_market_closed = now.hour >= 15
+
+    with _sql.connect(DB_PATH) as conn:
+        # 找最近有涨停数据的交易日（通常是昨日，节后可能隔多天）
+        row = conn.execute(
+            "SELECT MAX(trade_date) FROM zt_pool"
+        ).fetchone()
+        prev_trade_date = row[0] if row and row[0] else None
+
+    if not prev_trade_date or prev_trade_date == today:
+        _out({
+            "error": "NO_PREV_ZT_DATA",
+            "reason": "未找到前一交易日涨停池数据，无法推算隔日溢价",
+        })
+        return
+
+    # 拿前一交易日全部涨停股的收盘价（prev_close）
+    prev_zt = get_zt_pool(prev_trade_date)
+    if not prev_zt:
+        _out({
+            "error": "NO_PREV_ZT_DATA",
+            "reason": f"前一交易日（{prev_trade_date}）涨停池为空",
+        })
+        return
+
+    prev_codes = [r.get("stock_code") for r in prev_zt if r.get("stock_code")]
+
+    with _sql.connect(DB_PATH) as conn:
+        # 用 market_pulse 最新快照中这些股票的价格
+        placeholders = ",".join("?" * len(prev_codes))
+        rows = conn.execute(
+            f"""
+            SELECT mp.stock_code, mp.price, mp.prev_close
+            FROM market_pulse mp
+            INNER JOIN (
+                SELECT stock_code, MAX(fetch_time) AS latest
+                FROM market_pulse
+                WHERE trade_date = ?
+                GROUP BY stock_code
+            ) latest_snap ON mp.stock_code = latest_snap.stock_code
+                          AND mp.fetch_time = latest_snap.latest
+            WHERE mp.stock_code IN ({placeholders})
+              AND mp.prev_close IS NOT NULL
+              AND mp.prev_close > 0
+            """,
+            [today] + prev_codes,
+        ).fetchall()
+
+    if not rows:
+        _out({
+            "error": "NO_PULSE_DATA",
+            "reason": f"market_pulse 中未找到前一交易日涨停股（{prev_trade_date}）的今日价格数据",
+            "prev_trade_date": prev_trade_date,
+            "prev_zt_count": len(prev_codes),
+        })
+        return
+
+    returns = [(price - prev_close) / prev_close for _, price, prev_close in rows if prev_close > 0]
+    if not returns:
+        _out({"error": "CALC_FAILED", "reason": "收益率计算失败，价格数据异常"})
+        return
+
+    ztbx = sum(returns) / len(returns)
+    positive = sum(1 for r in returns if r > 0)
+
+    _out({
+        "ztbx": round(ztbx * 100, 2),          # 百分比，如 2.3 表示 +2.3%
+        "ztbx_pct": f"{ztbx * 100:+.2f}%",
+        "sample_count": len(returns),           # 实际有价格的样本数
+        "prev_zt_count": len(prev_codes),       # 前日涨停总数
+        "positive_ratio": round(positive / len(returns), 3),  # 正收益占比
+        "prev_trade_date": prev_trade_date,
+        "price_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "intraday_estimate": not is_market_closed,
+        "note": (
+            "盘中近似值，使用实时价格（未收盘），收盘后将更准确" if not is_market_closed
+            else "收盘后计算，使用收盘价，结果准确"
+        ),
+    })
 
 
 def cmd_zt_pool(args):
@@ -692,9 +791,10 @@ def cmd_context(args):
 
 
 COMMANDS = {
-    "data_health":       cmd_data_health,
-    "market_emotion":    cmd_market_emotion,
-    "zt_pool":           cmd_zt_pool,
+    "data_health":         cmd_data_health,
+    "market_emotion":      cmd_market_emotion,
+    "yesterday_premium":   cmd_yesterday_premium,
+    "zt_pool":             cmd_zt_pool,
     "sector_zt_density": cmd_sector_zt_density,
     "sector_flow_accel": cmd_sector_flow_accel,
     "lhb":               cmd_lhb,

@@ -46,6 +46,30 @@ python agent/query.py market_emotion
 
 读最近一次静态数据做前瞻，输出时标注"非交易日前瞻，数据截至上一交易日"。
 
+**路径 D — 静态数据落后于今日，且处于交易时段**（`static_emotion_date < today AND is_trading_time = true`）：
+
+静态 market_emotion 记录的是 T-1 的数据（daily_compute 已跑但今日尚未更新），而实时行情已经在进行。此时不能直接使用静态数据中的"今日"指标——它们实际上是昨天的。
+
+```bash
+# 今日实时情绪指标从 zt_pool 重建
+python agent/query.py zt_pool
+
+# 隔日溢价实时推算（昨日涨停股 × 今日实时价格）
+python agent/query.py yesterday_premium
+```
+
+从实时数据重建各指标：
+- `zt_count` = zt_pool 总行数（今日实时）
+- `dt_count` = data_health.json 中 `realtime_data_status.dt_pool.count`
+- `zb_rate` = zt_pool 中 `zb_count > 0` 的行数 ÷ zt_pool 总行数（今日实时）
+- `max_lianzban` = zt_pool 中 `zt_count` 字段最大值（今日实时）
+- `yesterday_premium` = `yesterday_premium` 命令返回的 `ztbx_pct`（盘中为近似值）
+- `lianzban_upgrade_rate` = **无法实时重建**（需要昨日首板家数），标注 data_gap
+
+`yesterday_premium` 命令返回的 `intraday_estimate: true` 时，说明价格未收盘，在 `data_source` 中注明"隔日溢价为盘中近似值"。
+
+输出时 `data_source` 填 `"realtime_rebuild"`，并在 `data_gaps` 中列出无法重建的项。
+
 ---
 
 ## Step 1：计算5个核心情绪指标
