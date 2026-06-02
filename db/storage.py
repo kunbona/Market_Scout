@@ -48,6 +48,17 @@ def _migrate(conn):
     # reason 字段已存在于建表语句，仅在确实缺失时才补充（理论上不会触发）
     if "reason" not in lhb_cols:
         conn.execute("ALTER TABLE lhb_data ADD COLUMN reason TEXT")
+    # sector_flow_accel 新增成交额均线和占比字段
+    sfa_cols = {row[1] for row in conn.execute("PRAGMA table_info(sector_flow_accel)")}
+    for col, coldef in [
+        ("amount_ma5",       "REAL"),
+        ("amount_ma20",      "REAL"),
+        ("ma5_slope",        "REAL"),
+        ("amount_share_3d",  "REAL"),
+        ("amount_share_30d", "REAL"),
+    ]:
+        if col not in sfa_cols:
+            conn.execute(f"ALTER TABLE sector_flow_accel ADD COLUMN {col} {coldef}")
     # lhb_seat 表（本地量化数据营业部席位明细）
     conn.execute("""
         CREATE TABLE IF NOT EXISTS lhb_seat (
@@ -269,6 +280,11 @@ CREATE TABLE IF NOT EXISTS sector_flow_accel (
     inst_inflow_3d  REAL,
     inst_inflow_20d REAL,
     acceleration    REAL,
+    amount_ma5      REAL,
+    amount_ma20     REAL,
+    ma5_slope       REAL,
+    amount_share_3d  REAL,
+    amount_share_30d REAL,
     UNIQUE(trade_date, industry)
 );
 
@@ -1190,12 +1206,19 @@ def get_research_activity(trade_date: str) -> list[dict]:
 # ── sector_flow_accel ─────────────────────────────────────────────────────────
 
 def insert_sector_flow_accel(trade_date: str, industry: str, inst_inflow_3d: float,
-                              inst_inflow_20d: float, acceleration: float) -> None:
+                              inst_inflow_20d: float, acceleration: float,
+                              amount_ma5: float = None, amount_ma20: float = None,
+                              ma5_slope: float = None,
+                              amount_share_3d: float = None,
+                              amount_share_30d: float = None) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO sector_flow_accel "
-            "(trade_date, industry, inst_inflow_3d, inst_inflow_20d, acceleration) VALUES (?,?,?,?,?)",
-            (trade_date, industry, inst_inflow_3d, inst_inflow_20d, acceleration),
+            "(trade_date, industry, inst_inflow_3d, inst_inflow_20d, acceleration, "
+            "amount_ma5, amount_ma20, ma5_slope, amount_share_3d, amount_share_30d) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (trade_date, industry, inst_inflow_3d, inst_inflow_20d, acceleration,
+             amount_ma5, amount_ma20, ma5_slope, amount_share_3d, amount_share_30d),
         )
 
 

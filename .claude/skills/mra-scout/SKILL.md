@@ -162,7 +162,8 @@ python agent/query.py sector_flow_accel
   ],
   "no_opportunity": false,
   "market_rhythm": "今天资金分布状态、主线加速还是减速、明天最可能发生什么——必须有具体数字支撑，不写废话",
-  "note": "数据缺口或需要首席特别注意的信息"
+  "note": "数据缺口或需要首席特别注意的信息",
+  "data_gaps": ["缺失项必须用中文描述，如：成交量异动数据为空（当日无放量个股超阈值）、板块资金加速度数据缺失"]
 }
 ```
 

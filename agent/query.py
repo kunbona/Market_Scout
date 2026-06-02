@@ -235,10 +235,6 @@ def cmd_data_health(args):
             f"板块密度分析需切换到实时降级推算。"
         )
 
-    if is_weekend and is_trade_day:
-        # 节假日补班：周末有数据属特殊情况
-        conflicts.append("【提示】日历确认今日为交易日但当前是周末，为节假日补班交易日，请注意。")
-
     # ── 降级提示：静态数据不可用时如何用实时数据替代
     if not status["static"]["market_emotion"]["fresh"] and is_trade_day:
         fallback_hints["emotion_proxy"] = (
@@ -433,6 +429,12 @@ def cmd_market_emotion(args):
     if not emotion:
         _out({"error": "INSUFFICIENT_DATA", "reason": "今日 market_emotion 记录不存在，可能是非交易日或日线计算未运行"})
         return
+    # 字段重命名：DB 用 *_total，skill 规范和前端用 *_count / yesterday_premium
+    emotion = dict(emotion)
+    emotion["zt_count"] = emotion.pop("zt_total", None)
+    emotion["dt_count"] = emotion.pop("dt_total", None)
+    emotion["zb_count"] = emotion.pop("zb_total", None)
+    emotion["yesterday_premium"] = emotion.pop("zt_yesterday_premium", None)
     _out(emotion)
 
 

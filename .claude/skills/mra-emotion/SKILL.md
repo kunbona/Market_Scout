@@ -154,7 +154,7 @@ ZTBX = mean(昨日涨停股在今日的收盘收益率)
 
 `should_proceed` 在 `market_mode = 不操作` 时为 `false`，其他为 `true`。
 `data_source` 必须如实填写，不能省略。
-降级路径时 `data_gaps` 填入实际缺失项，如 `["yesterday_premium无法推算"]`。
+降级路径时 `data_gaps` 填入实际缺失项，**必须用中文描述**，如 `["昨日溢价率无法推算（market_emotion缺失）"]`。
 
 RUN_ID 从环境变量 `MRA_RUN_ID` 读取，不存在时用 `default`。
 

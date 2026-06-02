@@ -139,7 +139,7 @@ cat /tmp/mra-${MRA_RUN_ID}/data_health.json
   "top_sectors": [
     {
       "name": "投资主题名（非申万三级，如'AI算力'而非'通信设备'）",
-      "stage": "萌芽|爆发|退潮|data_insufficient",
+      "stage": "萌芽|爆发|退潮|数据不足",
       "heat_score": 7.2,
       "density": "8%（板块涨停数/板块总股数）",
       "ma_signal": "加速（MA5>MA20且上行）|减速（MA5下穿MA20）|平稳",
@@ -152,7 +152,8 @@ cat /tmp/mra-${MRA_RUN_ID}/data_health.json
   "market_breadth": "强|中|弱",
   "theme_coherence": "集中（1-2条主线）|分散（多概念轮动）",
   "data_note": "主力净流入数据仅供参考，判断依据已改为均线斜率和成交额占比",
-  "warning": "无主线或有特殊风险时说明"
+  "warning": "无主线或有特殊风险时说明",
+  "data_gaps": ["缺失项必须用中文描述，如：板块资金加速度数据缺失（静态数据未计算）、龙虎榜暂未发布（17:30后才有）"]
 }
 ```
 

@@ -218,7 +218,7 @@ python agent/write_result.py --run-type ${MRA_RUN_TYPE} --result '<JSON>'
         },
         "evidence": "最打动你的1–2个理由，必须有数字",
         "confidence": "高|中|低",
-        "data_gaps": []
+        "data_gaps": ["必须用中文，如：龙虎榜暂未发布、成交量异动数据为空"]
       }
     ],
     "T1": [],
@@ -230,7 +230,8 @@ python agent/write_result.py --run-type ${MRA_RUN_TYPE} --result '<JSON>'
     "lhb_available": true,
     "wiki_updated": true,
     "f10_queried": [],
-    "analysts_completed": ["emotion", "sector", "news", "risk", "scout"]
+    "analysts_completed": ["emotion", "sector", "news", "risk", "scout"],
+    "data_gaps_summary": ["汇总所有分析师的数据缺口，全部用中文描述，如：板块资金加速度数据缺失（静态数据未计算）、龙虎榜仅3条（17:30后才完整）、成交量异动数据为空"]
   }
 }
 ```

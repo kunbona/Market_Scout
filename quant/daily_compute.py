@@ -128,15 +128,18 @@ def compute_sector_zt_density(trade_date: str) -> None:
 
 def compute_sector_flow_acceleration(trade_date: str) -> None:
     """
-    按申万行业聚合机构净买入占比，计算 3日均值 / 20日均值 作为加速度指标。
+    按申万行业聚合机构净买入占比和成交额，计算：
+    - inst_inflow_3d/20d + acceleration（机构净流入维度）
+    - amount_ma5/ma20/ma5_slope（成交额均线维度，中金量化实证信号）
+    - amount_share_3d/30d（板块成交额占全市场比重趋势）
 
-    数据来源: load_daily_range(trade_date, days=25)
+    数据来源: load_daily_range(trade_date, days=35)
     写入: sector_flow_accel 表
     """
     from db.storage import insert_sector_flow_accel
 
     try:
-        df_range = load_daily_range(trade_date, days=25)
+        df_range = load_daily_range(trade_date, days=35)
         if df_range.empty:
             logger.warning("[daily_compute] sector_flow_acceleration: %s 无数据", trade_date)
             return
@@ -148,32 +151,63 @@ def compute_sector_flow_acceleration(trade_date: str) -> None:
         df_range = df_range.dropna(subset=["industry_l1"]).copy()
         df_range = df_range[df_range["industry_l1"] != ""]
 
-        # 按 (trade_date, industry_l1) 聚合 inst_net_pct 均值
-        daily_ind = (
+        all_dates = sorted(df_range["trade_date"].unique())
+        dates_3d  = all_dates[-3:]  if len(all_dates) >= 3  else all_dates
+        dates_20d = all_dates[-20:] if len(all_dates) >= 20 else all_dates
+        dates_30d = all_dates[-30:] if len(all_dates) >= 30 else all_dates
+
+        # ── 机构净买入维度
+        daily_inst = (
             df_range.groupby(["trade_date", "industry_l1"])["inst_net_pct"]
             .mean()
             .reset_index()
             .rename(columns={"inst_net_pct": "inst_mean"})
         )
 
-        # 窗口日期
-        all_dates = sorted(df_range["trade_date"].unique())
-        dates_3d = all_dates[-3:] if len(all_dates) >= 3 else all_dates
-        dates_20d = all_dates[-20:] if len(all_dates) >= 20 else all_dates
+        # ── 成交额维度：按行业汇总各日总成交额
+        daily_amt = (
+            df_range.groupby(["trade_date", "industry_l1"])["amount"]
+            .sum()
+            .reset_index()
+            .rename(columns={"amount": "ind_amount"})
+        )
 
-        industries = daily_ind["industry_l1"].unique()
+        # 全市场每日总成交额（用于计算板块占比）
+        mkt_daily_amt = df_range.groupby("trade_date")["amount"].sum().rename("mkt_amount")
+        daily_amt = daily_amt.join(mkt_daily_amt, on="trade_date")
+
+        industries = daily_inst["industry_l1"].unique()
         written = 0
         for ind in industries:
-            ind_df = daily_ind[daily_ind["industry_l1"] == ind]
-            inst_3d = float(ind_df[ind_df["trade_date"].isin(dates_3d)]["inst_mean"].mean())
-            inst_20d = float(ind_df[ind_df["trade_date"].isin(dates_20d)]["inst_mean"].mean())
-            # 用绝对值做分母，避免负/负=正的方向错误
-            # inst_20d 为负表示近20日整体净卖出，accel 有意义的前提是趋势方向一致
-            if abs(inst_20d) > 1e-9:
-                accel = inst_3d / abs(inst_20d)
+            inst_df = daily_inst[daily_inst["industry_l1"] == ind]
+            amt_df  = daily_amt[daily_amt["industry_l1"] == ind].set_index("trade_date")
+
+            # 机构净流入
+            inst_3d  = float(inst_df[inst_df["trade_date"].isin(dates_3d)]["inst_mean"].mean())
+            inst_20d = float(inst_df[inst_df["trade_date"].isin(dates_20d)]["inst_mean"].mean())
+            accel = (inst_3d / abs(inst_20d)) if abs(inst_20d) > 1e-9 else 0.0
+
+            # 成交额均线（MA5 / MA20）：取各日行业总额，按时间序排列
+            amt_series = amt_df["ind_amount"].reindex(all_dates).fillna(0)
+            ma5  = float(amt_series.iloc[-5:].mean())  if len(amt_series) >= 5  else float(amt_series.mean())
+            ma20 = float(amt_series.iloc[-20:].mean()) if len(amt_series) >= 20 else float(amt_series.mean())
+            # MA5 斜率：今日 MA5 vs 昨日 MA5（正值=加速，负值=减速）
+            if len(amt_series) >= 6:
+                ma5_prev = float(amt_series.iloc[-6:-1].mean())
+                ma5_slope = ma5 - ma5_prev
             else:
-                accel = 0.0
-            insert_sector_flow_accel(trade_date, ind, inst_3d, inst_20d, accel)
+                ma5_slope = 0.0
+
+            # 板块成交占比（近3日均值 vs 近30日均值）
+            share_series = (amt_df["ind_amount"] / amt_df["mkt_amount"]).reindex(all_dates).fillna(0)
+            share_3d  = float(share_series.iloc[-3:].mean())  if len(share_series) >= 3  else float(share_series.mean())
+            share_30d = float(share_series.iloc[-30:].mean()) if len(share_series) >= 30 else float(share_series.mean())
+
+            insert_sector_flow_accel(
+                trade_date, ind, inst_3d, inst_20d, accel,
+                amount_ma5=ma5, amount_ma20=ma20, ma5_slope=ma5_slope,
+                amount_share_3d=share_3d, amount_share_30d=share_30d,
+            )
             written += 1
 
         logger.info("[daily_compute] sector_flow_acceleration %s: %d 个行业写入", trade_date, written)
