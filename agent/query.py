@@ -35,14 +35,31 @@ def _out(data):
     print(json.dumps(data, ensure_ascii=False, default=str))
 
 
-def is_trade_date(d=None) -> bool:
-    """查询指定日期（默认今天）是否为 A 股交易日，使用 AKShare 日历。"""
+def _get_trade_calendar():
+    """返回 AKShare 交易日历 DataFrame，列名 trade_date（datetime.date 类型）。"""
     import akshare as ak
+    return ak.tool_trade_date_hist_sina()
+
+
+def is_trade_date(d=None) -> bool:
+    """查询指定日期（默认今天）是否为 A 股交易日。"""
     from datetime import date
     if d is None:
         d = date.today()
-    cal = ak.tool_trade_date_hist_sina()
-    return d in cal["trade_date"].values
+    return d in _get_trade_calendar()["trade_date"].values
+
+
+def get_prev_trade_dates(d=None, n: int = 2) -> list:
+    """
+    返回 d（默认今天）之前最近 n 个交易日的 datetime.date 列表，从近到远排列。
+    例：今天周五，n=2 → [周四, 周三]（跨越周末/节假日正确处理）
+    """
+    from datetime import date
+    if d is None:
+        d = date.today()
+    cal = _get_trade_calendar()
+    past = cal[cal["trade_date"] < d].sort_values("trade_date", ascending=False)
+    return list(past["trade_date"].head(n).values)
 
 
 def get_market_session(now=None) -> dict:
@@ -73,8 +90,10 @@ def get_market_session(now=None) -> dict:
 
     is_weekend = now.weekday() >= 5
     try:
-        is_trade_day = is_trade_date(now.date())
+        cal = _get_trade_calendar()
+        is_trade_day = now.date() in cal["trade_date"].values
     except Exception:
+        cal = None
         is_trade_day = not is_weekend
 
     total_min = now.hour * 60 + now.minute
@@ -239,11 +258,110 @@ def cmd_data_health(args):
             "  注意：这是粗略估算，结论中需标注sector_zt_density数据不可用"
         )
 
-    if not status["realtime"]["lhb_data"]["fresh"] and now_h >= 18:
+    if not status["realtime"]["lhb_data"]["fresh"] and now.hour >= 18:
         fallback_hints["lhb_missing"] = (
             "当前时间已过18:00但龙虎榜仍无今日数据，可能抓取失败。"
             "个股评级应降低置信度，data_gaps中标注'龙虎榜缺失'。"
         )
+
+    # ── 检查一：静态数据是否滞后超过1个交易日（T-2 告警）
+    # 逻辑：找到今天之前最近2个交易日 [T-1, T-2]
+    #   - 已过 daily_compute 运行时间（09:30后）且静态数据不是 T-1 或今天 → 告警
+    #   - 09:30前盘前：静态数据是 T-1 属正常（daily_compute 还没跑）
+    data_alerts = []
+    static_stale_abort = False
+    if is_trade_day:
+        try:
+            prev_dates = get_prev_trade_dates(now.date(), n=2)
+            # prev_dates[0] = T-1, prev_dates[1] = T-2，均为 numpy datetime64 或 date
+            t1 = str(prev_dates[0])[:10] if len(prev_dates) > 0 else None
+            t2 = str(prev_dates[1])[:10] if len(prev_dates) > 1 else None
+            after_compute = (now.hour * 60 + now.minute) >= 9 * 60 + 30
+            emotion_latest = emotion_date  # YYYY-MM-DD str or None
+            # 允许的最新日期：今天（盘后计算完）或 T-1（盘前/刚开盘）
+            allowed = {today, t1} if t1 else {today}
+            if after_compute and emotion_latest and emotion_latest not in allowed:
+                # 静态数据比 T-1 还老，说明昨天的数据没算出来
+                data_alerts.append({
+                    "level": "error",
+                    "code": "STATIC_DATA_STALE",
+                    "message": (
+                        f"静态数据滞后超过1个交易日：market_emotion 最新是 {emotion_latest}，"
+                        f"上一交易日是 {t1}，数据缺失一个完整交易日。"
+                        f"daily_compute 可能昨日未执行，建议手动触发计算后再跑分析。"
+                    ),
+                    "latest_date": emotion_latest,
+                    "expected_date": t1,
+                })
+                static_stale_abort = True
+        except Exception:
+            pass  # 日历查询失败，不阻断
+
+    # ── 检查二：盘中实时数据是否严重滞后（接口挂掉）
+    realtime_stale_abort = False
+    if is_trading_time:
+        def _stale_minutes(ts_str):
+            """返回 ts_str 距现在多少分钟，ts_str 格式 YYYY-MM-DD HH:MM:SS 或 ISO"""
+            if not ts_str:
+                return None
+            try:
+                from datetime import datetime as _dt2
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"):
+                    try:
+                        t = _dt2.strptime(ts_str[:19], fmt)
+                        return (now - t).total_seconds() / 60
+                    except ValueError:
+                        continue
+                return None
+            except Exception:
+                return None
+
+        # market_pulse (realtime_snapshot)：30秒更新，超5分钟告警
+        pulse_ts = _latest_ts("market_pulse", "fetch_time") if False else sector_flow_ts  # 下面重新查
+        # 直接从 DB 查 market_pulse 最新时间
+        import sqlite3 as _sql
+        from db.storage import DB_PATH as _DB
+        with _sql.connect(_DB) as _conn:
+            _row = _conn.execute("SELECT MAX(fetch_time) FROM market_pulse").fetchone()
+            pulse_ts = _row[0] if _row else None
+
+        pulse_lag = _stale_minutes(pulse_ts)
+        flow_lag = _stale_minutes(sector_flow_ts)
+
+        if pulse_lag is not None and pulse_lag > 5:
+            data_alerts.append({
+                "level": "error",
+                "code": "REALTIME_SNAPSHOT_STALE",
+                "message": (
+                    f"实时行情快照已 {pulse_lag:.0f} 分钟未更新（最后：{pulse_ts}），"
+                    f"正常频率为30秒。接口可能故障，盘中分析数据不可靠。"
+                ),
+                "last_update": pulse_ts,
+                "lag_minutes": round(pulse_lag, 1),
+                "threshold_minutes": 5,
+            })
+            realtime_stale_abort = True
+
+        if flow_lag is not None and flow_lag > 45:
+            data_alerts.append({
+                "level": "warning",
+                "code": "SECTOR_FLOW_STALE",
+                "message": (
+                    f"行业资金流已 {flow_lag:.0f} 分钟未更新（最后：{sector_flow_ts}），"
+                    f"正常频率为15分钟。资金流分析降级，结论中需标注数据可能滞后。"
+                ),
+                "last_update": sector_flow_ts,
+                "lag_minutes": round(flow_lag, 1),
+                "threshold_minutes": 45,
+            })
+        # zt_pool 只有 trade_date 没有精确时间戳，盘中无法判断滞后，跳过
+
+    # abort_reason 供 orchestrator 读取，决定是否跳过分析
+    abort_reason = None
+    if static_stale_abort:
+        abort_reason = next(a["message"] for a in data_alerts if a["code"] == "STATIC_DATA_STALE")
+    elif realtime_stale_abort:
+        abort_reason = next(a["message"] for a in data_alerts if a["code"] == "REALTIME_SNAPSHOT_STALE")
 
     SESSION_INSTRUCTIONS = {
         "pre_market": (
@@ -298,6 +416,8 @@ def cmd_data_health(args):
         "session": session,
         "is_trade_day": is_trade_day,
         "is_trading_time": is_trading_time,
+        "data_alerts": data_alerts,        # 前端直接展示，level=error 时用户可见
+        "abort_reason": abort_reason,      # 非空时 orchestrator 应跳过分析
         "realtime_data_status": status["realtime"],
         "static_data_status": status["static"],
         "conflicts": conflicts,

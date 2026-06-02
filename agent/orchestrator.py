@@ -158,26 +158,20 @@ def _write_data_health(run_id: str) -> None:
 
 def _check_data_gate(run_id: str, run_type: str) -> bool:
     """
-    读取 data_health.json，检查数据是否满足分析最低条件。
+    读取 data_health.json 的 abort_reason 字段，决定是否跳过本次分析。
 
-    满足条件（返回 True，可以继续分析）：
-    - 实时数据：zt_pool 或 dt_pool 至少有一个今日有数据（is_trade_day = true）
-      OR session 是 pre_market / weekend（非交易时段，允许用历史数据前瞻）
-    - 静态数据：market_emotion 或 sector_zt_density 的数据日期不超过 3 天前
-      （gap_days <= 3，容忍周末和节假日的正常滞后）
+    abort_reason 由 cmd_data_health 统一计算，触发条件：
+    - STATIC_DATA_STALE：静态数据滞后超过1个交易日（T-2），且已过09:30
+    - REALTIME_SNAPSHOT_STALE：盘中实时快照超过5分钟未更新（接口可能故障）
 
-    不满足条件（返回 False，直接 abort）：
-    - 交易日但 emotion_gap > 7（静态数据超过一周没更新）
-      → 说明 QUANT_DATA_ROOT 未配置或路径错误，分析会严重缺失上下文
-    - 静态数据：market_emotion 的 gap_days > 7（静态数据超过一周没更新）
-      → 说明 QUANT_DATA_ROOT 未配置或路径错误，分析会严重缺失上下文
+    非交易时段（pre_open/call_auction/weekend/holiday）不触发以上检查，直接放行。
+    data_health.json 不存在或解析失败时保守放行。
     """
     import json
     from pathlib import Path
 
     health_path = Path(f"/tmp/mra-{run_id}/data_health.json")
     if not health_path.exists():
-        # data_health 生成失败，保守放行（允许 agent 自行判断）
         return True
 
     try:
@@ -185,21 +179,10 @@ def _check_data_gate(run_id: str, run_type: str) -> bool:
     except Exception:
         return True
 
-    session = health.get("session", "")
-    is_trade_day = health.get("is_trade_day", False)
-    static_status = health.get("static_data_status", {})
-    emotion_gap = static_status.get("market_emotion", {}).get("gap_days")
-
-    # 非交易时段（盘前/周末/节假日），允许前瞻分析
-    if session in ("pre_market", "pre_open", "weekend", "holiday"):
-        return True
-
-    # 交易日：检查静态数据是否过于陈旧（>7天说明 QUANT_DATA_ROOT 未配置）
-    if is_trade_day:
-        if emotion_gap is not None and emotion_gap > 7:
-            _write_abort_summary(run_type, f"静态数据 market_emotion 已超过 {emotion_gap} 天未更新，QUANT_DATA_ROOT 可能未配置")
-            return False
-        return True
+    abort_reason = health.get("abort_reason")
+    if abort_reason:
+        _write_abort_summary(run_type, abort_reason)
+        return False
 
     return True
 

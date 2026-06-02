@@ -726,6 +726,27 @@ def api_trade_calendar_today():
         return _err(exc)
 
 
+@app.route("/api/data-health")
+def api_data_health():
+    """
+    数据健康检查接口，供前端感知数据故障告警。
+    返回 data_alerts（level=error/warning）、abort_reason、session 等完整信息。
+    冷调用约1-2秒（AKShare 日历查询），建议前端低频轮询（60秒一次）。
+    """
+    try:
+        import subprocess, json as _json
+        result = subprocess.run(
+            ["python", "agent/query.py", "data_health"],
+            cwd=os.path.dirname(__file__),
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return _ok(_json.loads(result.stdout.strip()))
+        return _err(f"data_health 查询失败: {result.stderr[:200]}")
+    except Exception as exc:
+        return _err(exc)
+
+
 _compute_state: dict = {"status": "idle", "progress": [], "trade_date": "", "results": []}
 _compute_lock = __import__("threading").Lock()
 
