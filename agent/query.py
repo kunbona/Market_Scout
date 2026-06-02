@@ -45,6 +45,71 @@ def is_trade_date(d=None) -> bool:
     return d in cal["trade_date"].values
 
 
+def get_market_session(now=None) -> dict:
+    """
+    返回当前市场时段信息，供任何模块使用。
+
+    返回字段：
+      is_trade_day    — 今天是否交易日（AKShare 日历）
+      is_trading_time — 现在是否在连续竞价/集合竞价时间内
+      session         — 细粒度时段标签（见下表）
+      date            — 今天日期 YYYY-MM-DD
+      time            — 当前时间 HH:MM:SS
+
+    session 值：
+      pre_open      交易日 ~09:15，集合竞价未开始
+      call_auction  09:15~09:30，集合竞价申报撮合
+      morning       09:30~11:30，上午连续竞价
+      lunch_break   11:30~13:00，午休
+      afternoon     13:00~15:00，下午连续竞价
+      post_close    15:00~17:00，收盘后（龙虎榜未出）
+      evening       17:00~，盘后（龙虎榜/静态数据应就绪）
+      weekend       周末
+      holiday       节假日（AKShare 日历确认非交易日）
+    """
+    from datetime import datetime as _dt
+    if now is None:
+        now = _dt.now()
+
+    is_weekend = now.weekday() >= 5
+    try:
+        is_trade_day = is_trade_date(now.date())
+    except Exception:
+        is_trade_day = not is_weekend
+
+    total_min = now.hour * 60 + now.minute
+
+    if is_trade_day:
+        if total_min < 9 * 60 + 15:
+            session = "pre_open"
+        elif total_min < 9 * 60 + 30:
+            session = "call_auction"
+        elif total_min < 11 * 60 + 30:
+            session = "morning"
+        elif total_min < 13 * 60:
+            session = "lunch_break"
+        elif total_min < 15 * 60:
+            session = "afternoon"
+        elif total_min < 17 * 60:
+            session = "post_close"
+        else:
+            session = "evening"
+    elif is_weekend:
+        session = "weekend"
+    else:
+        session = "holiday"
+
+    is_trading_time = session in ("call_auction", "morning", "afternoon")
+
+    return {
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "is_trade_day": is_trade_day,
+        "is_trading_time": is_trading_time,
+        "session": session,
+    }
+
+
 def cmd_data_health(args):
     """
     数据健康检查（Pre-flight hook）。
@@ -105,28 +170,11 @@ def cmd_data_health(args):
         advance_decline_date, _ = _latest_date("advance_decline")
         lianzban_date, lianzban_count = _latest_date("lianzban_chain")
 
-    # ── 盘期判断（用 AKShare 交易日历确认，不依赖 zt_pool 是否有数据）
-    is_weekend = now.weekday() >= 5
-    try:
-        is_trade_day = is_trade_date(now.date())
-    except Exception:
-        # AKShare 异常时 fallback：周一至周五视为交易日（节假日会误判，可接受）
-        is_trade_day = not is_weekend
-    is_pre_market = is_trade_day and (now_h * 60 + now.minute < 9 * 60 + 15)
-    # 细粒度盘期标签，供 agent 决策
-    if is_trade_day:
-        if now_h < 9 or (now_h == 9 and now.minute < 15):
-            session = "pre_open"          # 交易日 09:15 前，集合竞价尚未开始
-        elif now_h < 15 or (now_h == 15 and now.minute == 0):
-            session = "intraday"          # 盘中
-        elif now_h < 17:
-            session = "post_close"        # 收盘后 ~ 17:00
-        else:
-            session = "evening"           # 17:00 以后（龙虎榜/本地数据应已就绪）
-    elif is_weekend:
-        session = "weekend"               # 周末
-    else:
-        session = "holiday"               # 非交易日（节假日），AKShare 日历确认
+    # ── 盘期判断（复用 get_market_session）
+    mkt = get_market_session(now)
+    is_trade_day = mkt["is_trade_day"]
+    is_trading_time = mkt["is_trading_time"]
+    session = mkt["session"]
 
     status["realtime"] = {
         "zt_pool":        {"latest_date": zt_date, "count": zt_count, "fresh": zt_date == today},
@@ -136,7 +184,7 @@ def cmd_data_health(args):
         "lhb_data":       {
             "latest_date": lhb_date, "count": lhb_count,
             "fresh": lhb_date == today,
-            "note": "17:30后才有，盘中为空属正常" if now_h < 17 else ("已出榜" if lhb_date == today else "盘后仍为空，可能抓取失败"),
+            "note": "17:30后才有，盘中为空属正常" if session not in ("evening",) else ("已出榜" if lhb_date == today else "盘后仍为空，可能抓取失败"),
         },
         "northbound":     {"latest_time": northbound_ts, "fresh": bool(northbound_ts and northbound_ts[:10] == today)},
     }
@@ -205,19 +253,28 @@ def cmd_data_health(args):
             "此时应基于昨日静态数据 + 今日新闻做前瞻判断，"
             "重点关注催化剂质量和昨日情绪延续性，结论中注明'盘前预判'。"
         ),
-        "intraday": (
-            "当前为盘中时段。"
+        "call_auction": (
+            "当前为集合竞价（09:15–09:30）。实时数据刚开始采集，zt_pool 可能尚无数据。"
+            "以昨日静态数据为主，结合今日新闻/竞价委比做开盘前判断，结论注明'竞价阶段预判'。"
+        ),
+        "morning": (
+            "当前为上午连续竞价（09:30–11:30）。实时数据持续更新。"
             "若 static 数据 stale 使用 fallback_hints 降级推算；"
             "若 static 数据 fresh，以 static 为主、realtime 交叉验证。"
         ),
+        "lunch_break": (
+            "当前为午休（11:30–13:00）。上午行情已定格，下午尚未开盘。"
+            "可基于上午涨停池/资金流做半日复盘，结论注明'午盘快照'。"
+        ),
+        "afternoon": (
+            "当前为下午连续竞价（13:00–15:00）。实时数据持续更新，逻辑同 morning。"
+        ),
         "post_close": (
-            "当前为收盘后（15:00–17:00）。"
-            "龙虎榜尚未发布（17:30 后才有），个股评级置信度受限，"
-            "data_gaps 中标注'龙虎榜待出'。"
+            "当前为收盘后（15:00–17:00）。龙虎榜尚未发布（17:30 后才有），"
+            "个股评级置信度受限，data_gaps 中标注'龙虎榜待出'。"
         ),
         "evening": (
-            "当前为盘后时段（17:00 后）。"
-            "龙虎榜应已发布；若 lhb_data.fresh=false 说明抓取失败，需标注。"
+            "当前为盘后时段（17:00+）。龙虎榜应已发布；若 lhb_data.fresh=false 说明抓取失败，需标注。"
             "静态数据应已由 daily_compute 更新；若仍 stale 说明 QUANT_DATA_ROOT 未配置，"
             "使用 fallback_hints 降级推算。"
         ),
@@ -240,7 +297,7 @@ def cmd_data_health(args):
         "today": today,
         "session": session,
         "is_trade_day": is_trade_day,
-        "is_weekend": is_weekend,
+        "is_trading_time": is_trading_time,
         "realtime_data_status": status["realtime"],
         "static_data_status": status["static"],
         "conflicts": conflicts,

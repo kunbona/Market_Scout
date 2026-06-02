@@ -81,6 +81,14 @@ DIST = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
 app = Flask(__name__, static_folder=DIST, static_url_path="")
 CORS(app)
 
+# research_board 模块（可插拔）
+try:
+    from research_board.blueprint import rb_bp
+    app.register_blueprint(rb_bp)
+except Exception as _rb_err:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(f"[research_board] 加载失败，已跳过: {_rb_err}")
+
 
 # ---------------------------------------------------------------------------
 # Frontend (SPA)
@@ -712,10 +720,8 @@ def api_advance_decline():
 @app.route("/api/trade-calendar/today")
 def api_trade_calendar_today():
     try:
-        from datetime import date
-        from agent.query import is_trade_date
-        today = date.today()
-        return _ok({"date": today.strftime("%Y-%m-%d"), "is_trade_day": is_trade_date(today)})
+        from agent.query import get_market_session
+        return _ok(get_market_session())
     except Exception as exc:
         return _err(exc)
 
