@@ -95,11 +95,16 @@ def cmd_data_health(args):
         advance_decline_date, _ = _latest_date("advance_decline")
         lianzban_date, lianzban_count = _latest_date("lianzban_chain")
 
-    # ── 盘期判断
-    is_weekend = now.weekday() >= 5          # 周六=5, 周日=6
-    is_trade_day = (zt_date == today and zt_count > 0)  # zt_pool 有今日数据 = 确认交易日
-    # 盘前窗口定义为工作日 06:00–09:29（daily_compute 尚未完成，zt_pool 还没今日数据属正常）
-    is_pre_market = (not is_weekend) and (not is_trade_day) and (now_h * 60 + now.minute < 9 * 60 + 30)
+    # ── 盘期判断（用 AKShare 交易日历确认，不依赖 zt_pool 是否有数据）
+    is_weekend = now.weekday() >= 5
+    try:
+        import akshare as ak
+        cal = ak.tool_trade_date_hist_sina()
+        is_trade_day = today in cal["trade_date"].astype(str).values
+    except Exception:
+        # AKShare 异常时 fallback：周一至周五视为交易日（节假日会误判，可接受）
+        is_trade_day = not is_weekend
+    is_pre_market = is_trade_day and (now_h * 60 + now.minute < 9 * 60 + 30)
     # 细粒度盘期标签，供 agent 决策
     if is_trade_day:
         if now_h < 9 or (now_h == 9 and now.minute < 15):
@@ -110,12 +115,10 @@ def cmd_data_health(args):
             session = "post_close"        # 收盘后 ~ 17:00
         else:
             session = "evening"           # 17:00 以后（龙虎榜/本地数据应已就绪）
-    elif is_pre_market:
-        session = "pre_market"            # 工作日盘前，静态数据是昨天属正常
     elif is_weekend:
         session = "weekend"               # 周末
     else:
-        session = "unknown"               # 无法从本地数据判断，需 agent 联网核实
+        session = "holiday"               # 非交易日（节假日），AKShare 日历确认
 
     status["realtime"] = {
         "zt_pool":        {"latest_date": zt_date, "count": zt_count, "fresh": zt_date == today},
@@ -157,16 +160,9 @@ def cmd_data_health(args):
             f"板块密度分析需切换到实时降级推算。"
         )
 
-    if session == "unknown":
-        conflicts.append(
-            f"【需要联网确认】今天是工作日（{today}），zt_pool 无今日数据且超出盘前时间窗口。"
-            f"原因未知：可能是节假日休市、盘后次日、或抓取故障。"
-            f"请联网搜索今日 A 股是否正常开盘，禁止凭猜测判断为节假日。"
-        )
-
     if is_weekend and is_trade_day:
-        # 节假日补班：周末有数据属特殊情况，提示而非冲突
-        conflicts.append("【提示】当前是周末但zt_pool有今日数据，可能是节假日补班交易日，请注意。")
+        # 节假日补班：周末有数据属特殊情况
+        conflicts.append("【提示】日历确认今日为交易日但当前是周末，为节假日补班交易日，请注意。")
 
     # ── 降级提示：静态数据不可用时如何用实时数据替代
     if not status["static"]["market_emotion"]["fresh"] and is_trade_day:
@@ -224,10 +220,10 @@ def cmd_data_health(args):
             "当前为周末。无实时交易数据，只能基于新闻/历史静态数据做下周前瞻判断，"
             "结论中明确标注'周末前瞻，数据截至上周五收盘'。"
         ),
-        "unknown": (
-            "本地无法判断今日是否为 A 股交易日（zt_pool 无今日数据，且不在已知的盘前/周末窗口）。"
-            "请联网搜索确认今天的市场状态，再决定分析路径。"
-            "你随时可以联网——这不是特殊情况下的备选，而是正常分析工具的一部分。"
+        "holiday": (
+            "当前为节假日（AKShare 交易日历确认非交易日）。"
+            "无实时交易数据，只能基于新闻/历史静态数据做节后前瞻判断，"
+            "结论中明确标注'节假日前瞻，数据截至节前最后交易日收盘'。"
         ),
     }
 

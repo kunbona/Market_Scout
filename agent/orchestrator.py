@@ -167,8 +167,8 @@ def _check_data_gate(run_id: str, run_type: str) -> bool:
       （gap_days <= 3，容忍周末和节假日的正常滞后）
 
     不满足条件（返回 False，直接 abort）：
-    - 实时数据：session = "unknown" 且 is_trade_day = false（既不是交易日也不是已知非交易时段）
-      → 说明数据抓取可能故障，不应消耗 token
+    - 交易日但 emotion_gap > 7（静态数据超过一周没更新）
+      → 说明 QUANT_DATA_ROOT 未配置或路径错误，分析会严重缺失上下文
     - 静态数据：market_emotion 的 gap_days > 7（静态数据超过一周没更新）
       → 说明 QUANT_DATA_ROOT 未配置或路径错误，分析会严重缺失上下文
     """
@@ -190,22 +190,16 @@ def _check_data_gate(run_id: str, run_type: str) -> bool:
     static_status = health.get("static_data_status", {})
     emotion_gap = static_status.get("market_emotion", {}).get("gap_days")
 
-    # 非交易时段前瞻分析，允许
-    if session in ("pre_market", "weekend", "pre_open"):
+    # 非交易时段（盘前/周末/节假日），允许前瞻分析
+    if session in ("pre_market", "pre_open", "weekend", "holiday"):
         return True
 
-    # 交易日但数据正常，允许
+    # 交易日：检查静态数据是否过于陈旧（>7天说明 QUANT_DATA_ROOT 未配置）
     if is_trade_day:
-        # 检查静态数据是否过于陈旧（>7天说明根本没配置）
         if emotion_gap is not None and emotion_gap > 7:
             _write_abort_summary(run_type, f"静态数据 market_emotion 已超过 {emotion_gap} 天未更新，QUANT_DATA_ROOT 可能未配置")
             return False
         return True
-
-    # session=unknown 且非交易日 → 数据状态不明，abort
-    if session == "unknown":
-        _write_abort_summary(run_type, "无法确认今日市场状态（zt_pool 无今日数据，session=unknown），跳过分析避免浪费 token")
-        return False
 
     return True
 
