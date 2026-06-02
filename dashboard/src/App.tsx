@@ -9,6 +9,7 @@ import { ResearchPage } from './pages/ResearchPage';
 import { MarketRealtimePage } from './pages/MarketRealtimePage';
 import { MarketSentimentPage } from './pages/MarketSentimentPage';
 import { AgentPage } from './pages/AgentPage';
+import { ResearchBoardPage } from './pages/ResearchBoardPage';
 import { useSettings } from './lib/useSettings';
 
 import type { AppSettings } from './lib/useSettings';
@@ -432,13 +433,37 @@ function SettingsPage({ settings, onUpdate }: {
   );
 }
 
-type TabId = 'news' | 'policy' | 'market' | 'research' | 'ai-analysis' | 'settings';
+type TabId = 'news' | 'policy' | 'market' | 'research' | 'ai-analysis' | 'research-board' | 'settings';
+
+interface DataAlert {
+  level: 'error' | 'warning';
+  code: string;
+  message: string;
+}
 
 export default function App() {
   const { settings, update: updateSettings } = useSettings();
   const [activeTab, setActiveTab] = useState<TabId>(() => settings.defaultTab as TabId);
   const [marketTab, setMarketTab] = useState(() => settings.defaultMarketTab);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [dataAlerts, setDataAlerts] = useState<DataAlert[]>([]);
+  const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const fetchAlerts = () => {
+      fetch('/api/data-health')
+        .then(r => r.json())
+        .then(j => {
+          if (j.success && Array.isArray(j.data?.data_alerts)) {
+            setDataAlerts(j.data.data_alerts);
+          }
+        })
+        .catch(() => {});
+    };
+    fetchAlerts();
+    const id = setInterval(fetchAlerts, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const renderPage = () => {
     switch (activeTab) {
@@ -471,6 +496,8 @@ export default function App() {
         return <ResearchPage />;
       case 'ai-analysis':
         return <AgentPage />;
+      case 'research-board':
+        return <ResearchBoardPage />;
       case 'settings':
         return <SettingsPage settings={settings} onUpdate={updateSettings} />;
     }
@@ -485,9 +512,36 @@ export default function App() {
         跳至主内容
       </a>
       <Sidebar activeTab={activeTab} setActiveTab={(tab) => setActiveTab(tab as TabId)} />
-      <main id="main-content" className="flex-1 overflow-y-auto relative z-10">
-        <div key={activeTab} className="p-8 page-enter">
-          {renderPage()}
+      <main id="main-content" className="flex-1 overflow-hidden relative z-10 flex flex-col">
+        {dataAlerts.filter(a => !dismissedAlerts.has(a.code)).map(alert => (
+          <div
+            key={alert.code}
+            className={`flex items-start gap-3 px-5 py-3 text-sm shrink-0 ${
+              alert.level === 'error'
+                ? 'bg-red-50 border-b border-red-200 text-red-800'
+                : 'bg-amber-50 border-b border-amber-200 text-amber-800'
+            }`}
+          >
+            <span className="mt-0.5 shrink-0">{alert.level === 'error' ? '⚠' : '!'}</span>
+            <span className="flex-1">{alert.message}</span>
+            <button
+              onClick={() => setDismissedAlerts(prev => new Set([...prev, alert.code]))}
+              className="shrink-0 opacity-50 hover:opacity-100 text-base leading-none"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+        <div className="flex-1 overflow-hidden">
+          {activeTab === 'research-board' ? (
+            <div key={activeTab} className="h-full page-enter">
+              {renderPage()}
+            </div>
+          ) : (
+            <div key={activeTab} className="p-8 page-enter overflow-y-auto h-full">
+              {renderPage()}
+            </div>
+          )}
         </div>
       </main>
     </div>
