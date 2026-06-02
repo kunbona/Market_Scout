@@ -58,7 +58,7 @@ python agent/query.py f10 --codes 300XXX,600XXX
 
 读 `emotion.json`，区分两种情况：
 
-- `should_proceed = false` 且 `data_source = "no_trade_day"`（静态数据也没有）→ 直接输出观望，跳过后续步骤
+- `should_proceed = false` 且 `data_source = "unknown"`（静态数据也没有）→ 直接输出观望，跳过后续步骤
 - `should_proceed = false` 且 `market_mode = "不操作"`（情绪判断差）→ 直接输出观望，跳过后续步骤
 - `should_proceed = true` 且 `data_source = "static_last_trade_day"`（非交易日前瞻模式）→ **继续分析**，但所有结论必须标注"下一交易日前瞻，数据截至上一交易日"，候选股档位整体降一格（T0→T1，因为无法确认明日能买到），不输出 T0
 

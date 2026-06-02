@@ -26,7 +26,7 @@ cat /tmp/mra-${MRA_RUN_ID}/data_health.json
 {"no_opportunity": true, "note": "sector分析未完成，无法做子链发现"}
 ```
 
-不要自行猜测今天的主线是什么。
+如果 `sector.json` 内容不够具体（非交易日前瞻、或板块叙事师数据不足），可以联网搜索验证主线方向和子链结构——但候选代码必须来自后续数据查询，不能凭记忆生成。
 
 ---
 

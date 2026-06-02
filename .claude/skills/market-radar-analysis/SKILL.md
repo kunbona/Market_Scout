@@ -112,13 +112,13 @@ cat /tmp/mra-${MRA_RUN_ID}/data_health.json
 ---
 
 **第一步：感知市场温度**  
-先查 `market_emotion`（若 fresh）或使用 Step 0 fallback 推算，读懂今天有没有赚钱效应。参考 `references/risk_agent.md` 中的判断框架。如果市场明显不适合操作，简短说明原因后直接写入结论。
+先查 `market_emotion`（若 fresh）或使用 Step 0 fallback 推算，读懂今天有没有赚钱效应。判断核心：涨停封得住吗？前日买的人今天还在赚吗？有没有龙头在带节奏？三件事同时成立才是真正的赚钱效应。如果市场明显不适合操作，简短说明原因后直接写入结论。
 
 **第二步：找到最有叙事潜力的板块**  
-查 `sector_zt_density`（若 fresh）+ `sector_flow_accel` + `news`，按 `references/sector_agent.md` 的方式读懂"市场在押注什么故事"。最多 3 个，宁少勿滥。若 `sector_zt_density` 不可用，从 `zt_pool` 按 `sector` 字段分组统计代替，结论中标注。
+查 `sector_zt_density`（若 fresh）+ `sector_flow_accel` + `news`，判断"市场在押注什么故事、处于哪个阶段"。最多 3 个，宁少勿滥。觉得某个板块逻辑不清楚，直接联网搜索产业链背景。若 `sector_zt_density` 不可用，从 `zt_pool` 按 `sector` 字段分组统计代替，结论中标注。
 
 **第三步：锁定龙头候选**  
-查 `zt_pool` + `lianzban_chain` + `lhb` + `volume_breakout` + `f10`，按 `references/stock_agent.md` 的方式识别哪只股票最像这个故事的主角。输出 T0-T3 名单。
+查 `zt_pool` + `lianzban_chain` + `lhb` + `volume_breakout` + `f10`，识别哪只股票最像这个故事的主角——优先找定价缺口内量价刚启动的，而非只看谁已经涨停。需要验证某只股票的基本面或公告，直接搜索。输出 T0-T3 名单。
 
 **第四步：按需补充**  
 如果叙事逻辑不清晰，可以再查 `policy_news` 或补查 `news`。

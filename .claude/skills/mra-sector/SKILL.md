@@ -34,9 +34,14 @@ cat /tmp/mra-${MRA_RUN_ID}/data_health.json
   ```
   从 `zt_pool` 统计：对 `sector` 字段分组，出现次数最多的板块视为主线候选。无法计算精确密度，在 `evidence` 中标注"基于 zt_pool 统计，sector_zt_density 不可用"。
 
-- **`is_trade_day = false`**：无实时数据，只能做前瞻性叙事描述，不输出具体密度数字。
+- **`is_trade_day = false`**：读上一交易日的静态数据做前瞻判断：
+  ```bash
+  python agent/query.py sector_zt_density
+  python agent/query.py sector_flow_accel
+  ```
+  基于上一交易日的板块密度和资金流判断主线延续性。可联网搜索节假日期间有无新政策/产业催化剂。在 `evidence` 中标注"数据截至上一交易日，以下为前瞻判断"。
 
-新闻数据由新闻舆情师单独分析，你不查新闻。
+新闻数据由新闻舆情师单独分析，你不查新闻。需要理解某个板块的产业链背景时，可以直接联网搜索，这不属于"查新闻"。
 
 ---
 

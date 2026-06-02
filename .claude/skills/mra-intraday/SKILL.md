@@ -18,7 +18,8 @@ description: 盘中快速汇总 — 读取情绪/新闻/动量3份结果，输�
 ```bash
 cat /tmp/mra-{RUN_ID}/emotion.json
 cat /tmp/mra-{RUN_ID}/news.json
-cat /tmp/mra-{RUN_ID}/momentum.json
+python agent/query.py zt_pool
+python agent/query.py volume_breakout
 ```
 
 再读取今天早盘完整报告（用于对比主线是否在验证）：
