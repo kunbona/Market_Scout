@@ -709,6 +709,17 @@ def api_advance_decline():
         return _err(exc)
 
 
+@app.route("/api/trade-calendar/today")
+def api_trade_calendar_today():
+    try:
+        from datetime import date
+        from agent.query import is_trade_date
+        today = date.today()
+        return _ok({"date": today.strftime("%Y-%m-%d"), "is_trade_day": is_trade_date(today)})
+    except Exception as exc:
+        return _err(exc)
+
+
 _compute_state: dict = {"status": "idle", "progress": [], "trade_date": "", "results": []}
 _compute_lock = __import__("threading").Lock()
 

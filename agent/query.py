@@ -35,6 +35,16 @@ def _out(data):
     print(json.dumps(data, ensure_ascii=False, default=str))
 
 
+def is_trade_date(d=None) -> bool:
+    """查询指定日期（默认今天）是否为 A 股交易日，使用 AKShare 日历。"""
+    import akshare as ak
+    from datetime import date
+    if d is None:
+        d = date.today()
+    cal = ak.tool_trade_date_hist_sina()
+    return d in cal["trade_date"].values
+
+
 def cmd_data_health(args):
     """
     数据健康检查（Pre-flight hook）。
@@ -98,10 +108,7 @@ def cmd_data_health(args):
     # ── 盘期判断（用 AKShare 交易日历确认，不依赖 zt_pool 是否有数据）
     is_weekend = now.weekday() >= 5
     try:
-        import akshare as ak
-        cal = ak.tool_trade_date_hist_sina()
-        today_date = now.date()
-        is_trade_day = today_date in cal["trade_date"].values
+        is_trade_day = is_trade_date(now.date())
     except Exception:
         # AKShare 异常时 fallback：周一至周五视为交易日（节假日会误判，可接受）
         is_trade_day = not is_weekend
