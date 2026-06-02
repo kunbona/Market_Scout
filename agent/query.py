@@ -100,15 +100,16 @@ def cmd_data_health(args):
     try:
         import akshare as ak
         cal = ak.tool_trade_date_hist_sina()
-        is_trade_day = today in cal["trade_date"].astype(str).values
+        today_date = now.date()
+        is_trade_day = today_date in cal["trade_date"].values
     except Exception:
         # AKShare 异常时 fallback：周一至周五视为交易日（节假日会误判，可接受）
         is_trade_day = not is_weekend
-    is_pre_market = is_trade_day and (now_h * 60 + now.minute < 9 * 60 + 30)
+    is_pre_market = is_trade_day and (now_h * 60 + now.minute < 9 * 60 + 15)
     # 细粒度盘期标签，供 agent 决策
     if is_trade_day:
         if now_h < 9 or (now_h == 9 and now.minute < 15):
-            session = "pre_open"          # 交易日但还没到集合竞价（极罕见）
+            session = "pre_open"          # 交易日 09:15 前，集合竞价尚未开始
         elif now_h < 15 or (now_h == 15 and now.minute == 0):
             session = "intraday"          # 盘中
         elif now_h < 17:
@@ -191,9 +192,9 @@ def cmd_data_health(args):
 
     SESSION_INSTRUCTIONS = {
         "pre_market": (
-            "当前为盘前时段（工作日 06:00–09:30）。"
+            "当前为盘前时段（工作日 06:00–09:15）。"
             "静态数据（market_emotion/sector_zt_density）显示昨日日期属正常——"
-            "daily_compute 尚未运行，数据将在 09:30 后刷新。"
+            "daily_compute 尚未运行，数据将在集合竞价后刷新。"
             "此时应基于昨日静态数据 + 今日新闻做前瞻判断，"
             "重点关注催化剂质量和昨日情绪延续性，结论中注明'盘前预判'。"
         ),
@@ -214,7 +215,7 @@ def cmd_data_health(args):
             "使用 fallback_hints 降级推算。"
         ),
         "pre_open": (
-            "当前为交易日开盘前极早时段。静态数据显示昨日日期属正常，处理方式同 pre_market。"
+            "当前为交易日集合竞价前（09:15 前）。静态数据显示昨日日期属正常，处理方式同 pre_market。"
         ),
         "weekend": (
             "当前为周末。无实时交易数据，只能基于新闻/历史静态数据做下周前瞻判断，"
