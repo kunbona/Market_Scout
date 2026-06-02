@@ -20,7 +20,7 @@ import { TabHeader } from '../components/TabHeader';
 
 interface AgentStatus {
   running: boolean;
-  phase: 'analysts' | 'debate' | 'chief' | null;
+  phase: 'analysts' | 'chief' | null;
   phase_detail: string | null;
   last_run: string | null;
   last_run_type: string | null;
@@ -39,10 +39,10 @@ interface MarketStatus {
   reason: string;
 }
 
-interface DebateSummary {
-  bull_confidence: '高' | '中' | '低';
-  bear_confidence: '高' | '中' | '低';
+interface VerdictSummary {
   verdict: string;
+  bull_signals: string[];
+  bear_signals: string[];
   key_tension: string;
 }
 
@@ -81,8 +81,9 @@ interface FullReport {
   run_type: 'evening' | 'morning';
   run_time: string;
   summary_time?: string;
+  core_narrative?: string;
   market_status: MarketStatus;
-  debate_summary: DebateSummary;
+  verdict_summary?: VerdictSummary;
   main_theme: MainTheme;
   candidates: Candidates;
   summary_text: string;
@@ -152,17 +153,6 @@ const CONFIDENCE_STYLE: Record<string, { bg: string; text: string }> = {
   低: { bg: 'bg-gray-100', text: 'text-gray-500' },
 };
 
-const CONFIDENCE_BULL_STYLE: Record<string, string> = {
-  高: 'bg-red-500',
-  中: 'bg-red-300',
-  低: 'bg-red-100',
-};
-
-const CONFIDENCE_BEAR_STYLE: Record<string, string> = {
-  高: 'bg-green-600',
-  中: 'bg-green-400',
-  低: 'bg-green-100',
-};
 
 function Badge({ text, style }: { text: string; style?: { bg: string; text: string } }) {
   const s = style ?? { bg: 'bg-gray-100', text: 'text-gray-500' };
@@ -175,9 +165,8 @@ function Badge({ text, style }: { text: string; style?: { bg: string; text: stri
 
 // ─── Phase Progress Bar ───────────────────────────────────────────────────────
 
-const PHASES: Array<{ key: 'analysts' | 'debate' | 'chief'; label: string; icon: React.ElementType }> = [
+const PHASES: Array<{ key: 'analysts' | 'chief'; label: string; icon: React.ElementType }> = [
   { key: 'analysts', label: '分析师', icon: Users },
-  { key: 'debate',   label: '辩论',   icon: TrendingUp },
   { key: 'chief',    label: '裁决',   icon: Brain },
 ];
 
@@ -351,42 +340,60 @@ function MarketStatusCard({ ms }: { ms: MarketStatus }) {
   );
 }
 
-// ─── Debate Summary Card ──────────────────────────────────────────────────────
+// ─── Verdict Summary Card ─────────────────────────────────────────────────────
 
-function DebateCard({ d }: { d: DebateSummary }) {
+function VerdictCard({ d }: { d: VerdictSummary }) {
+  const verdictStyle: Record<string, { bg: string; text: string }> = {
+    偏多: { bg: 'bg-red-50', text: 'text-red-700' },
+    偏空: { bg: 'bg-green-50', text: 'text-green-700' },
+    中性: { bg: 'bg-amber-50', text: 'text-amber-700' },
+    观望: { bg: 'bg-gray-100', text: 'text-gray-600' },
+  };
+  const vs = verdictStyle[d.verdict] ?? { bg: 'bg-gray-100', text: 'text-gray-600' };
+
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
       <div className="flex items-center gap-2 mb-4">
-        <Users className="w-4 h-4 text-gray-400" />
-        <h3 className="text-sm font-semibold text-gray-800">多空辩论</h3>
-        <span className="ml-auto text-xs font-semibold px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-700">
+        <TrendingUp className="w-4 h-4 text-gray-400" />
+        <h3 className="text-sm font-semibold text-gray-800">多空裁决</h3>
+        <span className={`ml-auto text-xs font-semibold px-2.5 py-1 rounded-lg ${vs.bg} ${vs.text}`}>
           {d.verdict}
         </span>
       </div>
 
-      <div className="flex gap-3 mb-4">
-        <div className="flex-1">
-          <div className="text-xs text-gray-400 mb-1.5 flex items-center gap-1">
-            <TrendingUp className="w-3 h-3 text-red-400" />
-            多方信心
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        {d.bull_signals?.length > 0 && (
+          <div className="bg-red-50 rounded-xl p-3">
+            <div className="text-xs text-red-400 mb-2 font-medium flex items-center gap-1">
+              <TrendingUp className="w-3 h-3" /> 做多信号
+            </div>
+            <ul className="space-y-1">
+              {d.bull_signals.map((s, i) => (
+                <li key={i} className="text-xs text-red-800 leading-relaxed">· {s}</li>
+              ))}
+            </ul>
           </div>
-          <div className={`h-2 rounded-full ${CONFIDENCE_BULL_STYLE[d.bull_confidence] ?? 'bg-gray-200'}`} />
-          <div className="text-xs font-semibold text-red-600 mt-1">{d.bull_confidence}</div>
-        </div>
-        <div className="flex-1">
-          <div className="text-xs text-gray-400 mb-1.5 flex items-center gap-1">
-            <TrendingDown className="w-3 h-3 text-green-500" />
-            空方信心
+        )}
+        {d.bear_signals?.length > 0 && (
+          <div className="bg-green-50 rounded-xl p-3">
+            <div className="text-xs text-green-500 mb-2 font-medium flex items-center gap-1">
+              <TrendingDown className="w-3 h-3" /> 观望信号
+            </div>
+            <ul className="space-y-1">
+              {d.bear_signals.map((s, i) => (
+                <li key={i} className="text-xs text-green-900 leading-relaxed">· {s}</li>
+              ))}
+            </ul>
           </div>
-          <div className={`h-2 rounded-full ${CONFIDENCE_BEAR_STYLE[d.bear_confidence] ?? 'bg-gray-200'}`} />
-          <div className="text-xs font-semibold text-green-600 mt-1">{d.bear_confidence}</div>
-        </div>
+        )}
       </div>
 
-      <div className="bg-indigo-50 rounded-xl px-4 py-3">
-        <div className="text-xs text-indigo-400 mb-1 font-medium">核心分歧</div>
-        <p className="text-sm text-indigo-900 leading-relaxed">{d.key_tension}</p>
-      </div>
+      {d.key_tension && (
+        <div className="bg-indigo-50 rounded-xl px-4 py-3">
+          <div className="text-xs text-indigo-400 mb-1 font-medium">核心分歧</div>
+          <p className="text-sm text-indigo-900 leading-relaxed">{d.key_tension}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -594,8 +601,14 @@ function FullReportView({ r }: { r: FullReport }) {
   };
   return (
     <div className="space-y-4">
+      {r.core_narrative && (
+        <div className="bg-indigo-600 rounded-2xl px-6 py-4 shadow-[var(--shadow-sm)]">
+          <div className="text-xs text-indigo-200 mb-1.5 font-medium">核心叙事</div>
+          <p className="text-sm text-white leading-relaxed font-medium">{r.core_narrative}</p>
+        </div>
+      )}
       {r.market_status && <MarketStatusCard ms={r.market_status} />}
-      {r.debate_summary && <DebateCard d={r.debate_summary} />}
+      {r.verdict_summary && <VerdictCard d={r.verdict_summary} />}
       <MainThemeCard t={safeTheme} />
       <CandidatesCard c={safeCandidates} />
       {r.summary_text && <SummaryCard text={r.summary_text} />}
