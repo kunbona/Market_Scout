@@ -98,7 +98,7 @@ def cmd_data_health(args):
     # ── 盘期判断
     is_weekend = now.weekday() >= 5          # 周六=5, 周日=6
     is_trade_day = (zt_date == today and zt_count > 0)  # zt_pool 有今日数据 = 确认交易日
-    # daily_compute 预计 09:30 前完成；盘前窗口定义为工作日 06:00–09:29
+    # 盘前窗口定义为工作日 06:00–09:29（daily_compute 尚未完成，zt_pool 还没今日数据属正常）
     is_pre_market = (not is_weekend) and (not is_trade_day) and (now_h * 60 + now.minute < 9 * 60 + 30)
     # 细粒度盘期标签，供 agent 决策
     if is_trade_day:
@@ -115,7 +115,7 @@ def cmd_data_health(args):
     elif is_weekend:
         session = "weekend"               # 周末
     else:
-        session = "holiday_or_no_data"    # 工作日但无实时数据（节假日休市或抓取异常）
+        session = "unknown"               # 无法从本地数据判断，需 agent 联网核实
 
     status["realtime"] = {
         "zt_pool":        {"latest_date": zt_date, "count": zt_count, "fresh": zt_date == today},
@@ -157,10 +157,11 @@ def cmd_data_health(args):
             f"板块密度分析需切换到实时降级推算。"
         )
 
-    if session == "holiday_or_no_data":
+    if session == "unknown":
         conflicts.append(
-            f"【注意】今天是工作日（{today}），收盘後zt_pool仍无今日数据，"
-            f"可能是节假日休市，或实时抓取未正常运行。"
+            f"【需要联网确认】今天是工作日（{today}），zt_pool 无今日数据且超出盘前时间窗口。"
+            f"原因未知：可能是节假日休市、盘后次日、或抓取故障。"
+            f"请联网搜索今日 A 股是否正常开盘，禁止凭猜测判断为节假日。"
         )
 
     if is_weekend and is_trade_day:
@@ -223,9 +224,10 @@ def cmd_data_health(args):
             "当前为周末。无实时交易数据，只能基于新闻/历史静态数据做下周前瞻判断，"
             "结论中明确标注'周末前瞻，数据截至上周五收盘'。"
         ),
-        "holiday_or_no_data": (
-            "工作日但无实时数据，可能是节假日休市或实时抓取故障。"
-            "只能基于历史静态数据和新闻做判断，结论中标注数据异常。"
+        "unknown": (
+            "本地无法判断今日是否为 A 股交易日（zt_pool 无今日数据，且不在已知的盘前/周末窗口）。"
+            "请联网搜索确认今天的市场状态，再决定分析路径。"
+            "你随时可以联网——这不是特殊情况下的备选，而是正常分析工具的一部分。"
         ),
     }
 
