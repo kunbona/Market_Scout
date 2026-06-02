@@ -262,7 +262,23 @@ def cmd_zt_pool(args):
     if not data:
         _out({"note": "今日涨停池为空，可能是非交易日或数据未采集", "data": []})
         return
-    _out(data)
+    # 字段规范化：将 stock_code/stock_name 映射为 code/name，供 agent 统一访问
+    normalized = []
+    for row in data:
+        normalized.append({
+            "code": row.get("stock_code", ""),
+            "name": row.get("stock_name", ""),
+            "zt_count": row.get("zt_count", 1),
+            "sector": row.get("sector", ""),
+            "seal_time": row.get("first_zt_time", ""),
+            "last_zt_time": row.get("last_zt_time", ""),
+            "seal_amount": row.get("seal_amount"),
+            "zb_count": row.get("zb_count", 0),
+            "turnover_rate": row.get("turnover_rate"),
+            "circ_mv": row.get("circ_mv"),
+            "trade_date": row.get("trade_date", ""),
+        })
+    _out(normalized)
 
 
 def cmd_sector_zt_density(args):
