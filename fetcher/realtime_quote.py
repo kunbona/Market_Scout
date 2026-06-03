@@ -11,6 +11,24 @@ from db.storage import insert_market_pulse
 
 logger = logging.getLogger(__name__)
 
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY = 5   # 秒
+
+
+def _ak_with_retry(fn, name: str):
+    """对 AKShare 调用加重试，处理远端偶发断连（RemoteDisconnected/ConnectionAborted）。"""
+    last_exc = None
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt < _RETRY_ATTEMPTS:
+                logger.warning("[realtime_quote] %s 失败（第%d次），%ds后重试: %s", name, attempt, _RETRY_DELAY, e)
+                time.sleep(_RETRY_DELAY)
+    logger.warning("[realtime_quote] %s 重试%d次后仍失败: %s", name, _RETRY_ATTEMPTS, last_exc)
+    return None
+
 
 def fetch_realtime_snapshot() -> None:
     """
@@ -23,7 +41,9 @@ def fetch_realtime_snapshot() -> None:
     zt_count = dt_count = zb_count = 0
     zt_dt_ratio = 0.0
     try:
-        df = ak.stock_zh_a_spot_em()
+        df = _ak_with_retry(ak.stock_zh_a_spot_em, "stock_zh_a_spot_em")
+        if df is None:
+            raise RuntimeError("重试耗尽，跳过本次快照")
         cols = df.columns.tolist()
         zt_price_col = next((c for c in cols if "涨停" in c and "价" in c), None)
         dt_price_col = next((c for c in cols if "跌停" in c and "价" in c), None)
@@ -49,7 +69,9 @@ def fetch_realtime_snapshot() -> None:
     real_zt = real_dt = advance = decline = None
     activity = None
     try:
-        legu_df = ak.stock_market_activity_legu()
+        legu_df = _ak_with_retry(ak.stock_market_activity_legu, "stock_market_activity_legu")
+        if legu_df is None:
+            raise RuntimeError("重试耗尽")
         legu    = dict(zip(legu_df["item"], legu_df["value"]))
         real_zt  = int(float(legu.get("真实涨停", 0) or 0))
         real_dt  = int(float(legu.get("真实跌停", 0) or 0))

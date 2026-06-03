@@ -74,7 +74,14 @@ def _guarded_fundamentals():
 
 
 def start_scheduler() -> None:
-    scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+    scheduler = BackgroundScheduler(
+        timezone="Asia/Shanghai",
+        job_defaults={
+            "misfire_grace_time": 60,   # 任务可延迟60秒执行，消除1秒卡顿引发的missed警告
+            "coalesce": True,           # 积压的同一任务只执行一次，不补跑
+            "max_instances": 1,         # 同一任务不并发
+        },
+    )
 
     scheduler.add_job(lambda: _auto_run("财联社快讯",  fetch_cls),        "interval", minutes=5)
     scheduler.add_job(lambda: _auto_run("财联社红电报", fetch_cls_red),    "interval", minutes=5)
