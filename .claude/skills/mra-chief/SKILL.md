@@ -237,3 +237,21 @@ python agent/write_result.py --run-type ${MRA_RUN_TYPE} --result '<JSON>'
 ```
 
 RUN_TYPE 从环境变量 `MRA_RUN_TYPE` 读取。
+
+---
+
+## 输出语言规范（write_result 前自检）
+
+所有**面向用户的文本字段**必须为中文，不得出现英文变量名或技术术语直接暴露：
+
+| 字段 | 要求 | 错误示例 | 正确示例 |
+|------|------|---------|---------|
+| `core_narrative` | 纯中文叙事 | "MA5 > MA20, density 8%" | "资金加速（均线上行），密度8%" |
+| `market_status.reason` | 纯中文 | "zb_rate 11%, zt_count 47" | "炸板率11%，涨停47家" |
+| `verdict_summary.bull_signals[]` | 引用数字但用中文描述 | "zb_rate < 30%" | "炸板率11%（低于30%警戒线）" |
+| `verdict_summary.key_tension` | 纯中文 | "sector density > 15%" | "主线密度触及15%过热区" |
+| `main_theme.sectors[].evidence` | 纯中文 | "heat_score=7.2, MA5>MA20" | "热度得分7.2，均线金叉加速" |
+| `candidates.T0[].evidence` | 纯中文 | "volume_breakout 2.3x" | "成交量较均量放大2.3倍" |
+| `summary_text` | 纯中文 | — | — |
+
+**JSON 的 key 名（如 `verdict`、`bull_signals`）保持英文**，这是机器间协议不需要翻译。只有 value 里的描述性文本必须中文。

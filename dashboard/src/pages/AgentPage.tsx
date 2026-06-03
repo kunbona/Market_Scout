@@ -48,7 +48,11 @@ interface VerdictSummary {
 
 interface Sector {
   name: string;
-  stage: '萌芽' | '爆发' | '退潮';
+  stage: '萌芽' | '爆发' | '退潮' | '数据不足';
+  heat_score?: number;
+  density?: string;
+  ma_signal?: string;
+  crowding_percentile?: string;
   evidence: string;
   risk: string;
   catalyst: string;
@@ -59,13 +63,20 @@ interface MainTheme {
   tomorrow_focus: string;
 }
 
+interface CandidateReasoning {
+  narrative_position?: string;
+  why_not_priced?: string;
+  validation?: string;
+  risk?: string;
+}
+
 interface Candidate {
   ticker: string;
   name: string;
   direction: string;
-  reasoning: Record<string, unknown>;
+  reasoning: CandidateReasoning;
   evidence: string;
-  risk_note: string;
+  risk_note?: string;   // 旧格式兼容
   confidence: '高' | '中' | '低';
   data_gaps: string[];
 }
@@ -134,17 +145,20 @@ const MODE_STYLE: Record<string, { bg: string; text: string }> = {
 };
 
 const EMOTION_STYLE: Record<string, { bg: string; text: string }> = {
-  冷淡: { bg: 'bg-gray-100', text: 'text-gray-500' },
+  冰点: { bg: 'bg-gray-100', text: 'text-gray-400' },
+  冷淡: { bg: 'bg-gray-100', text: 'text-gray-500' },   // 向后兼容旧数据
   启动: { bg: 'bg-blue-50', text: 'text-blue-600' },
   发酵: { bg: 'bg-amber-50', text: 'text-amber-600' },
   高潮: { bg: 'bg-red-50', text: 'text-red-600' },
+  分歧: { bg: 'bg-orange-50', text: 'text-orange-600' },
   退潮: { bg: 'bg-green-50', text: 'text-green-600' },
 };
 
 const STAGE_STYLE: Record<string, { bg: string; text: string; border: string }> = {
-  萌芽: { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-200' },
-  爆发: { bg: 'bg-red-50', text: 'text-red-600', border: 'border-red-200' },
-  退潮: { bg: 'bg-gray-50', text: 'text-gray-500', border: 'border-gray-200' },
+  萌芽:   { bg: 'bg-blue-50',   text: 'text-blue-600',  border: 'border-blue-200' },
+  爆发:   { bg: 'bg-red-50',    text: 'text-red-600',   border: 'border-red-200' },
+  退潮:   { bg: 'bg-gray-50',   text: 'text-gray-500',  border: 'border-gray-200' },
+  数据不足: { bg: 'bg-gray-50', text: 'text-gray-400',  border: 'border-gray-100' },
 };
 
 const CONFIDENCE_STYLE: Record<string, { bg: string; text: string }> = {
@@ -417,11 +431,30 @@ function MainThemeCard({ t }: { t: MainTheme }) {
             const ss = STAGE_STYLE[s.stage] ?? STAGE_STYLE['退潮'];
             return (
               <div key={i} className={`rounded-xl border p-4 ${ss.bg} ${ss.border}`}>
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <span className={`text-sm font-semibold ${ss.text}`}>{s.name}</span>
                   <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${ss.bg} ${ss.text} border ${ss.border}`}>
                     {s.stage}
                   </span>
+                  {s.heat_score != null && (
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-white/70 text-gray-600 border border-gray-200 font-mono">
+                      热度 {s.heat_score}
+                    </span>
+                  )}
+                  {s.density && (
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-white/70 text-gray-600 border border-gray-200 font-mono">
+                      密度 {s.density}
+                    </span>
+                  )}
+                  {s.ma_signal && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded border font-medium ${
+                      s.ma_signal.includes('加速') ? 'bg-red-50 text-red-500 border-red-200' :
+                      s.ma_signal.includes('减速') ? 'bg-green-50 text-green-500 border-green-200' :
+                      'bg-gray-50 text-gray-500 border-gray-200'
+                    }`}>
+                      {s.ma_signal}
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-gray-600 leading-relaxed mb-1">{s.evidence}</p>
                 {s.catalyst && (
@@ -519,10 +552,21 @@ function CandidatesCard({ c }: { c: Candidates }) {
                 {s.evidence && (
                   <p className="text-xs text-gray-600 leading-relaxed mb-2">{s.evidence}</p>
                 )}
-                {s.risk_note && (
+                {s.reasoning?.narrative_position && (
+                  <p className="text-xs text-indigo-600 leading-relaxed mb-1">
+                    叙事位置：{s.reasoning.narrative_position}
+                  </p>
+                )}
+                {s.reasoning?.why_not_priced && (
+                  <p className="text-xs text-amber-700 leading-relaxed mb-1">
+                    定价缺口：{s.reasoning.why_not_priced}
+                  </p>
+                )}
+                {/* 优先 reasoning.risk，向后兼容 risk_note */}
+                {(s.reasoning?.risk || s.risk_note) && (
                   <p className="text-xs text-red-400 leading-relaxed flex items-start gap-1">
                     <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
-                    {s.risk_note}
+                    {s.reasoning?.risk ?? s.risk_note}
                   </p>
                 )}
                 {(s.data_gaps ?? []).length > 0 && (
