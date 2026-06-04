@@ -5,8 +5,9 @@ research_board — 双层分析 Pipeline
   1. Claude（supervisor）读取研报摘要，拆解细分模块列表 + 动态扩展维度
   2. Kimi（executor，每维度独立）深研每个模块，输出白紫主题 ECharts HTML
   3. Claude 评审每个 HTML tab，不通过给修改意见，Kimi 重改（最多 MAX_REVIEW_ROUNDS 轮）
-  4. Claude 生成总览 tab（产业全景 / 核心指标 / BOM 成本面积图 / 产业里程碑）
-  5. 所有 tab 存入 rb_result.summary_json = {"tabs": [{"name": ..., "html": ...}]}
+  4. Claude 生成研究背景 tab（主题科普 / 研报数据来源 / 分析框架说明）
+  5. Claude 生成总览 tab（产业全景 / 核心指标 / BOM 成本面积图 / 产业里程碑）
+  6. 所有 tab 存入 rb_result.summary_json = {"tabs": [{"name": ..., "html": ...}]}
 
 Claude 走 ANTHROPIC_AUTH_TOKEN（OpenRouter 代理），model = ANTHROPIC_MODEL 或 claude-sonnet-4-6。
 Kimi 走 codex exec --profile research（已有 llm_runner._call_llm）。
@@ -449,7 +450,84 @@ def generate_tab_with_review(
     return html
 
 
-# ── Phase 4：Claude 生成总览 tab ───────────────────────────────────────────
+# ── Phase 4：Claude 生成研究背景 tab ─────────────────────────────────────────
+
+_INTRO_SYSTEM = """你是专业的A股投研助手，负责为投研看板生成"研究背景"介绍页。
+只输出完整 HTML 代码（<!DOCTYPE html> 到 </html>），不加任何说明文字。"""
+
+_INTRO_USER_TPL = """## 研究项目：{project_name}
+## 关键词：{keywords}
+## 分析维度：{dimensions_str}
+## 研报列表（共 {report_count} 篇）：
+{report_list}
+
+---
+生成"研究背景"介绍 HTML tab，包含以下模块，全部用白底紫色主题（--primary: #7c3aed）：
+
+**1. 主题科普（最重要）**
+用2-4段通俗语言解释研究主题是什么：定义、核心原理、在产业链中的位置、为什么重要。
+面向有一定金融背景但不懂技术细节的读者，避免过于学术。
+
+**2. 研报数据来源**
+以卡片或表格形式列出每篇研报：机构 | 分析师 | 发布日期 | 评级 | 标题（截短到30字）。
+表格样式参考标准，不要占位符。
+
+**3. 分析框架说明**
+简要说明本次分析覆盖的 {dim_count} 个维度分别聚焦什么问题，一行一句话。
+
+**技术要求**：
+- 使用以下 CSS 变量：
+{theme_css}
+- 引入 ECharts：`<script src="{echarts_cdn}"></script>`（如有图表需要）
+- 不得设置 body 或包裹容器的固定 height / max-height
+- 不得添加 position:fixed/sticky 的装饰层或侧边导航
+- 监听 tab-shown 消息执行 chart.resize()
+- 只输出 HTML 代码，不加任何说明
+"""
+
+
+def generate_intro_tab(
+    project_name: str,
+    keywords: list[str],
+    dimensions: list[str],
+    reports: list[dict],
+    progress_cb=None,
+) -> str:
+    """Claude 生成研究背景 tab（主题科普 + 研报列表 + 分析框架说明）。"""
+    def _log(msg: str):
+        logger.info(msg)
+        if progress_cb:
+            progress_cb(msg)
+
+    _log("Claude 正在生成研究背景介绍…")
+
+    # 构建研报列表文本
+    report_lines = []
+    for r in reports:
+        title = (r.get("title") or "")[:40]
+        org = r.get("org_name") or "—"
+        researcher = r.get("researcher") or "—"
+        pub_date = r.get("publish_date") or "—"
+        rating = r.get("rating") or "—"
+        report_lines.append(f"- 【{org}】{researcher} | {pub_date} | 评级:{rating} | {title}")
+
+    user_msg = _INTRO_USER_TPL.format(
+        project_name=project_name,
+        keywords="、".join(keywords) if keywords else project_name,
+        dimensions_str="、".join(dimensions),
+        dim_count=len(dimensions),
+        report_count=len(reports),
+        report_list="\n".join(report_lines) if report_lines else "（无研报数据）",
+        theme_css=THEME_CSS,
+        echarts_cdn=ECHARTS_CDN,
+    )
+
+    raw = _claude_call(_INTRO_SYSTEM, user_msg, max_tokens=6000)
+    html = _extract_html(raw)
+    return html if html and len(html) > 200 else "<p style='padding:20px;color:#d97706'>研究背景生成失败</p>"
+
+
+# ── Phase 5：Claude 生成总览 tab ───────────────────────────────────────────
 
 _OVERVIEW_SYSTEM = """你是顶级A股投研团队首席研究员，负责撰写投研看板的总览页。
 只输出完整 HTML 代码（<!DOCTYPE html> 到 </html>），不加任何说明。"""
@@ -585,7 +663,7 @@ def run_analysis(project_id: int) -> None:
             _log(f"识别到细分模块：{'、'.join(sub_modules)}")
         _log(f"将分析 {len(final_dimensions)} 个维度：{'、'.join(final_dimensions)}")
 
-        _set_progress(project_id, total_dimensions=len(final_dimensions) + 1)  # +1 总览
+        _set_progress(project_id, total_dimensions=len(final_dimensions) + 2)  # +2 研究背景+总览
 
         # Phase 2 & 3: 各维度 Kimi 生成 + Claude 评审（并发）
         _set_progress(project_id, phase="Kimi 深研 + Claude 评审")
@@ -626,8 +704,24 @@ def run_analysis(project_id: int) -> None:
             _log(f"产业全景总览生成失败（维度分析不受影响）：{ov_e}")
             overview_html = f"<p style='color:#d97706;padding:20px'>总览生成失败：{ov_e}</p>"
 
-        # 组装 tabs（总览在第一位）
-        tabs = [{"name": "产业全景", "html": overview_html}]
+        # Phase 5: Claude 生成研究背景 tab
+        _set_progress(project_id, phase="Claude 生成研究背景")
+        reports_meta = get_rb_reports(project_id)
+        keywords = project.get("keywords", [])
+        try:
+            intro_html = generate_intro_tab(
+                project_name, keywords, final_dimensions, reports_meta,
+                progress_cb=_log,
+            )
+        except Exception as intro_e:
+            _log(f"研究背景生成失败（不影响其他 tabs）：{intro_e}")
+            intro_html = f"<p style='color:#d97706;padding:20px'>研究背景生成失败：{intro_e}</p>"
+
+        # 组装 tabs：研究背景第一、产业全景第二、各维度依次排列
+        tabs = [
+            {"name": "研究背景", "html": intro_html},
+            {"name": "产业全景", "html": overview_html},
+        ]
         for dim in final_dimensions:
             tabs.append({"name": dim, "html": dim_htmls.get(dim, "")})
 
