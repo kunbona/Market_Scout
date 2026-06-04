@@ -475,39 +475,91 @@ def generate_tab_with_review(
 
 
 # ── Phase 4：Claude 生成研究背景 tab ─────────────────────────────────────────
+# 架构：Claude 只生成纯文字内容（主题科普 + 分析框架），Python 硬编码研报表格。
+# 原因：让 LLM 渲染表格会导致行数被截断（token 耗尽）或 echarts.init 缺失。
+# 表格直接由 Python 用真实数据生成，永远正确、永远完整。
 
-_INTRO_SYSTEM = """你是专业的A股投研助手，负责为投研看板生成"研究背景"介绍页。
-只输出完整 HTML 代码（<!DOCTYPE html> 到 </html>），不加任何说明文字。"""
+_INTRO_TEXT_SYSTEM = """你是专业的A股投研助手。用中文输出纯文本内容，不要 HTML 标签，不要 markdown 符号（**/#/- 等）。"""
 
-_INTRO_USER_TPL = """## 研究项目：{project_name}
-## 关键词：{keywords}
-## 分析维度：{dimensions_str}
-## 研报列表（共 {report_count} 篇）：
-{report_list}
+_INTRO_TEXT_TPL = """研究项目：{project_name}
+关键词：{keywords}
 
 ---
-生成"研究背景"介绍 HTML tab，包含以下模块，全部用白底紫色主题（--primary: #7c3aed）：
+请输出以下两段内容（纯文字，不加任何格式符号）：
 
-**1. 主题科普（最重要）**
-用2-4段通俗语言解释研究主题是什么：定义、核心原理、在产业链中的位置、为什么重要。
-面向有一定金融背景但不懂技术细节的读者，避免过于学术。
+【主题科普】
+用3-5段通俗语言解释"{project_name}"是什么：定义、核心原理/工艺、在产业链中的位置（上下游）、为什么对投资者重要。
+面向有金融背景但不懂技术细节的读者。每段50-80字。
 
-**2. 研报数据来源**
-以卡片或表格形式列出每篇研报：机构 | 分析师 | 发布日期 | 评级 | 标题（截短到30字）。
-表格样式参考标准，不要占位符。
-
-**3. 分析框架说明**
-简要说明本次分析覆盖的 {dim_count} 个维度分别聚焦什么问题，一行一句话。
-
-**技术要求**：
-- 使用以下 CSS 变量：
-{theme_css}
-- 引入 ECharts：`<script src="{echarts_cdn}"></script>`（如有图表需要）
-- 不得设置 body 或包裹容器的固定 height / max-height
-- 不得添加 position:fixed/sticky 的装饰层或侧边导航
-- 监听 tab-shown 消息执行 chart.resize()
-- 只输出 HTML 代码，不加任何说明
+【分析框架】
+本次分析覆盖 {dim_count} 个维度，请逐条说明每个维度聚焦什么核心问题（一行一条，格式："维度名：一句话说明"）：
+{dimensions_list}
 """
+
+# Rating badge color mapping
+_RATING_COLOR = {
+    "买入": "#16a34a", "强烈推荐": "#16a34a", "推荐": "#16a34a",
+    "增持": "#2563eb", "优于大市": "#2563eb", "跑赢行业": "#2563eb",
+    "持有": "#d97706", "中性": "#d97706", "观望": "#d97706",
+    "减持": "#dc2626", "卖出": "#dc2626",
+}
+
+
+def _render_report_table(reports: list[dict]) -> str:
+    """Python 硬编码渲染研报表格，不依赖 LLM，永远完整。"""
+    rows = []
+    for i, r in enumerate(reports, 1):
+        title = (r.get("title") or "").replace("<", "&lt;").replace(">", "&gt;")
+        org = (r.get("org_name") or "—").replace("<", "&lt;")
+        researcher = (r.get("researcher") or "—").replace("<", "&lt;")
+        pub_date = r.get("publish_date") or "—"
+        rating = (r.get("rating") or "").strip()
+        rating_color = _RATING_COLOR.get(rating, "#6b7280")
+        rating_html = (
+            f'<span style="display:inline-block;padding:1px 7px;border-radius:10px;'
+            f'background:{rating_color}22;color:{rating_color};'
+            f'border:1px solid {rating_color}55;font-size:10px;font-weight:700;">'
+            f'{rating or "—"}</span>'
+        ) if rating else "—"
+        rows.append(f"""      <tr>
+        <td style="color:var(--text-muted);font-size:11px;text-align:center;">{i:02d}</td>
+        <td><span style="background:var(--primary-muted);color:var(--primary);padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600;">{org}</span></td>
+        <td style="font-size:12px;color:var(--text-secondary);">{researcher}</td>
+        <td style="font-size:12px;color:var(--text-muted);">{pub_date}</td>
+        <td>{rating_html}</td>
+        <td style="font-size:12px;color:var(--text-primary);">{title}</td>
+      </tr>""")
+    return "\n".join(rows)
+
+
+def _render_dimension_list(dimensions: list[str], framework_text: str) -> str:
+    """将 Claude 输出的维度说明文字渲染为 HTML 列表项。"""
+    # Parse "维度名：说明" lines from framework_text
+    import re as _re2
+    parsed = {}
+    for line in framework_text.splitlines():
+        line = line.strip().lstrip("•·-–— 　")
+        m = _re2.match(r"^(.+?)[：:](.+)$", line)
+        if m:
+            parsed[m.group(1).strip()] = m.group(2).strip()
+
+    items = []
+    for dim in dimensions:
+        desc = parsed.get(dim, "")
+        # fuzzy match: find key that contains or is contained by dim
+        if not desc:
+            for k, v in parsed.items():
+                if k in dim or dim in k:
+                    desc = v
+                    break
+        items.append(
+            f'<div style="display:flex;gap:10px;align-items:baseline;margin-bottom:8px;">'
+            f'<span style="flex-shrink:0;background:var(--primary);color:#fff;'
+            f'padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;">{dim}</span>'
+            f'<span style="font-size:12px;color:var(--text-secondary);">{desc}</span>'
+            f'</div>'
+        )
+    return "\n".join(items)
 
 
 def generate_intro_tab(
@@ -517,38 +569,136 @@ def generate_intro_tab(
     reports: list[dict],
     progress_cb=None,
 ) -> str:
-    """Claude 生成研究背景 tab（主题科普 + 研报列表 + 分析框架说明）。"""
+    """
+    研究背景 tab 生成：
+    - Claude 只生成纯文字（主题科普 + 分析框架说明）
+    - Python 硬编码渲染研报表格（不依赖 LLM，永远完整）
+    - 无 ECharts 图表（研究背景不需要）
+    """
     def _log(msg: str):
         logger.info(msg)
         if progress_cb:
             progress_cb(msg)
 
-    _log("Claude 正在生成研究背景介绍…")
+    _log("Claude 正在生成研究背景文字内容…")
 
-    # 构建研报列表文本
-    report_lines = []
-    for r in reports:
-        title = (r.get("title") or "")[:40]
-        org = r.get("org_name") or "—"
-        researcher = r.get("researcher") or "—"
-        pub_date = r.get("publish_date") or "—"
-        rating = r.get("rating") or "—"
-        report_lines.append(f"- 【{org}】{researcher} | {pub_date} | 评级:{rating} | {title}")
-
-    user_msg = _INTRO_USER_TPL.format(
+    dimensions_list = "\n".join(f"- {d}" for d in dimensions)
+    user_msg = _INTRO_TEXT_TPL.format(
         project_name=project_name,
         keywords="、".join(keywords) if keywords else project_name,
-        dimensions_str="、".join(dimensions),
         dim_count=len(dimensions),
-        report_count=len(reports),
-        report_list="\n".join(report_lines) if report_lines else "（无研报数据）",
-        theme_css=THEME_CSS,
-        echarts_cdn=ECHARTS_CDN,
+        dimensions_list=dimensions_list,
+    )
+    raw_text = _claude_call(_INTRO_TEXT_SYSTEM, user_msg, max_tokens=3000)
+
+    # Split into 主题科普 and 分析框架 sections
+    import re as _re3
+    primer_text = ""
+    framework_text = ""
+    m_primer = _re3.search(r"【主题科普】([\s\S]*?)(?:【分析框架】|$)", raw_text)
+    m_framework = _re3.search(r"【分析框架】([\s\S]*?)$", raw_text)
+    if m_primer:
+        primer_text = m_primer.group(1).strip()
+    if m_framework:
+        framework_text = m_framework.group(1).strip()
+
+    # Fallback: treat entire text as primer if parsing fails
+    if not primer_text:
+        primer_text = raw_text.strip()
+
+    # Render primer paragraphs
+    paras = [p.strip() for p in _re3.split(r"\n{2,}", primer_text) if p.strip()]
+    primer_html = "\n".join(
+        f'<p style="margin-bottom:12px;line-height:1.8;color:var(--text-secondary);font-size:13px;">{p}</p>'
+        for p in paras
     )
 
-    raw = _claude_call(_INTRO_SYSTEM, user_msg, max_tokens=6000)
-    html = _extract_html(raw)
-    return html if html and len(html) > 200 else "<p style='padding:20px;color:#d97706'>研究背景生成失败</p>"
+    # Render report table (Python, always complete)
+    report_table_rows = _render_report_table(reports)
+
+    # Render dimension framework
+    dim_html = _render_dimension_list(dimensions, framework_text)
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{project_name} — 研究背景</title>
+<style>
+{THEME_CSS}
+.section-num {{
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--primary); color: #fff;
+  font-size: 12px; font-weight: 700; margin-right: 8px; flex-shrink: 0;
+}}
+.section-header {{
+  display: flex; align-items: center; font-size: 15px; font-weight: 700;
+  color: var(--text-primary); margin: 24px 0 6px;
+}}
+.section-sub {{ font-size: 11px; color: var(--text-muted); margin-bottom: 14px; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+th {{ text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--border);
+  color: var(--primary); font-size: 11px; font-weight: 700;
+  background: var(--primary-muted); }}
+td {{ padding: 9px 10px; border-bottom: 1px solid var(--border-light);
+  vertical-align: middle; }}
+tr:hover td {{ background: var(--border-light); }}
+.meta-bar {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px;
+  padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; font-size: 11px; color: var(--text-muted); }}
+.meta-bar strong {{ color: var(--text-primary); }}
+</style>
+</head>
+<body>
+
+<div class="meta-bar">
+  <span>项目：<strong>{project_name}</strong></span>
+  <span>关键词：<strong>{'、'.join(keywords) if keywords else project_name}</strong></span>
+  <span>研报数量：<strong>{len(reports)} 篇</strong></span>
+  <span>分析维度：<strong>{len(dimensions)} 个</strong></span>
+  <span>生成时间：<strong>{generated_at}</strong></span>
+</div>
+
+<div class="section-header"><span class="section-num">1</span>主题科普</div>
+<p class="section-sub">帮助快速建立对研究标的的认知框架</p>
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:16px;">
+{primer_html}
+</div>
+
+<div class="section-header"><span class="section-num">2</span>研报数据来源</div>
+<p class="section-sub">本次分析共收录 {len(reports)} 篇专业机构研报</p>
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:16px;">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:36px;">#</th>
+        <th>机构</th>
+        <th>分析师</th>
+        <th>发布日期</th>
+        <th>评级</th>
+        <th>报告标题</th>
+      </tr>
+    </thead>
+    <tbody>
+{report_table_rows}
+    </tbody>
+  </table>
+</div>
+
+<div class="section-header"><span class="section-num">3</span>分析框架说明</div>
+<p class="section-sub">本次分析覆盖 {len(dimensions)} 个维度，各维度聚焦问题如下</p>
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:16px;">
+{dim_html if dim_html else '<p style="color:var(--text-muted);font-size:12px;">维度说明生成失败</p>'}
+</div>
+
+</body>
+</html>"""
+
+    return html
 
 
 # ── Phase 5：Claude 生成总览 tab ───────────────────────────────────────────
