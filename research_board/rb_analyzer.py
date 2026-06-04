@@ -176,6 +176,23 @@ def _quick_html_check(html: str) -> list[str]:
     full_span = _re.search(r'(?:grid-column\s*:\s*1\s*/\s*-1|width\s*:\s*100%)', html)
     if full_span:
         issues.append("存在卡片独占整行（grid-column:1/-1 或 width:100%），应让所有卡片均等分配宽度")
+    # Check for Kimi reasoning/debug text leaking into HTML body
+    # Strip script/style blocks first, then check for reasoning patterns in remaining content
+    _html_no_script = _re.sub(r'<(?:script|style)[^>]*>[\s\S]*?</(?:script|style)>', '', html, flags=_re.IGNORECASE)
+    reasoning_leak = _re.search(
+        r'(?:'
+        r'\*\*chart-'        # markdown **chart-xxx** debug labels in body
+        r'|option\s*=\s*\{'  # raw JS option object outside script tags
+        r'|等等[，,。]'       # "等等，" self-correction
+        r'|不[，,]我'         # "不，我应该" self-correction
+        r'|我应该'            # "我应该" reasoning
+        r'|我想展示'          # reasoning
+        r'|这不是我想要'      # self-correction
+        r')',
+        _html_no_script,
+    )
+    if reasoning_leak:
+        issues.append("Kimi 将推理/调试过程（如 **chart-xxx** markdown标签或 option={...} 代码块）混入了 HTML body；必须删除所有非内容文字，body 中只保留用户可见的分析内容")
     # Check truncated table body (tbody exists but has no <td> rows, or has <td> with empty content)
     tbody_empty = _re.search(r'<tbody>\s*</tbody>', html, _re.IGNORECASE)
     if tbody_empty:
@@ -278,7 +295,8 @@ _KIMI_HTML_TPL = """你是专业的A股投资研究员，使用 ECharts + HTML �
 为"{dimension}"这个维度，生成一个完整的 HTML 分析页面（单个 tab 的内容）。
 
 ## 严格要求
-1. **只输出 HTML 代码**，从 `<!DOCTYPE html>` 开始到 `</html>` 结束，不要前后加任何说明文字
+1. **只输出 HTML 代码**，从 `<!DOCTYPE html>` 开始到 `</html>` 结束，不要前后加任何说明文字、代码注释、思考过程或调试日志
+12. **严禁将思考/调试内容混入 HTML**：你的推理过程、图表调试日志（如 `option = {{...}}`）、自我修正（如"等等，""不，我应该"）、任何非内容文字——都**绝对不能出现在 HTML 的 body 中**；HTML body 只包含对用户可见的分析内容
 2. 使用以下 CSS 变量（白底紫色主题，不得改成深色背景）：
 {theme_css}
 3. 引入 ECharts：`<script src="{echarts_cdn}"></script>`
@@ -651,6 +669,31 @@ tr:hover td {{ background: var(--border-light); }}
   padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 8px; font-size: 11px; color: var(--text-muted); }}
 .meta-bar strong {{ color: var(--text-primary); }}
+/* Pipeline flow diagram */
+.pipeline {{ display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin-bottom: 16px; }}
+.pipe-step {{
+  flex: 1 1 120px; display: flex; flex-direction: column; align-items: center;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 10px; text-align: center; position: relative; min-width: 0;
+}}
+.pipe-step + .pipe-step {{ margin-left: 0; }}
+.pipe-arrow {{
+  display: flex; align-items: center; padding: 0 4px; color: var(--primary-light);
+  font-size: 18px; flex-shrink: 0; align-self: center;
+}}
+.pipe-icon {{
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--primary-muted); display: flex; align-items: center;
+  justify-content: center; font-size: 16px; margin-bottom: 6px;
+}}
+.pipe-title {{ font-size: 11px; font-weight: 700; color: var(--text-primary); margin-bottom: 3px; }}
+.pipe-desc {{ font-size: 10px; color: var(--text-muted); line-height: 1.4; }}
+.pipe-badge {{
+  position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+  background: var(--primary); color: #fff; font-size: 9px; font-weight: 700;
+  padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+}}
+@media(max-width:600px) {{ .pipeline {{ flex-direction: column; }} .pipe-arrow {{ transform: rotate(90deg); align-self: flex-start; margin-left: 48px; }} }}
 </style>
 </head>
 <body>
@@ -693,6 +736,47 @@ tr:hover td {{ background: var(--border-light); }}
 <p class="section-sub">本次分析覆盖 {len(dimensions)} 个维度，各维度聚焦问题如下</p>
 <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:16px;">
 {dim_html if dim_html else '<p style="color:var(--text-muted);font-size:12px;">维度说明生成失败</p>'}
+</div>
+
+<div class="section-header"><span class="section-num">4</span>分析流程</div>
+<p class="section-sub">双层 AI 协作 Pipeline：Claude 规划 + Kimi 深研 + Claude 评审</p>
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:16px;">
+  <div class="pipeline">
+    <div class="pipe-step">
+      <span class="pipe-badge">输入</span>
+      <div class="pipe-icon">📄</div>
+      <div class="pipe-title">研报原文</div>
+      <div class="pipe-desc">{len(reports)} 篇机构研报<br>PDF 全文提取</div>
+    </div>
+    <div class="pipe-arrow">›</div>
+    <div class="pipe-step">
+      <span class="pipe-badge">Phase 1</span>
+      <div class="pipe-icon">🧭</div>
+      <div class="pipe-title">Claude 拆解</div>
+      <div class="pipe-desc">识别细分模块<br>确定 {len(dimensions)} 个分析维度</div>
+    </div>
+    <div class="pipe-arrow">›</div>
+    <div class="pipe-step">
+      <span class="pipe-badge">Phase 2</span>
+      <div class="pipe-icon">⚡</div>
+      <div class="pipe-title">Kimi 深研</div>
+      <div class="pipe-desc">每维度独立生成<br>ECharts 可视化页面</div>
+    </div>
+    <div class="pipe-arrow">›</div>
+    <div class="pipe-step">
+      <span class="pipe-badge">Phase 3</span>
+      <div class="pipe-icon">🔍</div>
+      <div class="pipe-title">Claude 评审</div>
+      <div class="pipe-desc">质量检查 + 修改建议<br>最多 2 轮迭代</div>
+    </div>
+    <div class="pipe-arrow">›</div>
+    <div class="pipe-step">
+      <span class="pipe-badge">输出</span>
+      <div class="pipe-icon">📊</div>
+      <div class="pipe-title">分析看板</div>
+      <div class="pipe-desc">{len(dimensions)} 个维度 Tab<br>+ 产业全景总览</div>
+    </div>
+  </div>
 </div>
 
 </body>
