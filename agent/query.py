@@ -282,9 +282,9 @@ def cmd_data_health(args):
                     "level": "error",
                     "code": "STATIC_DATA_STALE",
                     "message": (
-                        f"静态数据滞后超过1个交易日：market_emotion 最新是 {emotion_latest}，"
+                        f"静态数据滞后超过1个交易日：市场情绪数据最新是 {emotion_latest}，"
                         f"上一交易日是 {t1}，数据缺失一个完整交易日。"
-                        f"daily_compute 可能昨日未执行，建议手动触发计算后再跑分析。"
+                        f"每日计算任务可能昨日未执行，建议在设置页手动触发计算后再跑分析。"
                     ),
                     "latest_date": emotion_latest,
                     "expected_date": t1,
@@ -329,8 +329,8 @@ def cmd_data_health(args):
                 "level": "error",
                 "code": "REALTIME_SNAPSHOT_STALE",
                 "message": (
-                    f"实时行情快照已 {pulse_lag:.0f} 分钟未更新（最后：{pulse_ts}），"
-                    f"正常频率为30秒。接口可能故障，盘中分析数据不可靠。"
+                    f"实时行情快照已 {pulse_lag:.0f} 分钟未更新（最后更新：{pulse_ts}），"
+                    f"正常应每30秒刷新一次，可能是数据接口临时故障，盘中分析数据暂不可靠。"
                 ),
                 "last_update": pulse_ts,
                 "lag_minutes": round(pulse_lag, 1),
@@ -343,8 +343,8 @@ def cmd_data_health(args):
                 "level": "warning",
                 "code": "SECTOR_FLOW_STALE",
                 "message": (
-                    f"行业资金流已 {flow_lag:.0f} 分钟未更新（最后：{sector_flow_ts}），"
-                    f"正常频率为15分钟。资金流分析降级，结论中需标注数据可能滞后。"
+                    f"行业资金流已 {flow_lag:.0f} 分钟未更新（最后更新：{sector_flow_ts}），"
+                    f"正常应每15分钟刷新一次，资金流向分析结果可能有所滞后。"
                 ),
                 "last_update": sector_flow_ts,
                 "lag_minutes": round(flow_lag, 1),

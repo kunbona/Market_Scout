@@ -29,7 +29,7 @@ from research_board.rb_fetcher import (
     fetch_reports_for_project,
     download_pdfs_for_project,
 )
-from research_board.analyzer import (
+from research_board.rb_analyzer import (
     start_analysis_thread,
     get_progress,
 )
@@ -40,13 +40,14 @@ rb_bp = Blueprint("research_board", __name__)
 # 初始化数据库（Blueprint 注册时自动执行）
 init_db()
 
-# 默认分析维度
+# 默认分析维度（模仿博主结构）
+# 产业全景由 Claude 生成总览 tab，不需要单独列为维度
 DEFAULT_DIMENSIONS = [
-    "产业链全景",
-    "成本结构与降本路径",
-    "竞争格局与核心标的",
-    "估值与盈利预测",
-    "风险因素",
+    "成本构成与降本路径",   # BOM 拆解、各模块成本占比、降本曲线
+    "竞争格局与核心标的",   # 龙头市占率、壁垒评分、国产化率
+    "替代风险分析",         # 技术路线对比、可替代性评分、替代节点预测
+    "估值与盈利预测",       # PE/PB/目标价、EPS预测、整机价格目标
+    "产业里程碑与催化剂",   # 关键时间节点、出货量拐点、政策/客户催化
 ]
 
 # 抓取任务状态（per project_id）
@@ -183,12 +184,15 @@ def rb_download_pdf(pid: int):
 
         try:
             done = download_pdfs_for_project(pid, max_count=max_count, progress_cb=_cb)
+            update_project_status(pid, "idle")
             with _fetch_lock:
                 _fetch_state[pid] = {"status": "done", "phase": "done",
                                       "message": f"PDF 提取完成，成功 {done} 篇"}
         except Exception as e:
+            logger.exception(f"[rb_download_pdf] pid={pid} error: {e}")
+            update_project_status(pid, "error")
             with _fetch_lock:
-                _fetch_state[pid] = {"status": "error", "message": str(e)}
+                _fetch_state[pid] = {"status": "error", "phase": "error", "message": str(e)}
 
     threading.Thread(target=_run, daemon=True, name=f"rb-pdf-{pid}").start()
     return _ok({"started": True})
@@ -217,11 +221,47 @@ def rb_analyze_status(pid: int):
 
 # ── 结果 ──────────────────────────────────────────────────────────────────
 
+import re as _re
+
+def _clean_html(html: str) -> str:
+    """剥离 LLM 可能残留的 markdown 代码块标记，并移除 body 的固定高度约束。"""
+    if not html:
+        return html
+    # 1. 去掉开头的 ```html 或 ```（含换行）
+    html = _re.sub(r"^```(?:html)?\s*\n?", "", html.strip(), flags=_re.IGNORECASE)
+    # 2. 去掉结尾的 ``` （含前置换行）
+    html = _re.sub(r"\n?\s*```\s*$", "", html.strip())
+    html = html.strip()
+    # 3. 移除 body 上的固定 height
+    html = _re.sub(
+        r'(body\s*\{[^}]*)height\s*:\s*\d+px\s*;?\s*',
+        r'\1',
+        html, flags=_re.IGNORECASE
+    )
+    # 4. 移除任意 CSS 规则块里的 max-height 和 overflow-y 约束
+    #    Kimi 有时生成 .page-wrapper { max-height: 640px; overflow-y: auto; }
+    #    导致内容在 iframe 里被裁切。直接删掉这两个属性即可。
+    html = _re.sub(r'\bmax-height\s*:\s*\d+[^;}\n]*;?\s*', '', html, flags=_re.IGNORECASE)
+    html = _re.sub(r'\boverflow-y\s*:\s*(auto|scroll)\s*;?\s*', '', html, flags=_re.IGNORECASE)
+    return html
+
+
 @rb_bp.route("/api/rb/projects/<int:pid>/result", methods=["GET"])
 def rb_result(pid: int):
     result = get_rb_result(pid)
     if not result:
         return _err("尚无分析结果", 404)
+    raw = result.get("summary_json", "{}")
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = {}
+    # 清洗每个 tab 的 html，去除 LLM 残留的 markdown 标记
+    if isinstance(parsed.get("tabs"), list):
+        for tab in parsed["tabs"]:
+            if isinstance(tab.get("html"), str):
+                tab["html"] = _clean_html(tab["html"])
+    result["data"] = parsed
     return _ok(result)
 
 
