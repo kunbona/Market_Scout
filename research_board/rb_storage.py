@@ -27,6 +27,21 @@ def _rows_to_dicts(rows) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _migrate_db(conn) -> None:
+    """安全迁移：对已有表用 ALTER TABLE ADD COLUMN IF NOT EXISTS 补字段。"""
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(rb_report)").fetchall()
+    }
+    migrations = [
+        ("source_url",  "ALTER TABLE rb_report ADD COLUMN source_url TEXT"),
+        ("source_type", "ALTER TABLE rb_report ADD COLUMN source_type TEXT DEFAULT 'eastmoney_pdf'"),
+    ]
+    for col, sql in migrations:
+        if col not in existing:
+            conn.execute(sql)
+
+
 def init_db() -> None:
     with _conn() as conn:
         conn.executescript("""
@@ -58,6 +73,8 @@ def init_db() -> None:
             qtype        INTEGER DEFAULT 0,
             pdf_status   TEXT DEFAULT 'pending',  -- pending/downloading/done/failed
             full_text    TEXT,                    -- pdfplumber 提取的纯文字
+            source_url   TEXT,                    -- PDF链接或文章URL，永久保留
+            source_type  TEXT DEFAULT 'eastmoney_pdf', -- eastmoney_pdf/eastmoney_html/tencent_news
             created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(project_id, report_url)
         );
@@ -82,6 +99,7 @@ def init_db() -> None:
             generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        _migrate_db(conn)
 
 
 # ── rb_project ─────────────────────────────────────────────────────────────
@@ -192,6 +210,49 @@ def update_rb_report_pdf_status(report_id: int, status: str, error: str = "") ->
             "UPDATE rb_report SET pdf_status=? WHERE id=?",
             (status, report_id)
         )
+
+
+def insert_tencent_article(project_id: int, title: str, org_name: str,
+                            pub_date: str, url: str, full_text: str) -> None:
+    """
+    将腾讯新闻文章存入 rb_report 表，source_type='tencent_news'。
+    stock_code/stock_name/rating/aim_price 等研报专属字段留空。
+    url 同时写入 report_url（UNIQUE 约束依据）和 source_url（永久保留）。
+    """
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO rb_report "
+            "(project_id, title, org_name, publish_date, report_url, "
+            "source_url, source_type, full_text, pdf_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'tencent_news', ?, 'done')",
+            (project_id, title, org_name, pub_date, url, url, full_text)
+        )
+
+
+def cleanup_old_data() -> tuple[int, int]:
+    """
+    清理策略：
+    - 策略1：created_at 超过 180 天的研报，full_text 置 NULL，保留元数据和 source_url。
+    - 策略2：created_at 超过 360 天的研报，整行删除。
+
+    返回 (text_cleared_count, rows_deleted_count)。
+    """
+    with _conn() as conn:
+        # 策略2 先执行（避免策略1刚清完正文随即被策略2删除，造成两次写）
+        cur_del = conn.execute(
+            "DELETE FROM rb_report "
+            "WHERE created_at <= datetime('now', '-360 days')"
+        )
+        rows_deleted = cur_del.rowcount
+
+        cur_clr = conn.execute(
+            "UPDATE rb_report SET full_text = NULL "
+            "WHERE full_text IS NOT NULL "
+            "AND created_at <= datetime('now', '-180 days')"
+        )
+        text_cleared = cur_clr.rowcount
+
+    return (text_cleared, rows_deleted)
 
 
 # ── rb_analysis ──────────────────────────────────────────────────────────

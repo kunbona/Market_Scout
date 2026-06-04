@@ -1,15 +1,17 @@
 """
-research_board — 研报抓取 + PDF 文字提取
+research_board — 研报抓取 + PDF 全文提取
+使用 curl_cffi 模拟 Chrome TLS 指纹，绕过 dfcfw.com 的 JA3 指纹检测，直接下载真实 PDF。
+HTML 摘要页作为 PDF 提取失败时的降级方案。
 """
 
-import io
 import logging
-import os
 import time
 from datetime import datetime, timedelta
 
 import pytz
-import requests
+import pdfplumber
+from curl_cffi import requests as cf_requests
+from bs4 import BeautifulSoup
 
 from research_board.rb_storage import (
     get_project,
@@ -24,47 +26,76 @@ logger = logging.getLogger(__name__)
 
 _TZ_BEIJING = pytz.timezone("Asia/Shanghai")
 
-BASE_URL = "https://reportapi.eastmoney.com/report/list"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://data.eastmoney.com/report/stock.jshtml",
-}
-PDF_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://data.eastmoney.com/report/",
-}
+_SESSION = cf_requests.Session(impersonate="chrome124")
+_SESSION.headers.update({
+    "Referer": "https://data.eastmoney.com/",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+})
+_LAST_EM_CALL = [0.0]
+_EM_MIN_INTERVAL = 1.0  # 东财限速 ≥1s
 
-# 每批提交给 Kimi 的最大研报字符数（约 50 篇摘要或 5 篇全文）
-MAX_CHARS_PER_BATCH = 60_000
+BASE_URL    = "https://reportapi.eastmoney.com/report/list"
+HTML_TPL    = "https://data.eastmoney.com/report/zw_industry.jshtml?infocode={info_code}"
+PDF_URL_TPL = "https://pdf.dfcfw.com/pdf/H3_{info_code}_1.pdf"
 
-# PDF 下载并发限速
-_PDF_INTERVAL = 1.0  # 秒
+MAX_CHARS_PER_BATCH = 350_000  # kimi-k2.6 262K token 留余量
+_PDF_INTERVAL = 1.0            # PDF 下载间隔
+_HTML_INTERVAL = 1.2           # HTML 页面降级抓取间隔
+
+
+def _em_get(url, **kwargs):
+    """串行限速 GET，间隔 ≥1s + 随机抖动。"""
+    import random
+    wait = _EM_MIN_INTERVAL - (time.time() - _LAST_EM_CALL[0])
+    if wait > 0:
+        time.sleep(wait + random.uniform(0.1, 0.4))
+    try:
+        return _SESSION.get(url, **kwargs)
+    finally:
+        _LAST_EM_CALL[0] = time.time()
 
 
 def _today_beijing() -> str:
     return datetime.now(_TZ_BEIJING).strftime("%Y-%m-%d")
 
 
-def _report_url(encode_url: str) -> str:
-    if encode_url:
-        return f"https://pdf.dfcfw.com/pdf/H3_{encode_url}_1.pdf"
-    return ""
-
-
 def _keyword_match(title: str, keywords: list[str]) -> bool:
-    """标题是否包含任意关键词（大小写不敏感）。空关键词列表视为全匹配。"""
     if not keywords:
         return True
     title_lower = title.lower()
     return any(kw.lower() in title_lower for kw in keywords)
 
 
+def _extract_html_abstract(info_code: str) -> str:
+    """
+    从东财研报 HTML 页面提取摘要正文。
+    通常能拿到 300-2000 字的核心观点，不需要登录。
+    """
+    url = HTML_TPL.format(info_code=info_code)
+    try:
+        r = _em_get(url, timeout=20)
+        if r.status_code != 200:
+            return ""
+        soup = BeautifulSoup(r.text, "html.parser")
+        # 过滤掉免责声明和短段落，只取正文
+        paras = []
+        for p in soup.find_all("p"):
+            text = p.get_text(strip=True)
+            if len(text) < 30:
+                continue
+            if any(kw in text for kw in ["郑重声明", "东方财富网发布", "风险自担", "不构成任何投资建议"]):
+                continue
+            paras.append(text)
+        return "\n".join(paras)
+    except Exception as e:
+        logger.debug(f"[rb_fetcher] HTML 摘要失败 {info_code}: {e}")
+        return ""
+
+
+# ── 元数据抓取 ─────────────────────────────────────────────────────────────
+
 def fetch_reports_for_project(project_id: int, progress_cb=None) -> int:
-    """
-    按项目配置抓取研报元数据（不下载 PDF）。
-    返回新增研报数量。
-    progress_cb: callable(msg: str) 用于向调用方推送进度文字。
-    """
+    """抓取研报元数据，同时存储 infoCode 用于后续摘要提取。"""
     project = get_project(project_id)
     if not project:
         raise ValueError(f"project {project_id} not found")
@@ -73,7 +104,7 @@ def fetch_reports_for_project(project_id: int, progress_cb=None) -> int:
     qtype_filter: list[int] = project["qtype_filter"]
     days_back: int = project["days_back"]
 
-    end = _today_beijing()
+    end   = _today_beijing()
     begin = (datetime.now(_TZ_BEIJING) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
     def _log(msg: str):
@@ -81,7 +112,7 @@ def fetch_reports_for_project(project_id: int, progress_cb=None) -> int:
         if progress_cb:
             progress_cb(msg)
 
-    _log(f"[rb_fetcher] 项目 {project_id} 抓取研报 {begin} → {end}，关键词={keywords}")
+    _log(f"正在抓取研报（{begin} 至 {end}），关键词：{', '.join(keywords) or '全部'}")
     total_new = 0
 
     for qtype in qtype_filter:
@@ -89,35 +120,26 @@ def fetch_reports_for_project(project_id: int, progress_cb=None) -> int:
         while True:
             try:
                 params = {
-                    "qType": qtype,
-                    "pageSize": 100,
-                    "pageNo": page,
-                    "industryCode": "*",
-                    "industry": "*",
-                    "rating": "*",
-                    "ratingChange": "*",
-                    "beginTime": begin,
-                    "endTime": end,
-                    "fields": "",
-                    "orgCode": "",
-                    "code": "*",
-                    "rcode": "",
+                    "qType": qtype, "pageSize": 100, "pageNo": page,
+                    "industryCode": "*", "industry": "*",
+                    "rating": "*", "ratingChange": "*",
+                    "beginTime": begin, "endTime": end,
+                    "fields": "", "orgCode": "", "code": "*", "rcode": "",
                 }
-                resp = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=15)
+                resp = _em_get(BASE_URL, params=params, timeout=15)
                 resp.raise_for_status()
                 data = resp.json()
 
-                raw = data.get("data", [])
+                raw   = data.get("data", [])
                 items = raw if isinstance(raw, list) else raw.get("list", [])
 
                 count_this_page = 0
                 for item in items:
                     title = str(item.get("title", "") or "")
-                    if not title:
-                        continue
-                    if not _keyword_match(title, keywords):
+                    if not title or not _keyword_match(title, keywords):
                         continue
 
+                    info_code  = str(item.get("infoCode", "") or "")
                     stock_code = str(item.get("stockCode", "") or "")
                     stock_name = str(item.get("stockName", "") or "")
                     org_name   = str(item.get("orgSName", "") or item.get("orgName", "") or "")
@@ -126,8 +148,8 @@ def fetch_reports_for_project(project_id: int, progress_cb=None) -> int:
                     pub_date   = pub_raw[:10] if pub_raw else ""
                     rating     = str(item.get("emRatingName", "") or "")
                     aim_price  = str(item.get("indvAimPriceT", "") or "")
-                    encode_url = str(item.get("encodeUrl", "") or "")
-                    report_url = _report_url(encode_url)
+                    # report_url 存前端可用的 PDF 链接（含 infoCode），后端抓摘要用 HTML_TPL
+                    report_url = PDF_URL_TPL.format(info_code=info_code) if info_code else ""
 
                     insert_rb_report(
                         project_id, title, stock_code, stock_name, org_name,
@@ -137,43 +159,54 @@ def fetch_reports_for_project(project_id: int, progress_cb=None) -> int:
                     count_this_page += 1
 
                 total_pages = int(data.get("TotalPage", 1) or 1)
-                _log(f"[rb_fetcher] qtype={qtype} page={page}/{total_pages} 命中={count_this_page}")
+                QTYPE_NAMES = {0: "个股", 1: "行业", 2: "宏观", 3: "策略"}
+                qname = QTYPE_NAMES.get(qtype, f"类型{qtype}")
+                if count_this_page > 0:
+                    _log(f"  {qname}报告 第 {page}/{total_pages} 页，本页命中 {count_this_page} 篇")
+                else:
+                    _log(f"  {qname}报告 第 {page}/{total_pages} 页，扫描中…")
 
                 if page >= total_pages:
                     break
                 page += 1
-                time.sleep(0.5)
 
             except Exception as e:
+                QTYPE_NAMES = {0: "个股", 1: "行业", 2: "宏观", 3: "策略"}
+                qname = QTYPE_NAMES.get(qtype, f"类型{qtype}")
                 logger.warning(f"[rb_fetcher] qtype={qtype} page={page} 失败: {e}")
+                _log(f"  {qname}报告 第 {page} 页请求超时，跳过后续页面")
                 break
 
-    _log(f"[rb_fetcher] 抓取完成，共新增 {total_new} 篇研报")
+    _log(f"研报抓取完成，共命中 {total_new} 篇")
     return total_new
 
 
-def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """用 pdfplumber 从 PDF 字节流中提取纯文字。"""
+# ── PDF 下载 + 文本提取（curl_cffi 模拟 Chrome TLS 指纹）─────────────────
+
+def _extract_pdf_text(pdf_bytes: bytes, max_chars: int = 80_000) -> str:
+    """用 pdfplumber 从 PDF bytes 提取文本，最多 max_chars 字。"""
+    import io
     try:
-        import pdfplumber
-        text_parts = []
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            parts = []
+            total = 0
             for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    text_parts.append(t)
-        return "\n".join(text_parts)
+                t = page.extract_text() or ""
+                parts.append(t)
+                total += len(t)
+                if total >= max_chars:
+                    break
+            return "\n".join(parts)[:max_chars]
     except Exception as e:
-        logger.warning(f"[rb_fetcher] pdfplumber 失败: {e}")
+        logger.debug(f"[rb_fetcher] pdfplumber 失败: {e}")
         return ""
 
 
 def download_pdfs_for_project(project_id: int, max_count: int = 200,
                                progress_cb=None) -> int:
     """
-    下载项目下所有 pending 状态研报的 PDF 并提取文字。
-    max_count 限制本次最多下载数量（防止单次过多）。
-    返回成功提取文字的数量。
+    下载 PDF 并提取全文（curl_cffi 绕过 TLS 指纹检测）。
+    PDF 失败时降级到 HTML 摘要页。
     """
     def _log(msg: str):
         logger.info(msg)
@@ -181,84 +214,111 @@ def download_pdfs_for_project(project_id: int, max_count: int = 200,
             progress_cb(msg)
 
     reports = get_rb_reports(project_id, pdf_status="pending")
-    _log(f"[rb_fetcher] 待下载 PDF: {len(reports)} 篇，本次上限 {max_count}")
+    _log(f"开始下载全文，共 {len(reports)} 篇待处理，本次上限 {max_count} 篇")
 
     done = 0
+    total_cap = min(len(reports), max_count)
     for i, r in enumerate(reports[:max_count]):
-        if not r["report_url"]:
+        url = r.get("report_url", "") or ""
+        info_code = ""
+        if "H3_" in url:
+            try:
+                info_code = url.split("H3_")[1].split("_1.pdf")[0]
+            except Exception:
+                pass
+
+        short_title = r['title'][:30] + ('…' if len(r['title']) > 30 else '')
+        label = f"[{i+1}/{total_cap}]"
+
+        if not info_code:
             update_rb_report_pdf_status(r["id"], "failed")
+            _log(f"  {label} 跳过（无法解析文档编号）：{short_title}")
             continue
 
         update_rb_report_pdf_status(r["id"], "downloading")
+
+        # 1. 先尝试 PDF
+        text = ""
         try:
-            resp = requests.get(r["report_url"], headers=PDF_HEADERS, timeout=30)
-            resp.raise_for_status()
-            text = extract_pdf_text(resp.content)
-            if text.strip():
-                update_rb_report_text(r["id"], text, "done")
-                done += 1
-            else:
-                update_rb_report_pdf_status(r["id"], "failed")
-            _log(f"[rb_fetcher] [{i+1}/{min(len(reports), max_count)}] {r['title'][:30]} → {'ok' if text.strip() else 'empty'}")
+            pdf_url = PDF_URL_TPL.format(info_code=info_code)
+            resp = _SESSION.get(pdf_url, timeout=30)
+            if resp.content[:4] == b"%PDF":
+                text = _extract_pdf_text(resp.content)
+                if text.strip():
+                    _log(f"  {label} PDF 已提取 {len(text)} 字：{short_title}")
         except Exception as e:
-            logger.warning(f"[rb_fetcher] 下载失败 {r['title'][:30]}: {e}")
+            logger.debug(f"[rb_fetcher] PDF 下载异常 {info_code}: {e}")
+
+        # 2. PDF 失败则降级 HTML 摘要
+        if not text.strip():
+            time.sleep(_HTML_INTERVAL)
+            text = _extract_html_abstract(info_code)
+            if text.strip():
+                _log(f"  {label} 摘要已提取 {len(text)} 字（PDF不可用，降级为网页摘要）：{short_title}")
+
+        if text.strip():
+            update_rb_report_text(r["id"], text, "done")
+            done += 1
+        else:
             update_rb_report_pdf_status(r["id"], "failed")
+            _log(f"  {label} 未能获取内容：{short_title}")
 
         time.sleep(_PDF_INTERVAL)
 
-    _log(f"[rb_fetcher] PDF 提取完成，成功 {done} 篇")
+    _log(f"全文下载完成，成功 {done}/{total_cap} 篇")
     return done
 
 
+# ── 分批供 LLM 分析 ────────────────────────────────────────────────────────
+
 def get_reports_text_batches(project_id: int, max_chars: int = MAX_CHARS_PER_BATCH) -> list[str]:
     """
-    将项目下所有有文字的研报分批，每批不超过 max_chars 字符。
-    返回文字批次列表，每个元素是多篇研报拼接后的字符串。
-    无 PDF 全文时退化为用标题+摘要信息拼接（摘要模式）。
+    将所有研报分批，每批不超过 max_chars 字符。
+    有摘要全文的优先，无摘要的用元数据拼接。
     """
     reports = get_rb_reports(project_id)
+    full_reports = [r for r in reports if r.get("full_text") and r["full_text"].strip()]
+    meta_reports = [r for r in reports if not (r.get("full_text") and r["full_text"].strip())]
 
-    # 有全文的研报
-    full_text_reports = [r for r in reports if r.get("full_text") and r["full_text"].strip()]
-    # 无全文的研报（用元数据拼摘要）
-    meta_only_reports = [r for r in reports if not (r.get("full_text") and r["full_text"].strip())]
-
-    batches = []
-    current_batch = []
+    batches: list[str] = []
+    current: list[str] = []
     current_len = 0
 
     def _flush():
-        if current_batch:
-            batches.append("\n\n---\n\n".join(current_batch))
+        if current:
+            batches.append("\n\n---\n\n".join(current))
 
-    # 优先全文
-    for r in full_text_reports:
-        snippet = f"【{r['title']}】（{r['org_name']} {r['publish_date']} 评级:{r['rating']}）\n{r['full_text'][:8000]}"
-        if current_len + len(snippet) > max_chars and current_batch:
+    for r in full_reports:
+        snippet = (
+            f"【{r['title']}】\n"
+            f"机构：{r['org_name']}  日期：{r['publish_date']}  "
+            f"评级：{r['rating']}  目标价：{r['aim_price']}\n"
+            f"{r['full_text'][:6000]}"
+        )
+        if current_len + len(snippet) > max_chars and current:
             _flush()
-            current_batch = []
+            current = []
             current_len = 0
-        current_batch.append(snippet)
+        current.append(snippet)
         current_len += len(snippet)
     _flush()
 
-    # 再追加元数据摘要批次
-    if meta_only_reports:
-        meta_texts = []
-        for r in meta_only_reports:
-            meta_texts.append(
-                f"【{r['title']}】{r['org_name']} {r['publish_date']} 股票:{r['stock_name']}({r['stock_code']}) 评级:{r['rating']} 目标价:{r['aim_price']}"
-            )
-        # 元数据简短，全部放一批
-        chunk = []
+    if meta_reports:
+        chunk: list[str] = []
         chunk_len = 0
-        for m in meta_texts:
-            if chunk_len + len(m) > max_chars and chunk:
+        for r in meta_reports:
+            line = (
+                f"【{r['title']}】"
+                f"{r['org_name']} {r['publish_date']} "
+                f"股票:{r['stock_name']}({r['stock_code']}) "
+                f"评级:{r['rating']} 目标价:{r['aim_price']}"
+            )
+            if chunk_len + len(line) > max_chars and chunk:
                 batches.append("\n".join(chunk))
                 chunk = []
                 chunk_len = 0
-            chunk.append(m)
-            chunk_len += len(m)
+            chunk.append(line)
+            chunk_len += len(line)
         if chunk:
             batches.append("\n".join(chunk))
 
