@@ -120,6 +120,10 @@ import re as _re
 def _quick_html_check(html: str) -> list[str]:
     """Fast pre-review: returns list of critical issues found."""
     issues = []
+    # Check HTML is a complete document (not truncated mid-content)
+    if '<!doctype' not in html.lower() and '<html' not in html.lower():
+        issues.append("HTML 输出不完整（缺少 <!DOCTYPE html> 和 <html> 标签，内容被截断）；请重新生成完整 HTML 文档")
+        return issues  # no point checking further on a fragment
     # Count chart divs vs echarts.init calls
     chart_divs = len(_re.findall(r'<div[^>]+id=["\'][^"\']*chart[^"\']*["\']', html, _re.IGNORECASE))
     init_calls = len(_re.findall(r'echarts\.init\s*\(', html))
