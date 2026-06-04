@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Search, Trash2, Play, RefreshCw, ChevronDown, ChevronUp, BookOpen, BarChart2, AlertTriangle, TrendingUp, Layers } from 'lucide-react';
+import { Plus, Search, Trash2, Play, RefreshCw, ChevronDown, ChevronUp, ChevronLeft, BookOpen, BarChart2, AlertTriangle, TrendingUp, Layers } from 'lucide-react';
+import { AnalysisViewer, type AnalysisTab } from '../components/AnalysisViewer';
 
 const BASE = '';
 
@@ -69,17 +70,22 @@ interface DimensionResult {
 }
 
 interface BoardResult {
-  project_name: string;
-  generated_at: string;
-  report_count: number;
-  executive_summary: string;
+  // New format (rb_analyzer.py)
+  tabs?: AnalysisTab[];
+  sub_modules?: string[];
+  extra_dimensions?: string[];
+  dimensions?: string[];
+  // Legacy fields (analyzer.py)
+  project_name?: string;
+  generated_at?: string;
+  report_count?: number;
+  executive_summary?: string;
   investment_thesis?: {
     bull_case: string;
     bear_case: string;
     time_horizon: string;
     verdict: string;
   };
-  dimensions: Record<string, DimensionResult>;
   key_stocks?: KeyStock[];
   industry_chain?: ChainSegment[];
   risk_matrix?: RiskItem[];
@@ -88,7 +94,15 @@ interface BoardResult {
 
 // ── 默认维度 ───────────────────────────────────────────────────────────────
 
-const DEFAULT_DIMENSIONS = ['产业链全景', '成本结构与降本路径', '竞争格局与核心标的', '估值与盈利预测', '风险因素'];
+// 默认维度和 blueprint.py DEFAULT_DIMENSIONS 保持同步
+// 总览 tab 由 Claude 自动生成，不需要单独列为维度
+const DEFAULT_DIMENSIONS = [
+  '成本构成与降本路径',
+  '竞争格局与核心标的',
+  '替代风险分析',
+  '估值与盈利预测',
+  '产业里程碑与催化剂',
+];
 const DEFAULT_DAYS = 180;
 const QTYPE_LABELS: Record<number, string> = { 0: '个股', 1: '行业', 2: '宏观', 3: '策略' };
 
@@ -98,6 +112,14 @@ const STATUS_COLOR: Record<string, string> = {
   analyzing: 'text-indigo-600',
   done: 'text-green-600',
   error: 'text-red-500',
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  idle: '待机',
+  fetching: '抓取中',
+  analyzing: '分析中',
+  done: '已完成',
+  error: '出错',
 };
 
 const PRIORITY_COLOR: Record<string, string> = {
@@ -249,6 +271,26 @@ function DimensionPanel({ name, result }: { name: string; result: DimensionResul
 
 // 看板主体
 function BoardView({ result }: { result: BoardResult }) {
+  // New format: render tabs via AnalysisViewer
+  if (result.tabs && result.tabs.length > 0) {
+    return (
+      <div className="flex flex-col h-full gap-3">
+        {/* 元信息栏 — 紧凑单行 */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className="text-sm font-semibold text-gray-900">{result.project_name}</span>
+          <span className="text-xs text-gray-400">
+            {result.report_count} 篇研报 · {result.generated_at}
+          </span>
+        </div>
+        {/* iframe 区域撑满剩余高度 */}
+        <div className="flex-1 min-h-0">
+          <AnalysisViewer tabs={result.tabs} frameHeight="100%" />
+        </div>
+      </div>
+    );
+  }
+
+  // Legacy JSON format
   return (
     <div className="space-y-5">
       {/* 概览 */}
@@ -349,15 +391,15 @@ function BoardView({ result }: { result: BoardResult }) {
         </Card>
       )}
 
-      {/* 各维度 */}
-      {result.dimensions && Object.keys(result.dimensions).length > 0 && (
+      {/* 各维度（仅旧格式有，新格式维度在 tabs 里） */}
+      {result.dimensions && !Array.isArray(result.dimensions) && Object.keys(result.dimensions as Record<string, DimensionResult>).length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
             <BookOpen className="w-4 h-4 text-indigo-400" />
             各维度深度分析
           </h3>
           <div className="space-y-2">
-            {Object.entries(result.dimensions).map(([name, dim]) => (
+            {Object.entries(result.dimensions as Record<string, DimensionResult>).map(([name, dim]) => (
               <DimensionPanel key={name} name={name} result={dim} />
             ))}
           </div>
@@ -595,7 +637,7 @@ function ProjectCard({
       <div onClick={onSelect} className="mb-3">
         <div className="flex items-start justify-between gap-2">
           <h3 className="text-sm font-semibold text-gray-900 leading-tight">{project.name}</h3>
-          <span className={`text-xs font-medium flex-shrink-0 ${statusLabel}`}>{project.status}</span>
+          <span className={`text-xs font-medium flex-shrink-0 ${statusLabel}`}>{STATUS_LABEL[project.status] ?? project.status}</span>
         </div>
         <div className="flex flex-wrap gap-1 mt-2">
           {project.keywords.slice(0, 4).map((k, i) => (
@@ -640,22 +682,13 @@ function ProjectCard({
 
       <div className="flex gap-2">
         <button
-          onClick={() => handleFetch(false)}
+          onClick={() => handleFetch(true)}
           disabled={isFetching || isAnalyzing}
-          title="仅抓取研报元数据（快速）"
+          title="抓取元数据 + 下载 PDF 全文"
           className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
         >
           <Search className="w-3.5 h-3.5" />
-          抓取
-        </button>
-        <button
-          onClick={() => handleFetch(true)}
-          disabled={isFetching || isAnalyzing}
-          title="抓取元数据 + 下载 PDF 全文（较慢）"
-          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium border border-blue-300 text-blue-600 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
-        >
-          <BookOpen className="w-3.5 h-3.5" />
-          +PDF
+          抓取全文
         </button>
         <button
           onClick={handleAnalyze}
@@ -687,6 +720,7 @@ export function ResearchBoardPage() {
   const [showNewForm, setShowNewForm] = useState(false);
   const [loadingResult, setLoadingResult] = useState(false);
   const [err, setErr] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const loadProjects = async () => {
     try {
@@ -701,8 +735,9 @@ export function ResearchBoardPage() {
     setLoadingResult(true);
     setBoardResult(null);
     try {
-      const data = await rbFetch<{ summary: BoardResult }>(`/api/rb/projects/${pid}/result`);
-      setBoardResult(data.summary);
+      const data = await rbFetch<{ data?: BoardResult; summary?: BoardResult }>(`/api/rb/projects/${pid}/result`);
+      // New format: data.data.tabs; legacy: data.summary
+      setBoardResult((data.data ?? data.summary ?? null) as BoardResult | null);
     } catch {
       setBoardResult(null);
     } finally {
@@ -747,8 +782,12 @@ export function ResearchBoardPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* 左侧：项目列表 */}
-      <div className="w-80 flex-shrink-0 flex flex-col border-r border-gray-200 bg-gray-50">
+      {/* 左侧：项目列表（可折叠） */}
+      <div
+        className={`flex-shrink-0 flex flex-col border-r border-gray-200 bg-gray-50 transition-all duration-200 ${
+          sidebarOpen ? 'w-80' : 'w-0 overflow-hidden border-r-0'
+        }`}
+      >
         <div className="p-4 border-b border-gray-200 bg-white">
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-sm font-semibold text-gray-900">投研项目</h2>
@@ -794,10 +833,21 @@ export function ResearchBoardPage() {
         </div>
       </div>
 
-      {/* 右侧：看板 */}
-      <div className="flex-1 overflow-y-auto p-5">
+      {/* 折叠按钮 — 贴在左右分界处 */}
+      <button
+        onClick={() => setSidebarOpen(v => !v)}
+        title={sidebarOpen ? '收起项目列表' : '展开项目列表'}
+        className="flex-shrink-0 self-start mt-4 w-5 flex flex-col items-center justify-center gap-1 py-3 bg-white border border-gray-200 border-l-0 rounded-r-lg shadow-sm hover:bg-indigo-50 hover:border-indigo-200 transition-colors z-10"
+      >
+        <ChevronLeft
+          className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${sidebarOpen ? '' : 'rotate-180'}`}
+        />
+      </button>
+
+      {/* 右侧：看板 — flex col，boardResult 时撑满高度不滚动外层 */}
+      <div className={`flex-1 flex flex-col overflow-hidden ${boardResult ? 'p-4' : 'overflow-y-auto p-5'}`}>
         {!selectedId && (
-          <div className="h-full flex items-center justify-center text-gray-400">
+          <div className="flex items-center justify-center py-16 text-gray-400">
             <div className="text-center">
               <BarChart2 className="w-12 h-12 mx-auto mb-3 opacity-30" />
               <p className="text-sm">选择左侧项目查看分析看板</p>
@@ -807,13 +857,13 @@ export function ResearchBoardPage() {
         )}
 
         {selectedId && loadingResult && (
-          <div className="h-full flex items-center justify-center text-gray-400">
+          <div className="flex-1 flex items-center justify-center text-gray-400">
             <RefreshCw className="w-6 h-6 animate-spin" />
           </div>
         )}
 
         {selectedId && !loadingResult && !boardResult && (
-          <div className="h-full flex items-center justify-center text-gray-400">
+          <div className="flex-1 flex items-center justify-center text-gray-400">
             <div className="text-center">
               <Play className="w-10 h-10 mx-auto mb-3 opacity-30" />
               <p className="text-sm">暂无分析结果</p>
@@ -823,7 +873,9 @@ export function ResearchBoardPage() {
         )}
 
         {selectedId && !loadingResult && boardResult && (
-          <BoardView result={boardResult} />
+          <div className="flex-1 min-h-0">
+            <BoardView result={boardResult} />
+          </div>
         )}
       </div>
     </div>
