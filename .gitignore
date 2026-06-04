@@ -2,6 +2,12 @@
 db/market.db
 db/market.db-shm
 db/market.db-wal
+research_board/research_board.db
+research_board.db
+
+# Codex / Claude tooling caches
+.codex/
+.codegraph/
 
 # 本地环境变量
 .env.local
