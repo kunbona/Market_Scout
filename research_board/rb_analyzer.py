@@ -86,8 +86,8 @@ body {
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 .chart-box  { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
 .chart-label { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; font-weight: 500; }
-.kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
-.kv-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+.kv-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.kv-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; flex: 1 1 180px; min-width: 0; }
 .kv-label { font-size: 11px; color: var(--text-muted); }
 .kv-value { font-size: 20px; font-weight: 700; color: var(--primary); margin-top: 2px; }
 .kv-sub   { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
@@ -109,6 +109,7 @@ REVIEW_CRITERIA = """
 6. 图表初始化完整：页面中每个 <div id="chart..."> 容器必须有对应的 echarts.init() 调用；若发现图表容器数量 > echarts.init() 调用数量，判定为不合格
 7. 无高度截断：body 标签、任何包裹容器（.page-wrapper / .main-wrap / .container 等）均不得设置 height 或 max-height 固定值；页面高度必须由内容自然撑开
 8. 无装饰性遮罩：不得添加 position:sticky/fixed 的渐变遮罩层（如底部 linear-gradient 淡出效果）；不得添加 position:fixed 的侧边导航浮层——这些元素在 iframe 中会遮挡内容
+9. KPI卡片布局：.kv-grid 必须用 display:flex + flex-wrap:wrap，.kv-card 必须有 flex:1 1 180px；禁止 display:grid 固定列数；禁止任何卡片独占整行（grid-column:1/-1 或 width:100%）
 """
 
 # ── 快速 HTML 预检查（Python 侧，无需 Claude） ────────────────────────────────
@@ -159,6 +160,18 @@ def _quick_html_check(html: str) -> list[str]:
     null_data = _re.search(r'data\s*:\s*\[[^\]]*\bnull\b', html)
     if null_data:
         issues.append("图表 series data 中含有 null 值，会导致折线图断层；数据缺失时应省略该年份或标注'暂无'")
+    # Check KPI grid: display:grid instead of flex
+    kv_grid_css = _re.search(r'\.kv-grid\s*\{[^}]*display\s*:\s*grid', html, _re.DOTALL)
+    if kv_grid_css:
+        issues.append(".kv-grid 使用了 display:grid，应改为 display:flex; flex-wrap:wrap 以确保卡片填满横向空间")
+    # Check kv-card lacking flex property
+    kv_card_css = _re.search(r'\.kv-card\s*\{([^}]+)\}', html, _re.DOTALL)
+    if kv_card_css and 'flex:' not in kv_card_css.group(1) and 'flex :' not in kv_card_css.group(1):
+        issues.append(".kv-card 缺少 flex:1 1 180px 属性，卡片无法均匀填满整行")
+    # Check any kv-card spanning full row
+    full_span = _re.search(r'(?:grid-column\s*:\s*1\s*/\s*-1|width\s*:\s*100%)', html)
+    if full_span:
+        issues.append("存在卡片独占整行（grid-column:1/-1 或 width:100%），应让所有卡片均等分配宽度")
     # Check truncated table body (tbody exists but has no <td> rows, or has <td> with empty content)
     tbody_empty = _re.search(r'<tbody>\s*</tbody>', html, _re.IGNORECASE)
     if tbody_empty:
@@ -272,6 +285,12 @@ _KIMI_HTML_TPL = """你是专业的A股投资研究员，使用 ECharts + HTML �
 8. 图表 series data 中**不得出现 `null`**；若某年份数据研报中不存在，直接从 xAxis 和 data 数组中省略该年份，不要用 null 占位
 9. 所有表格的 tbody **必须有完整数据行**；若研报数据不足，减少行数但不得留空 tbody
 10. 加 `window.addEventListener('message', ...)` 监听 `tab-shown` 消息后执行 `chart.resize()`
+11. **KPI 卡片布局原则**（重要）：
+    - `.kv-grid` 必须使用 `display: flex; flex-wrap: wrap; gap: 10px;`，**禁止使用 `display: grid`**
+    - `.kv-card` 必须设置 `flex: 1 1 180px; min-width: 0;`，让所有卡片均匀拉伸填满整行横向空间
+    - **禁止**给任何 `.kv-card` 设置 `grid-column: 1/-1`、`width: 100%` 或其他独占整行的属性
+    - KPI 卡片数量应与页面宽度匹配：横向空间充足时优先横向排列，**不要为了凑数量而让卡片纵向堆叠**
+    - 每张卡片的文字内容不宜过长，label ≤ 8字，value ≤ 10字，sub ≤ 18字，避免卡片内换行
 """
 
 def _build_kimi_prompt(project_name: str, dimension: str, sub_modules: list,
@@ -377,6 +396,7 @@ _REWRITE_TPL = """你是专业的A股投资研究员。
 - 图表 series data 中不得出现 null，数据缺失时从 xAxis 和 data 数组中省略该年份
 - body 和包裹容器不得设置固定 height 或 max-height，页面高度由内容自然撑开
 - 不得添加 position:sticky/fixed 的渐变遮罩层或侧边导航浮层
+- KPI卡片：.kv-grid 用 `display:flex;flex-wrap:wrap;gap:10px`，.kv-card 用 `flex:1 1 180px;min-width:0`，禁止固定列数 grid 或独占整行
 **只输出 HTML 代码，不加任何说明。**
 
 原始研报内容（供参考）：
