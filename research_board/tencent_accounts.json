@@ -1,0 +1,117 @@
+{
+  "accounts": [
+    {
+      "name": "研报精选",
+      "nick": "研报精选",
+      "query_type": "chlid",
+      "query_value": "18213759",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-03",
+      "article_count": 9603,
+      "note": "腾讯财经《研报精选》栏目官方账号。聚合中信建投、申万宏源、国泰海通、中信证券等主流券商研报。最核心的研报聚合账号，suid=8QIf3n5d7IcfsT/c5gM="
+    },
+    {
+      "name": "晚点LatePost",
+      "nick": "晚点LatePost",
+      "query_type": "chlid",
+      "query_value": "17234203",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-02",
+      "article_count": 3282,
+      "note": "深度财经科技媒体，suid=8QMc3Hhc74cevD/R"
+    },
+    {
+      "name": "远川投资评论",
+      "nick": "远川科技评论",
+      "query_type": "chlid",
+      "query_value": "17169014",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-02",
+      "article_count": 550,
+      "note": "原名远川投资评论，现更名远川科技评论，suid=8QMd2H9c6oMVuzc="
+    },
+    {
+      "name": "36氪",
+      "nick": "36氪",
+      "query_type": "guestSuid",
+      "query_value": "8QMf2Hdb64wYuTvR",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-03",
+      "article_count": 333386,
+      "note": "科技创投财经媒体，mediaid=67"
+    },
+    {
+      "name": "财联社",
+      "nick": "财联社",
+      "query_type": "guestSuid",
+      "query_value": "8QMb33lb64IasDg=",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-03",
+      "article_count": 711349,
+      "note": "上海报业集团旗下A股24小时实时电报，速报类财经资讯，mediaid=6975273"
+    },
+    {
+      "name": "界面新闻",
+      "nick": "界面新闻",
+      "query_type": "guestSuid",
+      "query_value": "8QMc3HhU640dvD/d",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-03",
+      "article_count": 1393160,
+      "note": "中国最大商业新闻平台，mediaid=5564731"
+    },
+    {
+      "name": "格隆汇",
+      "nick": "格隆汇",
+      "query_type": "guestSuid",
+      "query_value": "8QMd3Hhd6YIeuDvb",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-03",
+      "article_count": 1072853,
+      "note": "港股投研平台，全球视野，转载券商研报，mediaid=5018151"
+    },
+    {
+      "name": "智通财经网",
+      "nick": "智通财经网",
+      "query_type": "guestSuid",
+      "query_value": "8QMd3nda74UduTba",
+      "category": "finance_media",
+      "verified": true,
+      "last_article_date": "2026-06-03",
+      "article_count": 1005079,
+      "note": "港股/A股/美股资讯，转载东吴等券商研报，mediaid=5033220"
+    }
+  ],
+  "_not_found": {
+    "reason": "经过充分调研，以下目标账号在腾讯新闻上不存在独立直发账号，研报内容均通过「研报精选」（chlid=18213759）聚合发布",
+    "brokers_via_yanbaojingxuan": [
+      "中信证券研究",
+      "招商证券研究",
+      "华泰证券研究",
+      "广发证券研究",
+      "兴业证券研究",
+      "申万宏源研究（申万宏源策略）",
+      "东吴证券研究",
+      "中金公司研究部（中金点睛）",
+      "国泰海通证券研究",
+      "国信证券经济研究所",
+      "国投证券研究"
+    ],
+    "no_direct_account": [
+      "医药魔方（内容通过多个第三方账号分散发布，无独立腾讯号账号）",
+      "汇博资讯（腾讯新闻上未发现对应账号）"
+    ]
+  },
+  "_research_notes": {
+    "architecture": "腾讯新闻上的券商研报几乎全部通过「研报精选」（chlid=18213759）聚合账号发布。该账号从各家券商微信公众号（中信建投证券研究、申万宏源策略、国泰海通等）采集内容后转发，券商本身不直接运营腾讯号账号。",
+    "strategy": "订阅「研报精选」可获取覆盖率最广的主流券商研报。财联社适合速报/实时资讯。格隆汇和智通财经适合港股及全球视野研报。",
+    "updated": "2026-06-03"
+  }
+}
