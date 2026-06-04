@@ -497,17 +497,39 @@ def generate_tab_with_review(
 # 原因：让 LLM 渲染表格会导致行数被截断（token 耗尽）或 echarts.init 缺失。
 # 表格直接由 Python 用真实数据生成，永远正确、永远完整。
 
-_INTRO_TEXT_SYSTEM = """你是专业的A股投研助手。用中文输出纯文本内容，不要 HTML 标签，不要 markdown 符号（**/#/- 等）。"""
+_INTRO_TEXT_SYSTEM = """你是专业的A股投研助手。严格按照指定格式输出结构化文本，不要 HTML 标签，不要 markdown 符号（**/#/- 等）。"""
 
 _INTRO_TEXT_TPL = """研究项目：{project_name}
 关键词：{keywords}
 
 ---
-请输出以下两段内容（纯文字，不加任何格式符号）：
+请输出以下六段内容，严格使用【】标记每段，段内只有纯文字：
 
-【主题科普】
-用3-5段通俗语言解释"{project_name}"是什么：定义、核心原理/工艺、在产业链中的位置（上下游）、为什么对投资者重要。
-面向有金融背景但不懂技术细节的读者。每段50-80字。
+【产业链位置】
+100-150字。解释"{project_name}"在产业链中处于哪个位置：上游依赖什么原材料/设备，自身的核心制造工艺是什么，下游覆盖哪些应用场景/终端市场。
+结尾加一个具体数字感知句（例如：一部智能手机约含 X 颗，一辆新能源汽车需要约 Y 颗以上）。
+
+【关键词:产业链位置】
+从【产业链位置】中抽取3-5个最重要的专业名词或数字，逗号分隔（例如：上游关键材料、陶瓷粉体/镍粉、高阶MLCC）。
+这些词将在正文中加粗高亮显示。
+
+【为什么现在特别重要】
+100-150字。解释当前时间节点（2025-2026年）"{project_name}"为什么特别值得投资关注：列举2-3个具体催化剂（行业事件、政策、供需变化、大客户动向）。
+语气积极，面向投资者。
+
+【关键词:为什么重要】
+从【为什么现在特别重要】中抽取3-5个最重要的关键词或事件名，逗号分隔。
+
+【产业链节点】
+按上游→核心→下游顺序，列出5个节点，格式严格如下（每行一个节点，用|分隔名称和说明）：
+节点名称1|副说明1（10字内）
+节点名称2|副说明2（10字内）
+节点名称3★|副说明3（10字内，★表示"{project_name}"所在位置，只有一个节点加★）
+节点名称4|副说明4（10字内）
+节点名称5|副说明5（10字内）
+
+【一句话战略价值】
+一句话（40-60字），概括"{project_name}"对投资者的核心战略价值，要有洞见，不要套话。
 
 【分析框架】
 本次分析覆盖 {dim_count} 个维度，请逐条说明每个维度聚焦什么核心问题（一行一条，格式："维度名：一句话说明"）：
@@ -607,29 +629,86 @@ def generate_intro_tab(
         dim_count=len(dimensions),
         dimensions_list=dimensions_list,
     )
-    raw_text = _claude_call(_INTRO_TEXT_SYSTEM, user_msg, max_tokens=3000)
+    raw_text = _claude_call(_INTRO_TEXT_SYSTEM, user_msg, max_tokens=4000)
 
-    # Split into 主题科普 and 分析框架 sections
     import re as _re3
-    primer_text = ""
-    framework_text = ""
-    m_primer = _re3.search(r"【主题科普】([\s\S]*?)(?:【分析框架】|$)", raw_text)
-    m_framework = _re3.search(r"【分析框架】([\s\S]*?)$", raw_text)
-    if m_primer:
-        primer_text = m_primer.group(1).strip()
-    if m_framework:
-        framework_text = m_framework.group(1).strip()
 
-    # Fallback: treat entire text as primer if parsing fails
-    if not primer_text:
-        primer_text = raw_text.strip()
+    def _extract_section(tag: str, text: str) -> str:
+        """Extract content between 【tag】 and the next 【...】 or end of string."""
+        m = _re3.search(r"【" + _re3.escape(tag) + r"】([\s\S]*?)(?=【|$)", text)
+        return m.group(1).strip() if m else ""
 
-    # Render primer paragraphs
-    paras = [p.strip() for p in _re3.split(r"\n{2,}", primer_text) if p.strip()]
-    primer_html = "\n".join(
-        f'<p style="margin-bottom:12px;line-height:1.8;color:var(--text-secondary);font-size:13px;">{p}</p>'
-        for p in paras
-    )
+    # Parse all sections
+    chain_pos_text   = _extract_section("产业链位置", raw_text)
+    chain_pos_kws    = _extract_section("关键词:产业链位置", raw_text) or _extract_section("关键词：产业链位置", raw_text)
+    why_now_text     = _extract_section("为什么现在特别重要", raw_text)
+    why_now_kws      = _extract_section("关键词:为什么重要", raw_text) or _extract_section("关键词：为什么重要", raw_text)
+    chain_nodes_text = _extract_section("产业链节点", raw_text)
+    value_sentence   = _extract_section("一句话战略价值", raw_text)
+    framework_text   = _extract_section("分析框架", raw_text)
+
+    # Fallback: if parsing failed, put raw text in chain_pos
+    if not chain_pos_text and not why_now_text:
+        chain_pos_text = raw_text.strip()
+
+    def _highlight_keywords(text: str, kws_str: str) -> str:
+        """Bold-highlight comma-separated keywords in text."""
+        if not kws_str or not text:
+            return text
+        kws = [k.strip() for k in _re3.split(r"[,，、]", kws_str) if k.strip() and len(k.strip()) > 1]
+        for kw in kws:
+            escaped = _re3.escape(kw)
+            text = _re3.sub(
+                escaped,
+                f'<strong style="color:var(--text-primary);font-weight:700;">{kw}</strong>',
+                text,
+                count=1,
+            )
+        return text
+
+    chain_pos_html = _highlight_keywords(chain_pos_text, chain_pos_kws)
+    why_now_html   = _highlight_keywords(why_now_text, why_now_kws)
+
+    # Parse chain nodes: "名称★|副说明" per line
+    def _render_chain_nodes(nodes_text: str, project_name: str) -> str:
+        lines = [l.strip() for l in nodes_text.splitlines() if l.strip() and "|" in l]
+        if not lines:
+            return ""
+        items = []
+        for line in lines:
+            parts = line.split("|", 1)
+            name = parts[0].strip()
+            sub  = parts[1].strip() if len(parts) > 1 else ""
+            is_core = "★" in name
+            name_clean = name.replace("★", "").strip()
+            if is_core:
+                style = ('background:var(--primary);color:#fff;border:2px solid var(--primary);'
+                         'font-weight:700;')
+                label_style = 'color:rgba(255,255,255,0.85);'
+            else:
+                style = ('background:var(--bg-card);color:var(--text-primary);'
+                         'border:1px solid var(--border);')
+                label_style = 'color:var(--text-muted);'
+            items.append(
+                f'<div style="display:flex;flex-direction:column;align-items:center;'
+                f'border-radius:8px;padding:10px 12px;text-align:center;'
+                f'flex:1 1 80px;min-width:0;{style}">'
+                f'<span style="font-size:12px;font-weight:600;">{name_clean}</span>'
+                f'<span style="font-size:10px;margin-top:3px;{label_style}">{sub}</span>'
+                f'</div>'
+            )
+        # Interleave arrows
+        parts_html = []
+        for i, item in enumerate(items):
+            parts_html.append(item)
+            if i < len(items) - 1:
+                parts_html.append(
+                    '<div style="display:flex;align-items:center;padding:0 4px;'
+                    'color:var(--primary-light);font-size:18px;flex-shrink:0;">›</div>'
+                )
+        return "\n".join(parts_html)
+
+    chain_nodes_html = _render_chain_nodes(chain_nodes_text, project_name)
 
     # Render report table (Python, always complete)
     report_table_rows = _render_report_table(reports)
@@ -693,7 +772,11 @@ tr:hover td {{ background: var(--border-light); }}
   background: var(--primary); color: #fff; font-size: 9px; font-weight: 700;
   padding: 1px 7px; border-radius: 10px; white-space: nowrap;
 }}
-@media(max-width:600px) {{ .pipeline {{ flex-direction: column; }} .pipe-arrow {{ transform: rotate(90deg); align-self: flex-start; margin-left: 48px; }} }}
+@media(max-width:600px) {{
+  .pipeline {{ flex-direction: column; }}
+  .pipe-arrow {{ transform: rotate(90deg); align-self: flex-start; margin-left: 48px; }}
+  .two-col {{ grid-template-columns: 1fr !important; }}
+}}
 </style>
 </head>
 <body>
@@ -707,10 +790,37 @@ tr:hover td {{ background: var(--border-light); }}
 </div>
 
 <div class="section-header"><span class="section-num">1</span>主题科普</div>
-<p class="section-sub">帮助快速建立对研究标的的认知框架</p>
-<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:16px;">
-{primer_html}
+<p class="section-sub">快速建立对研究标的的认知框架</p>
+
+<!-- 产业链位置 + 为什么现在重要 两栏 -->
+<div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;">
+    <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:10px;">产业链位置</div>
+    <p style="font-size:12px;line-height:1.8;color:var(--text-secondary);margin:0;">{chain_pos_html}</p>
+  </div>
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;">
+    <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:10px;">为什么现在特别重要</div>
+    <p style="font-size:12px;line-height:1.8;color:var(--text-secondary);margin:0;">{why_now_html}</p>
+  </div>
 </div>
+
+<!-- 产业链位置示意图 -->
+{f'''<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:12px;">
+  <div style="font-size:11px;font-weight:700;color:var(--primary);text-align:center;margin-bottom:12px;letter-spacing:.06em;">
+    ⬡ {project_name} 产业链位置示意
+  </div>
+  <div style="display:flex;align-items:stretch;gap:0;flex-wrap:wrap;">
+    {chain_nodes_html}
+  </div>
+</div>''' if chain_nodes_html else ''}
+
+<!-- 一句话战略价值 -->
+{f'''<div style="background:var(--primary-muted);border:1px solid var(--border);border-left:4px solid var(--primary);border-radius:0 10px 10px 0;padding:12px 18px;margin-bottom:16px;display:flex;gap:12px;align-items:center;">
+  <span style="font-size:20px;flex-shrink:0;">💡</span>
+  <p style="font-size:12px;line-height:1.7;color:var(--text-primary);margin:0;">
+    <strong>一句话理解 {project_name} 的战略价值：</strong>{value_sentence}
+  </p>
+</div>''' if value_sentence else ''}
 
 <div class="section-header"><span class="section-num">2</span>研报数据来源</div>
 <p class="section-sub">本次分析共收录 {len(reports)} 篇专业机构研报</p>
