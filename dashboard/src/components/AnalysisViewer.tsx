@@ -255,7 +255,7 @@ export function AnalysisViewer({
     >
       {/* Tab bar — hidden when there's only one tab */}
       {!singleTab && (
-        <div className="flex items-center gap-0 border-b border-gray-200 bg-gray-50 overflow-x-auto flex-shrink-0">
+        <div className="flex items-center gap-0 border-b border-gray-200 bg-gray-50 overflow-x-auto overflow-y-hidden flex-shrink-0 scrollbar-none [&::-webkit-scrollbar]:hidden">
           {normalised.map((tab, i) => (
             <button
               key={i}
