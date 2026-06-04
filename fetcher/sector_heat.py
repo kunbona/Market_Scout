@@ -86,6 +86,11 @@ def fetch_dt_pool() -> None:
 
 
 def fetch_concept_heat() -> None:
+    """
+    概念板块涨跌幅 + 资金流。
+    降级策略：stock_board_concept_name_em 走 push2.eastmoney.com，
+    服务器 IP 被封时静默跳过，不写入数据，不刷 warning。
+    """
     try:
         fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         df = ak.stock_board_concept_name_em()
@@ -111,7 +116,8 @@ def fetch_concept_heat() -> None:
                 main_inflow_pct = 0.0
             insert_sector_flow(fetch_time, sector_name, change_pct, main_inflow, main_inflow_pct, source_type="concept")
     except Exception as e:
-        logger.warning(f"[sector_heat] fetch_concept_heat failed: {e}")
+        # push2.eastmoney.com 在服务器 IP 上被封，静默降级（不刷 warning）
+        logger.debug("[sector_heat] fetch_concept_heat 跳过（东财 push2 不可用）: %s", e)
 
 
 def fetch_zbgc_pool() -> None:

@@ -1,3 +1,7 @@
+"""
+概念板块资金流抓取。
+降级策略：stock_fund_flow_concept 走 push2.eastmoney.com，服务器 IP 被封时静默跳过。
+"""
 import logging
 from datetime import datetime
 import akshare as ak
@@ -48,4 +52,5 @@ def fetch_concept_flow() -> None:
             )
         logger.info("[concept_flow] 写入 %d 条概念资金流", len(df))
     except Exception as e:
-        logger.warning("[concept_flow] fetch failed: %s", e)
+        # push2.eastmoney.com 在服务器 IP 上被封，静默降级（不刷 warning）
+        logger.debug("[concept_flow] 跳过（东财 push2 不可用）: %s", e)
