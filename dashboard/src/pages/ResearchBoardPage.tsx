@@ -833,16 +833,18 @@ export function ResearchBoardPage() {
         </div>
       </div>
 
-      {/* 折叠按钮 — 贴在左右分界处 */}
-      <button
-        onClick={() => setSidebarOpen(v => !v)}
-        title={sidebarOpen ? '收起项目列表' : '展开项目列表'}
-        className="flex-shrink-0 self-start mt-4 w-5 flex flex-col items-center justify-center gap-1 py-3 bg-white border border-gray-200 border-l-0 rounded-r-lg shadow-sm hover:bg-indigo-50 hover:border-indigo-200 transition-colors z-10"
-      >
-        <ChevronLeft
-          className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${sidebarOpen ? '' : 'rotate-180'}`}
-        />
-      </button>
+      {/* 折叠按钮 — 垂直居中，贴在左右分界处 */}
+      <div className="flex-shrink-0 flex items-center self-stretch">
+        <button
+          onClick={() => setSidebarOpen(v => !v)}
+          title={sidebarOpen ? '收起项目列表' : '展开项目列表'}
+          className="w-5 h-12 flex items-center justify-center bg-white border border-gray-200 border-l-0 rounded-r-lg shadow-sm hover:bg-indigo-50 hover:border-indigo-200 transition-colors"
+        >
+          <ChevronLeft
+            className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${sidebarOpen ? '' : 'rotate-180'}`}
+          />
+        </button>
+      </div>
 
       {/* 右侧：看板 — flex col，boardResult 时撑满高度不滚动外层 */}
       <div className={`flex-1 flex flex-col overflow-hidden ${boardResult ? 'p-4' : 'overflow-y-auto p-5'}`}>
