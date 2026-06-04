@@ -23,10 +23,10 @@ from research_board.rb_storage import (
     upsert_rb_analysis,
     upsert_rb_result,
 )
-from research_board.kimi_runner import (
+from research_board.llm_runner import (
     run_dimension_analysis,
     run_merge_analysis,
-    _call_kimi,
+    _call_llm,
     _extract_json,
 )
 
@@ -161,7 +161,7 @@ def run_analysis(project_id: int) -> None:
             all_dimensions_json=all_dims_json,
         )
 
-        final_raw = _call_kimi(final_prompt)
+        final_raw = _call_llm(final_prompt)
         final_json = _extract_json(final_raw)
 
         # 注入元信息
