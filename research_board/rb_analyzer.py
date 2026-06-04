@@ -101,12 +101,13 @@ ECHARTS_CDN = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"
 REVIEW_CRITERIA = """
 评审标准（全部通过才算合格）：
 1. 内容深度：有具体数字、比例、时间节点，不是泛泛而谈
-2. 数据可信：所有数字必须来自研报原文，不得编造
+2. 数据可信：所有数字必须来自研报原文，不得编造；若某年份/字段数据研报中不存在，必须省略该数据点或标注"数据缺失"，不得填写 null 或 0
 3. 可视化质量：ECharts 图表有实际数据，不是占位符
 4. 主题适配：使用白底紫色主题（--primary: #7c3aed），不使用深色背景
-5. 无语法错误：HTML/JS 代码可正常运行
+5. 无语法错误：HTML/JS 代码可正常运行；HTML 内容不得被截断，所有表格的 tbody 必须有完整数据行
 6. 图表初始化完整：页面中每个 <div id="chart..."> 容器必须有对应的 echarts.init() 调用；若发现图表容器数量 > echarts.init() 调用数量，判定为不合格
-7. 无高度截断：任何包裹容器（.page-wrapper / .main-wrap / .container 等）不得设置 max-height + overflow:auto/scroll 组合；页面高度必须由内容自然撑开
+7. 无高度截断：body 标签、任何包裹容器（.page-wrapper / .main-wrap / .container 等）均不得设置 height 或 max-height 固定值；页面高度必须由内容自然撑开
+8. 无装饰性遮罩：不得添加 position:sticky/fixed 的渐变遮罩层（如底部 linear-gradient 淡出效果）；不得添加 position:fixed 的侧边导航浮层——这些元素在 iframe 中会遮挡内容
 """
 
 # ── 快速 HTML 预检查（Python 侧，无需 Claude） ────────────────────────────────
@@ -130,13 +131,41 @@ def _quick_html_check(html: str) -> list[str]:
     # Check dark background
     if '#0d1117' in html or 'background: #1' in html or 'background:#1' in html:
         issues.append("使用了深色背景，应改为白色背景")
-    # Check clipping wrapper: max-height + overflow:auto/scroll on a non-chart element
+    # Check clipping: max-height or fixed height on body / wrapper elements
+    body_height = _re.search(r'body\s*\{[^}]*\bheight\s*:\s*\d+px', html, _re.IGNORECASE | _re.DOTALL)
+    if body_height:
+        issues.append("body 设置了固定 height，会截断内容；应移除 body 的 height，让内容自然撑开")
     wrapper_clip = _re.findall(
         r'(?:page-wrapper|main-wrap|container|wrapper)[^{]*\{[^}]*max-height\s*:[^;]+;[^}]*overflow(?:-y)?\s*:\s*(?:auto|scroll)',
         html, _re.IGNORECASE | _re.DOTALL,
     )
     if wrapper_clip:
         issues.append("包裹容器设置了 max-height + overflow:auto，会导致内容被截断；应移除 max-height，让内容自然撑开")
+    # Check for decorative overlay/fixed nav that clips content in iframe
+    fade_overlay = _re.search(
+        r'position\s*:\s*(?:sticky|fixed)[^}]*linear-gradient[^}]*}',
+        html, _re.IGNORECASE | _re.DOTALL,
+    )
+    if fade_overlay:
+        issues.append("存在 position:sticky/fixed 的渐变遮罩层，在 iframe 中会遮挡正文内容；应删除该装饰元素")
+    fixed_nav = _re.search(
+        r'position\s*:\s*fixed[^}]*(?:right|left)\s*:\s*\d+[^}]*z-index[^}]*}',
+        html, _re.IGNORECASE | _re.DOTALL,
+    )
+    if fixed_nav:
+        issues.append("存在 position:fixed 的侧边/浮层导航，在 iframe 中无意义且遮挡内容；应删除该元素")
+    # Check null in series data (indicates missing data filled with null)
+    null_data = _re.search(r'data\s*:\s*\[[^\]]*\bnull\b', html)
+    if null_data:
+        issues.append("图表 series data 中含有 null 值，会导致折线图断层；数据缺失时应省略该年份或标注'暂无'")
+    # Check truncated table body (tbody exists but has no <td> rows, or has <td> with empty content)
+    tbody_empty = _re.search(r'<tbody>\s*</tbody>', html, _re.IGNORECASE)
+    if tbody_empty:
+        issues.append("表格 tbody 为空，内容未生成；请根据研报数据补全表格行")
+    # Check tbody that opens a <td> but content is missing (truncated output)
+    tbody_truncated = _re.search(r'<tbody>[\s\S]{0,200}<td>\s*<strong>\s*$', html, _re.IGNORECASE)
+    if tbody_truncated:
+        issues.append("表格 tbody 内容不完整（HTML 被截断）；请完整输出所有数据行直到 </tbody></table>")
     return issues
 
 
@@ -237,8 +266,11 @@ _KIMI_HTML_TPL = """你是专业的A股投资研究员，使用 ECharts + HTML �
 3. 引入 ECharts：`<script src="{echarts_cdn}"></script>`
 4. 图表必须有真实数据（来自研报），不得使用占位符
 5. 每种图表类型选择最能说明问题的：成本构成 → 面积/饼图；竞争格局 → 雷达/表格；估值 → 柱状+折线；替代风险 → 表格
-6. **不要**给任何包裹容器（.page-wrapper / .main-wrap / .container 等）设置 max-height 或固定 height；页面高度由内容自然撑开，iframe 会自动滚动
-7. 加 `window.addEventListener('message', ...)` 监听 `tab-shown` 消息后执行 `chart.resize()`
+6. **body 标签和任何包裹容器**均不得设置固定 height 或 max-height；页面高度由内容自然撑开，iframe 会自动滚动
+7. **不得添加**：① position:sticky/fixed 的渐变淡出遮罩（如底部 linear-gradient 效果）；② position:fixed 的侧边导航浮层。这些元素在 iframe 中无意义且会遮挡内容
+8. 图表 series data 中**不得出现 `null`**；若某年份数据研报中不存在，直接从 xAxis 和 data 数组中省略该年份，不要用 null 占位
+9. 所有表格的 tbody **必须有完整数据行**；若研报数据不足，减少行数但不得留空 tbody
+10. 加 `window.addEventListener('message', ...)` 监听 `tab-shown` 消息后执行 `chart.resize()`
 """
 
 def _build_kimi_prompt(project_name: str, dimension: str, sub_modules: list,
@@ -337,7 +369,13 @@ _REWRITE_TPL = """你是专业的A股投资研究员。
 
 请修改后重新输出完整 HTML（维度：{dimension}，项目：{project_name}）。
 主题要求同上（白底紫色：--primary: #7c3aed），不得改为深色背景。
-**重要**：每个 <div id="chart..."> 容器都必须有对应的 echarts.init() 初始化代码，否则图表显示为空白。
+
+**必须遵守**：
+- 每个 <div id="chart..."> 容器都必须有对应的 echarts.init() 初始化代码，否则图表显示为空白
+- 所有表格的 tbody 必须有完整数据行，不得为空也不得截断
+- 图表 series data 中不得出现 null，数据缺失时从 xAxis 和 data 数组中省略该年份
+- body 和包裹容器不得设置固定 height 或 max-height，页面高度由内容自然撑开
+- 不得添加 position:sticky/fixed 的渐变遮罩层或侧边导航浮层
 **只输出 HTML 代码，不加任何说明。**
 
 原始研报内容（供参考）：
