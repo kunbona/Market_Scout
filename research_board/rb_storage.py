@@ -12,7 +12,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "research_board.db")
+_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "db", "research_board.db")
 
 
 @contextmanager

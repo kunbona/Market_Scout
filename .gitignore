@@ -1,12 +1,10 @@
 # 分析中间临时文件
 tmp/
 
-# 数据库
-db/market.db
-db/market.db-shm
-db/market.db-wal
-research_board/research_board.db
-research_board.db
+# 数据库（统一存放在 db/ 目录）
+db/*.db
+db/*.db-shm
+db/*.db-wal
 
 # Codex / Claude tooling caches
 .codex/
