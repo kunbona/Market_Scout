@@ -7,8 +7,8 @@ db/*.db-shm
 db/*.db-wal
 
 # Codex / Claude tooling caches
-.codex/
 .codegraph/
+# .codex/ 含项目角色配置（AGENTS.md / config.toml），保留在 git
 
 # 本地环境变量
 .env.local
