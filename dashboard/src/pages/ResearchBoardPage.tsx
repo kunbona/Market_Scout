@@ -1045,11 +1045,11 @@ export function ResearchBoardPage() {
       {/* 右侧：看板 — flex col，boardResult 时撑满高度不滚动外层 */}
       <div className={`flex-1 flex flex-col overflow-hidden ${boardResult ? 'p-4' : 'overflow-y-auto p-5'}`}>
         {!selectedId && (
-          <div className="flex items-center justify-center py-16 text-gray-400">
+          <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
-              <BarChart2 className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">选择左侧项目查看分析看板</p>
-              <p className="text-xs mt-1">或新建项目开始研究</p>
+              <BarChart2 className="w-20 h-20 mx-auto mb-5 text-indigo-200" />
+              <p className="text-xl font-semibold text-gray-500">选择左侧项目查看分析看板</p>
+              <p className="text-sm text-gray-400 mt-2">或新建项目开始研究</p>
             </div>
           </div>
         )}
