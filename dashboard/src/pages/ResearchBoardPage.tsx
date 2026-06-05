@@ -817,7 +817,7 @@ function ProjectCard({
           onClick={() => handleFetch(true)}
           disabled={isFetching || isAnalyzing}
           title="抓取元数据 + 下载 PDF 全文"
-          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 whitespace-nowrap"
         >
           <Search className="w-3.5 h-3.5" />
           抓取全文
@@ -826,7 +826,7 @@ function ProjectCard({
           onClick={handleAnalyze}
           disabled={isFetching || isAnalyzing || project.report_count === 0}
           title="启动 Kimi 分析所有维度"
-          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors disabled:opacity-50"
+          className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors disabled:opacity-50 whitespace-nowrap"
         >
           <Play className="w-3.5 h-3.5" />
           分析
