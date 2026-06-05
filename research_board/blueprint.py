@@ -391,13 +391,14 @@ def rb_export(pid: int):
             zf.writestr("analyses.json", json.dumps(analyses, ensure_ascii=False, default=str))
 
     buf.seek(0)
+    from urllib.parse import quote as _quote
     filename = f"rb_{safe_name}_{date_str}.zip"
+    encoded = _quote(filename, safe='')
     return send_file(
         buf,
         mimetype="application/zip",
-        as_attachment=True,
-        download_name=filename,
-    )
+        as_attachment=False,  # 不让 Flask 自己写 Content-Disposition
+    ), 200, {"Content-Disposition": f"attachment; filename=\"export.zip\"; filename*=UTF-8''{encoded}"}
 
 
 @rb_bp.route("/api/rb/projects/import", methods=["POST"])
@@ -588,12 +589,14 @@ function showTab(idx) {{
 </body>
 </html>"""
 
+    from urllib.parse import quote as _quote
     date_str = _dt.now().strftime("%Y%m%d")
     safe_name = project_name.replace("/", "_").replace(" ", "_")
     filename = f"rb_{safe_name}_{date_str}.html"
+    encoded = _quote(filename, safe='')
 
     return Response(
         wrapper_html,
         mimetype="text/html; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        headers={"Content-Disposition": f"attachment; filename=\"export.html\"; filename*=UTF-8''{encoded}"},
     )
