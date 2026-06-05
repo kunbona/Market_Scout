@@ -485,6 +485,30 @@ def _quick_html_check(html: str) -> list[str]:
             )
             break
 
+    # 甘特图 xAxis min 与差值数据不匹配检测
+    # 典型错误：xAxis { type:'value', min:2022, max:2030 } + series data 用差值（如 2025-2022=3）
+    # 根本原因：ECharts stack bar 的 value 是宽度（从0累加），不受 xAxis.min 偏移影响。
+    #           轴显示 2022-2030，但所有 bar 坐标在 [0,8] 区间，完全落在可见区域外。
+    # 检测策略：找到 xAxis min >= 1900（年份特征），同时 script 里存在
+    #           "差值写法"（value: 年份1 - 年份2）
+    xaxis_year_min = _re.findall(
+        r'xAxis\s*:\s*\{[^}]*\bmin\s*:\s*((?:19|20)\d{2})\b', html
+    )
+    if xaxis_year_min:
+        # 检查同一 script 块内是否有 value: 年份 - 年份 的差值写法
+        gantt_diff = _re.findall(
+            r'\bvalue\s*:\s*(?:19|20)\d{2}\s*-\s*(?:19|20)\d{2}\b', html
+        )
+        if gantt_diff:
+            issues.append(
+                f"甘特图 xAxis.min 设为年份（{xaxis_year_min[0]}）但 series data 用差值写法"
+                f"（如 `value: 2025 - 2022`）。"
+                f"ECharts stack bar 的坐标是差值的累加（从0起算），不受 xAxis.min 偏移影响，"
+                f"导致所有 bar 落在可见区域外：坐标轴显示但图表内容空白。"
+                f"修复方案：将 xAxis.min 改为 0，max 改为（结束年-起始年），"
+                f"axisLabel.formatter 加偏移：`function(v){{ return (v + {xaxis_year_min[0]}) + ''; }}`"
+            )
+
     return issues
 
 
