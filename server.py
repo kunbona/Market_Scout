@@ -85,13 +85,6 @@ DIST = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
 app = Flask(__name__, static_folder=DIST, static_url_path="")
 CORS(app)
 
-# research_board 模块（可插拔）
-try:
-    from research_board.blueprint import rb_bp
-    app.register_blueprint(rb_bp)
-except Exception as _rb_err:
-    import logging as _logging
-    _logging.getLogger(__name__).warning(f"[research_board] 加载失败，已跳过: {_rb_err}")
 
 
 # ---------------------------------------------------------------------------
