@@ -13,17 +13,14 @@ run_claude_pipeline()：整个分析 pipeline 的入口。
 
 _call_llm()：单次 Kimi 调用（用于单 tab 重生成、修复等场景）。
 call_claude_text()：纯文字 Claude 调用（decompose 等）。
-screenshot_html()：playwright 截图工具（维度验收时由 cli 内部 agent 调用）。
 """
 
-import glob
 import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
-import sys
 import threading
 import time as _time
 
@@ -297,137 +294,6 @@ def run_claude_pipeline(
 
 
 # ── playwright 截图 ───────────────────────────────────────────────────────────
-
-_playwright_ready = False
-_playwright_lock = threading.Lock()
-
-
-def _ensure_nss_in_path():
-    """playwright chromium 需要 libnspr4/libnss3，自动从 conda pkgs 注入 LD_LIBRARY_PATH。"""
-    if os.environ.get("_MARKET_RADAR_NSS_PATCHED"):
-        return
-    found_dirs = set()
-    home = os.path.expanduser("~")
-    search_roots = []
-    conda_prefix = os.environ.get("CONDA_PREFIX", "")
-    if conda_prefix:
-        search_roots.append(os.path.dirname(conda_prefix))
-    for base in [f"{home}/miniconda3", f"{home}/anaconda3", f"{home}/miniforge3"]:
-        if os.path.isdir(base):
-            search_roots.append(f"{base}/pkgs")
-            search_roots.append(f"{base}/envs")
-    for root in search_roots:
-        for path in glob.glob(f"{root}/**/libnspr4.so", recursive=True):
-            found_dirs.add(os.path.dirname(path))
-    if found_dirs:
-        extra = ":".join(sorted(found_dirs))
-        current = os.environ.get("LD_LIBRARY_PATH", "")
-        os.environ["LD_LIBRARY_PATH"] = f"{extra}:{current}" if current else extra
-        logger.info(f"[screenshot] 注入 NSS 库路径: {extra}")
-    os.environ["_MARKET_RADAR_NSS_PATCHED"] = "1"
-
-
-def _ensure_playwright():
-    """首次调用时安装 playwright + chromium（只装一次）。"""
-    global _playwright_ready
-
-    with _playwright_lock:
-        if _playwright_ready:
-            return
-
-        _ensure_nss_in_path()
-
-        try:
-            import playwright  # noqa: F401
-        except ImportError:
-            logger.info("[screenshot] playwright 未安装，正在安装…")
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "playwright", "--quiet"],
-                stdout=subprocess.DEVNULL,
-            )
-
-        try:
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                browser.close()
-        except Exception:
-            logger.info("[screenshot] chromium 未安装，正在安装系统依赖…")
-            subprocess.call(
-                [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-        _playwright_ready = True
-
-
-_ECHARTS_WAIT_SCRIPT = """
-() => new Promise((resolve) => {
-    const MAX_WAIT = 3000;
-    const start = Date.now();
-    function check() {
-        if (typeof echarts === 'undefined') { resolve(true); return; }
-        const els = document.querySelectorAll('[_echarts_instance_]');
-        if (els.length === 0) { resolve(true); return; }
-        let allDone = true;
-        els.forEach(el => {
-            const inst = echarts.getInstanceByDom(el);
-            if (inst && inst._model && !inst._model.getOption) allDone = false;
-        });
-        if (allDone || Date.now() - start > MAX_WAIT) { resolve(true); return; }
-        setTimeout(check, 100);
-    }
-    setTimeout(check, 300);
-})
-"""
-
-
-def screenshot_html(html: str) -> list[bytes]:
-    """
-    渲染 HTML（含 ECharts），等待图表完成，按滚动位置截 1-3 张图（各 1200×1400px）。
-    返回 PNG bytes 列表，最多 3 张。
-    """
-    _ensure_playwright()
-    from playwright.sync_api import sync_playwright
-
-    shots: list[bytes] = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1200, "height": 1400})
-
-        page.set_content(html, wait_until="domcontentloaded")
-        try:
-            page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
-        try:
-            page.evaluate(_ECHARTS_WAIT_SCRIPT)
-        except Exception:
-            pass
-
-        page_height = page.evaluate("() => document.body.scrollHeight")
-
-        offsets = [0]
-        if page_height > 1400:
-            offsets.append(1300)
-        if page_height > 2700:
-            offsets.append(2600)
-
-        for offset in offsets:
-            page.evaluate(f"window.scrollTo(0, {offset})")
-            _time.sleep(0.15)
-            shot = page.screenshot(
-                clip={"x": 0, "y": offset, "width": 1200,
-                      "height": min(1400, page_height - offset)},
-                type="png",
-            )
-            shots.append(shot)
-
-        browser.close()
-
-    return shots
 
 
 def _extract_json(text: str) -> dict | list:

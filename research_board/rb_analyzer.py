@@ -102,21 +102,6 @@ td { padding: 8px; border-bottom: 1px solid var(--border-light); color: var(--te
 
 ECHARTS_CDN = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"
 
-# ── HTML 质量规则（Python 硬检查，用于 run_analysis 文件读取后 + regenerate_single_tab）──
-
-REVIEW_CRITERIA = """
-评审标准（全部通过才算合格）：
-1. 内容深度：有具体数字、比例、时间节点，不是泛泛而谈
-2. 数据可信：所有数字必须来自研报原文，不得编造；若某年份/字段数据研报中不存在，必须省略该数据点或标注"数据缺失"，不得填写 null 或 0；series data 不得为空数组（[]）或全零数组
-3. 可视化质量：ECharts 图表 series data 有真实数值，不是占位符；不得用 scatter 散点图表达时间进度/量产推进（应改为带文字标注的自定义 HTML 时间轴，或横向条形图）
-4. 主题适配：使用白底紫色主题（--primary: #7c3aed），不使用深色背景
-5. 无语法错误：HTML/JS 代码可正常运行；HTML 内容不得被截断，所有表格的 tbody 必须有完整数据行
-6. 图表初始化完整：页面中每个 <div id="chart..."> 容器必须有对应的 echarts.init() 调用；若发现图表容器数量 > echarts.init() 调用数量，判定为不合格
-7. 无高度截断：body 标签、任何包裹容器（.page-wrapper / .main-wrap / .container 等）均不得设置 height 或 max-height 固定值；页面高度必须由内容自然撑开
-8. 无装饰性遮罩：不得添加 position:sticky/fixed 的渐变遮罩层；不得添加 position:fixed 的侧边导航浮层——这些元素在 iframe 中会遮挡内容
-9. KPI卡片布局：.kv-grid 必须用 display:flex + flex-wrap:wrap，.kv-card 必须有 flex:1 1 180px；禁止 display:grid 固定列数；禁止任何卡片独占整行（grid-column:1/-1 或 width:100%）
-"""
-
 # ── HTML 后处理 ───────────────────────────────────────────────────────────────
 
 import re as _re
@@ -791,80 +776,6 @@ _INTRO_HTML_TPL = """你是专业的A股投研助手，使用 HTML 生成研究�
 生成完整 HTML 后，用 bash 将完整内容写入 {output_path}，只输出"已写入 {output_path}"，不要在对话中输出 HTML。
 """
 
-def generate_intro_tab(
-    project_name: str,
-    keywords: list[str],
-    dimensions: list[str],
-    reports: list[dict],
-    dimension_questions: dict | None = None,
-    report_batches: list[str] | None = None,
-    progress_cb=None,
-) -> str:
-    """
-    研究背景 tab：Claude 直接输出完整 HTML，包含科普内容 + 研报表格 + 分析框架。
-    """
-    def _log(msg: str):
-        logger.info(msg)
-        if progress_cb:
-            progress_cb(msg)
-
-    _log("Claude 正在生成研究背景页面…")
-
-    # 研报元数据 JSON（不含全文，供 Claude 渲染表格）
-    reports_simple = [
-        {
-            "org": r.get("org_name") or "—",
-            "researcher": r.get("researcher") or "—",
-            "date": r.get("publish_date") or "—",
-            "rating": (r.get("rating") or "").strip() or "—",
-            "title": r.get("title") or "—",
-        }
-        for r in reports
-    ]
-
-    # 维度 + 核心决策问题
-    dq = dimension_questions or {}
-    dimensions_questions_text = "\n".join(
-        f"- {d}：{dq.get(d, '（核心投资逻辑）')}"
-        for d in dimensions
-    )
-
-    # 研报摘要（仅前2批，用于科普背景，不传全文避免 token 超限）
-    summary = ""
-    if report_batches:
-        summary = "\n\n---\n\n".join(report_batches[:2])[:12000]
-
-    user_msg = (
-        _INTRO_HTML_TPL
-        .replace("{output_path}", "__INTRO_OUTPATH__")
-        .format(
-            project_name=project_name,
-            keywords="、".join(keywords) if keywords else project_name,
-            report_count=len(reports),
-            reports_json=json.dumps(reports_simple, ensure_ascii=False, indent=2),
-            dim_count=len(dimensions),
-            dimensions_questions=dimensions_questions_text,
-            report_summary=summary or "（暂无研报摘要）",
-            theme_css=THEME_CSS,
-        )
-        .replace("__INTRO_OUTPATH__", "")
-    )
-
-    raw = call_claude_text(_INTRO_HTML_SYSTEM, user_msg, timeout=180)
-
-    # 提取 HTML
-    html = ""
-    for marker in ["<!DOCTYPE", "<!doctype", "<html"]:
-        idx = raw.lower().find(marker.lower())
-        if idx >= 0:
-            end = raw.lower().rfind("</html>")
-            if end > idx:
-                html = raw[idx:end + 7].strip()
-                break
-    if not html:
-        html = raw.strip()
-
-    return clean_html(html) if html else f"<p style='color:#d97706;padding:20px'>研究背景生成失败</p>"
 
 
 # ── 单 Tab 重新生成（前端"重新生成"按钮） ────────────────────────────────────
