@@ -319,3 +319,36 @@ def get_rb_result(project_id: int) -> dict | None:
     except Exception:
         d["summary"] = {}
     return d
+
+
+def import_rb_reports(project_id: int, reports: list[dict]) -> int:
+    """批量导入研报（含 full_text）。跳过已存在的（INSERT OR IGNORE）。返回插入行数。"""
+    inserted = 0
+    with _conn() as conn:
+        for r in reports:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO rb_report "
+                "(project_id, title, stock_code, stock_name, org_name, researcher, "
+                "publish_date, rating, aim_price, report_url, qtype, "
+                "pdf_status, full_text, source_url, source_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    project_id,
+                    r.get("title", ""),
+                    r.get("stock_code", ""),
+                    r.get("stock_name", ""),
+                    r.get("org_name", ""),
+                    r.get("researcher", ""),
+                    r.get("publish_date", ""),
+                    r.get("rating", ""),
+                    r.get("aim_price", ""),
+                    r.get("report_url", ""),
+                    r.get("qtype", 0),
+                    r.get("pdf_status", "pending"),
+                    r.get("full_text", None),
+                    r.get("source_url", None),
+                    r.get("source_type", "eastmoney_pdf"),
+                ),
+            )
+            inserted += cur.rowcount
+    return inserted

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Plus, Search, Trash2, Play, RefreshCw, ChevronDown, ChevronUp, ChevronLeft, BookOpen, BarChart2, AlertTriangle, TrendingUp, Layers } from 'lucide-react';
+import { Plus, Search, Trash2, Play, RefreshCw, ChevronDown, ChevronUp, ChevronLeft, BookOpen, BarChart2, AlertTriangle, TrendingUp, Layers, Download, Upload, FileText } from 'lucide-react';
 import { AnalysisViewer, type AnalysisTab } from '../components/AnalysisViewer';
 
 const BASE = '';
@@ -832,8 +832,25 @@ function ProjectCard({
           分析
         </button>
         <button
+          onClick={e => { e.stopPropagation(); window.location.href = `/api/rb/projects/${project.id}/export`; }}
+          disabled={isFetching || isAnalyzing}
+          title="导出项目（ZIP）"
+          className="p-1.5 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
+        >
+          <Download className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={e => { e.stopPropagation(); window.location.href = `/api/rb/projects/${project.id}/export-html`; }}
+          disabled={isFetching || isAnalyzing || project.status !== 'done'}
+          title="导出为单页 HTML（离线查看）"
+          className="p-1.5 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
+        >
+          <FileText className="w-3.5 h-3.5" />
+        </button>
+        <button
           onClick={e => { e.stopPropagation(); onDelete(); }}
           disabled={isFetching || isAnalyzing}
+          title="删除项目"
           className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
         >
           <Trash2 className="w-3.5 h-3.5" />
@@ -853,6 +870,9 @@ export function ResearchBoardPage() {
   const [loadingResult, setLoadingResult] = useState(false);
   const [err, setErr] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState('');
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const loadProjects = async () => {
     try {
@@ -912,6 +932,28 @@ export function ResearchBoardPage() {
     }, 2000);
   };
 
+  const handleImport = async (file: File) => {
+    setImporting(true);
+    setImportMsg('导入中…');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch('/api/rb/projects/import', { method: 'POST', body: form });
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || '导入失败');
+      const { project_name, report_count } = json.data;
+      setImportMsg(`已导入「${project_name}」（${report_count} 篇研报）`);
+      await loadProjects();
+      setTimeout(() => setImportMsg(''), 4000);
+    } catch (e) {
+      setImportMsg(e instanceof Error ? e.message : '导入失败');
+      setTimeout(() => setImportMsg(''), 4000);
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = '';
+    }
+  };
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* 左侧：项目列表（可折叠） */}
@@ -923,15 +965,37 @@ export function ResearchBoardPage() {
         <div className="p-4 border-b border-gray-200 bg-white">
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-sm font-semibold text-gray-900">投研项目</h2>
-            <button
-              onClick={() => setShowNewForm(v => !v)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              新建
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => importInputRef.current?.click()}
+                disabled={importing}
+                title="导入项目（.zip）"
+                className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Upload className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setShowNewForm(v => !v)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                新建
+              </button>
+            </div>
           </div>
           <p className="text-xs text-gray-400">基于研报的赛道深度分析</p>
+          {importMsg && (
+            <p className={`text-xs mt-1 ${importMsg.includes('失败') ? 'text-red-500' : 'text-indigo-600'}`}>
+              {importMsg}
+            </p>
+          )}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".zip"
+            className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleImport(f); }}
+          />
         </div>
 
         {/* 新建表单 */}
