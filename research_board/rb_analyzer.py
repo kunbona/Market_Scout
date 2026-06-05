@@ -473,38 +473,17 @@ def _quick_html_check(html: str) -> list[str]:
 
     # JS 字符串内嵌原始换行检测：单引号字符串跨行会导致 SyntaxError，整个 <script> 静默崩溃
     # 典型错误：formatter: '{b}\n{c}%'（Kimi 输出时用了真实换行而不是 \\n）
-    # 用逐字符扫描，避免正则误判相邻字符串之间的换行
     script_blocks = _re.findall(r'<script[\s\S]*?</script>', html, _re.IGNORECASE)
-    _js_nl_bad: list[str] = []
     for script in script_blocks:
-        in_sq = False
-        buf: list[str] = []
-        i = 0
-        while i < len(script):
-            ch = script[i]
-            if ch == '\\' and in_sq:
-                i += 2  # 跳过转义序列，不算原始换行
-                continue
-            if ch == "'" and not in_sq:
-                in_sq = True
-                buf = []
-            elif ch == "'" and in_sq:
-                in_sq = False
-                buf = []
-            elif ch == '\n' and in_sq:
-                _js_nl_bad.append(''.join(buf[-30:]) + '↵')
-            elif in_sq:
-                buf.append(ch)
-            i += 1
-        if _js_nl_bad:
+        bad_str = _re.findall(r"'[^'\n]{0,80}\n[^'\n]{0,80}'", script)
+        if bad_str:
+            issues.append(
+                f"JS 单引号字符串内含原始换行符（{len(bad_str)} 处），"
+                f"会导致 SyntaxError 使所有 ECharts 图表静默失败。"
+                f"示例：{repr(bad_str[0][:60])}。"
+                f"将 formatter 等字符串内的换行改为 \\\\n（转义）或用模板字符串（反引号）"
+            )
             break
-    if _js_nl_bad:
-        issues.append(
-            f"JS 单引号字符串内含原始换行符（{len(_js_nl_bad)} 处），"
-            f"会导致 SyntaxError 使所有 ECharts 图表静默失败。"
-            f"示例：{repr(_js_nl_bad[0][:60])}。"
-            f"将 formatter 等字符串内的换行改为 \\\\n（转义）或用模板字符串（反引号）"
-        )
 
     return issues
 
