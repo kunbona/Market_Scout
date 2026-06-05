@@ -1,6 +1,9 @@
-# Market Radar
+# Market Radar — Lite
 
-A 股财经信息聚合仪表盘 + 投研看板，React 前端 + Flask 后端，实时整合多源财经快讯、政策动态、市场数据、研究报告，并提供 AI 驱动的深度投研分析。
+A 股财经信息聚合仪表盘，React 前端 + Flask 后端，实时整合多源财经快讯、政策动态、市场数据、研究报告。
+
+> **版本说明**：这是 `lite` 分支，仅包含行情监控功能，无需 AI CLI 依赖，开箱即用。
+> 如需投研看板（AI 深度分析）功能，请切换到 `main` 分支。
 
 ---
 
@@ -11,7 +14,6 @@ A 股财经信息聚合仪表盘 + 投研看板，React 前端 + Flask 后端，
 - **市场实时**：涨停/跌停/炸板/强势股池、行业/概念资金流、行业板块排行、龙虎榜、大单异动、人气飙升、北向资金、雪球热度、融资融券、大宗交易、股东人数变化、同花顺主题热股、解禁/减持日历
 - **情绪分析**：本地日线量价指标（KPI 8 卡、连板梯队、行业密度、换手分层、市值分布、连板链条、成交异动、机构资金加速度）
 - **研究报告**：东方财富研报中心今日研报，支持 PDF 在线预览，按个股/行业/宏观/策略分类
-- **投研看板**：针对 A 股细分标的，自动抓取机构研报 → AI 多维度深度分析 → ECharts 可视化看板，生成 10+ 个分析 Tab
 
 ---
 
@@ -23,10 +25,9 @@ A 股财经信息聚合仪表盘 + 投研看板，React 前端 + Flask 后端，
 | 后端 | Flask + Waitress（生产 WSGI） |
 | 数据抓取 | AkShare + feedparser + requests + curl_cffi（Chrome 指纹） + BeautifulSoup |
 | 调度 | APScheduler（BackgroundScheduler，随 Flask 启动） |
-| 存储 | SQLite（`db/market.db` 主库 + `research_board/research_board.db` 投研库） |
+| 存储 | SQLite（`db/market.db`） |
 | 本地量价 | Parquet 日线因子（需自备 `Quant_Data/` 目录） |
 | RSS 代理 | RSSHub（Docker 独立服务） |
-| 投研 AI | Claude Code CLI（supervisor）+ Kimi K2.6（executor，via codex subagent） |
 
 ---
 
@@ -35,8 +36,8 @@ A 股财经信息聚合仪表盘 + 投研看板，React 前端 + Flask 后端，
 ### Linux
 
 ```bash
-# 1. 克隆项目
-git clone <repo>
+# 1. 克隆项目（lite 分支）
+git clone -b lite <repo>
 cd market-radar
 
 # 2. 安装 Python 依赖（推荐 conda 环境）
@@ -44,19 +45,16 @@ pip install -r requirements.txt
 
 # 3. 配置本地环境变量
 cp .env.example .env.local
-# 编辑 .env.local，设置以下变量（至少设置 QUANT_DATA_ROOT）：
+# 编辑 .env.local，至少设置 QUANT_DATA_ROOT：
 #   QUANT_DATA_ROOT=/path/to/Quant_Data
-#   OPENROUTER_API_KEY=sk-or-...      ← 投研看板 Kimi K2.6（必填）
-#   ANTHROPIC_API_KEY=sk-ant-...      ← 投研看板 Claude（必填）
-#   或 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN（OpenRouter 代理时）
 
-# 5. 启动 RSSHub（可选，RSS 源降级可跳过）
+# 4. 启动 RSSHub（可选，RSS 源降级可跳过）
 docker run -d --name rsshub --restart unless-stopped -p 1200:1200 diygod/rsshub
 
-# 6. 构建前端
+# 5. 构建前端
 cd dashboard && npm install && npm run build && cd ..
 
-# 7. 启动应用
+# 6. 启动应用
 bash start.sh
 # 或直接: python server.py
 ```
@@ -157,7 +155,7 @@ bash start.sh
 ```bash
 # 克隆项目（推荐放在 WSL 文件系统内，IO 性能更好）
 cd ~
-git clone <repo>
+git clone -b lite <repo>
 cd market-radar
 
 # 安装 Python 依赖
@@ -229,87 +227,6 @@ docker compose up -d
 
 ---
 
-## 投研看板 AI 依赖
-
-投研看板使用双 CLI 链路：**Claude Code CLI**（supervisor，负责整体 pipeline 调度和截图评审）+ **Codex CLI**（executor subagent，调用 Kimi K2.6 生成 ECharts HTML）。两者均需单独安装并配置。
-
-### 1. Claude Code CLI
-
-```bash
-# macOS / Linux
-npm install -g @anthropic-ai/claude-code
-
-# 验证
-claude --version
-```
-
-安装后登录（OAuth，无需手动填 API key）：
-
-```bash
-claude auth
-# 浏览器弹出 Anthropic 授权页面，完成后自动写入本地凭证
-```
-
-若通过 OpenRouter 代理（无需 Anthropic 账号）：
-
-```bash
-# 不执行 claude auth，改在 .claude/settings.json 中配置：
-# （复制 .claude/settings.json.example，替换 ANTHROPIC_AUTH_TOKEN 为 OpenRouter key）
-cp .claude/settings.json.example .claude/settings.json
-# 然后编辑 .claude/settings.json，填入真实 key
-```
-
-> `.claude/settings.json` 已在 `.gitignore` 中，不会进入版本库。
-
----
-
-### 2. Codex CLI
-
-Codex 是 OpenAI 开源的 CLI agent，本项目用它作为 Kimi K2.6 的执行载体。
-
-```bash
-# macOS / Linux / WSL2
-npm install -g @openai/codex
-
-# 验证
-codex --version
-```
-
-配置 Kimi K2.6（写入 `~/.codex/config.toml`）：
-
-```toml
-# ~/.codex/config.toml
-
-[profiles.research]
-model          = "moonshotai/kimi-k2"
-model_provider = "openrouter"
-
-[providers.openrouter]
-name    = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
-env_key  = "OPENROUTER_API_KEY"
-```
-
-> `OPENROUTER_API_KEY` 在 `.env.local` 中配置，`start.sh` 会自动 `export` 给子进程，codex 运行时可直接读取。
-
-**项目级 Codex 配置**（已在版本库中）：
-
-`.codex/config.toml` 设置了 `sandbox_mode = "read-only"` 和 `approval_policy = "never"`，让 codex 在被 claude -p 调用时全自动运行不弹出确认框。
-
-`.codex/AGENTS.md` 定义了子 Agent 的角色（只输出 JSON、不写文件、不执行命令），无需手动修改。
-
----
-
-### 3. 依赖检查
-
-```bash
-claude --version   # 需要 ≥ 0.2
-codex --version    # 需要 ≥ 0.1
-node --version     # 需要 ≥ 18（两个 CLI 均依赖）
-```
-
----
-
 ## 环境变量
 
 配置文件 `.env.local`（不提交到 git，基于 `.env.example` 复制）：
@@ -319,11 +236,8 @@ node --version     # 需要 ≥ 18（两个 CLI 均依赖）
 | `RSSHUB_BASE_URL` | `http://rsshub:1200` | RSSHub 服务地址。本地开发用 `http://localhost:1200`；Docker Compose 内部用 `http://rsshub:1200` |
 | `QUANT_DATA_ROOT` | `/path/to/Quant_Data` | 本地日线量价数据目录（可选，无此目录则情绪分析区显示空） |
 | `FLASK_PORT` | `20026` | Flask 监听端口 |
-| `OPENROUTER_API_KEY` | — | **投研看板必填**。Kimi K2.6 通过 codex subagent 调用（OpenRouter），由 claude CLI 传递给 codex |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Claude 截图评审使用的模型 ID（Anthropic SDK 直连，claude CLI 已 OAuth 登录无需额外 key） |
 
-> - RSSHub 不可用时，RSS 相关来源自动降级，不影响系统启动
-> - 投研看板 API Key 未配置时，仪表盘其他功能正常，仅投研看板分析功能不可用
+> RSSHub 不可用时，RSS 相关来源自动降级，不影响系统启动
 
 ---
 
@@ -394,7 +308,7 @@ curl http://localhost:1200/wallstreetcn/live/a-stock
 
 ### Tab 3 — 市场实时（情绪分析区，本地日线）
 
-本地量价数据存储于 `QUANT_DATA_ROOT`（默认 `/mnt/ssd_1T/runist/data/Quant_Data/`），每日收盘后离线计算。
+本地量价数据存储于 `QUANT_DATA_ROOT`，每日收盘后离线计算。
 
 | 模块 | 指标说明 |
 |------|---------|
@@ -431,8 +345,6 @@ curl http://localhost:1200/wallstreetcn/live/a-stock
 | `zbgc_pool` | 炸板股池 | 7 天 |
 | `strong_pool` | 强势股池 | 7 天 |
 | `lhb_data` | 龙虎榜 | 90 天 |
-| `zt_pool` | 涨停池 | 90 天 |
-| `dt_pool` | 跌停池 | 90 天 |
 | `hot_rank_up` | 人气飙升榜 | 7 天 |
 | `northbound_flow` | 北向/南向资金 | 30 天 |
 | `xq_hot` | 雪球关注热度 top 50 | 7 天 |
@@ -471,50 +383,38 @@ market-radar/
 ├── scheduler.py              # APScheduler 定时任务
 ├── fetch_status.py           # 抓取状态共享模块
 ├── start.sh                  # 启动脚本（Linux/macOS/WSL2，加载 .env.local）
-├── start.bat                 # 启动脚本（Windows：自动在 WSL2 内启动 RSSHub + Windows 本地 Python 启动 Flask）
+├── start.bat                 # 启动脚本（Windows）
 ├── requirements.txt
 ├── docker-compose.yml
 ├── .env.example              # 环境变量模板
-├── .claude/
-│   └── settings.json.example # Claude Code CLI 配置模板（复制为 settings.json 并填入 key）
-├── .codex/
-│   ├── config.toml           # Codex 项目级配置（只读沙箱 + 免确认）
-│   └── AGENTS.md             # Codex 子 Agent 角色定义（只输出 JSON，不写文件）
 ├── dashboard/                # React 前端
 │   ├── src/
-│   │   ├── pages/            # 4个主页面
+│   │   ├── pages/
 │   │   │   ├── NewsPage.tsx
 │   │   │   ├── PolicyPage.tsx
 │   │   │   ├── MarketRealtimePage.tsx
 │   │   │   ├── MarketSentimentPage.tsx
 │   │   │   └── ResearchPage.tsx
 │   │   ├── components/       # 公共组件
-│   │   └── lib/api.ts        # apiFetch 封装
-│   └── dist/                 # 构建产物（由 npm run build 生成）
+│   │   └── lib/api.ts
+│   └── dist/                 # 构建产物（npm run build 生成）
 ├── db/
-│   ├── storage.py            # SQLite CRUD（37张表）
+│   ├── storage.py            # SQLite CRUD
 │   └── market.db             # 数据库（自动创建，不提交）
 ├── fetcher/
 │   ├── cls_news.py           # 财联社电报
 │   ├── global_news.py        # 金十/格隆汇/东财/同花顺/第一财经/华尔街见闻
 │   ├── policy_rss.py         # 政策动态 RSS + 巨潮公告
 │   ├── research.py           # 东财研报 API
-│   ├── eastmoney.py          # 行业资金流/龙虎榜/融资融券/大宗交易/
-│   │                         # 股东人数/解禁减持/分红/行业排行/THS热股
+│   ├── eastmoney.py          # 行业资金流/龙虎榜/融资融券/大宗交易等
 │   ├── sector_heat.py        # 涨停/跌停/炸板/强势股池 + 概念热度
 │   ├── concept_flow.py       # 同花顺概念资金流（387个概念）
 │   ├── realtime_quote.py     # 全市场快照 + 乐咕活跃度
 │   ├── market_sentiment.py   # 人气飙升/北向资金/雪球热度/大单异动
-│   └── fundamentals.py       # mootdx 基本面财务/F10（盘中活跃股）
+│   └── fundamentals.py       # mootdx 基本面财务/F10
 ├── quant/
 │   ├── loader.py             # 本地 parquet 读取工具
 │   └── daily_compute.py      # 日度计算任务（每日 09:00 触发）
-├── research_board/           # 投研看板（AI 深度分析模块）
-│   ├── blueprint.py          # Flask Blueprint，API 前缀 /api/rb/
-│   ├── rb_analyzer.py        # 核心 pipeline：拆解→生成→硬检查→截图验收
-│   ├── rb_fetcher.py         # 东方财富研报抓取 + PDF 全文提取（curl_cffi）
-│   ├── rb_storage.py         # SQLite CRUD（research_board.db）
-│   └── llm_runner.py         # claude -p orchestrator + codex subagent（Kimi K2.6）
 └── agent/                    # Agent 分析层（接口预留）
     ├── classifier.py
     ├── sector_agent.py
@@ -524,70 +424,12 @@ market-radar/
 
 ---
 
-## 投研看板 Pipeline
-
-针对 A 股细分标的（如"玻璃基板"、"MLCC"），自动完成从研报抓取到多维度可视化分析。
-
-```
-研报抓取（东方财富 API + PDF 全文）
-    │
-    ▼
-【Claude】Phase 1：拆解维度
-  读取研报摘要，识别 5-8 个分析子模块，动态扩展维度列表
-    │
-    ▼
-【Kimi K2.6 × N 并发】Phase 2：各维度深度分析
-  每个维度独立生成完整 ECharts HTML 分析页
-    │
-    ├─► Python 硬检查（_quick_html_check）
-    │     检测 10 类确定性问题：data:[]、空tbody、甘特图格式、
-    │     scatter误用、body固定高度、深色背景、KPI卡片布局等
-    │     不通过 → Kimi 定点修复（只改问题位置，其他不动）
-    │
-    └─► 【Claude】内容质量评审，不通过 → Kimi 定点修复
-          （最多 MAX_REVIEW_ROUNDS=3 轮）
-    │
-    ▼
-【Kimi】Phase 3：生成研究背景 tab
-  Python 硬编码研报表格（永远完整），Kimi 生成文字科普内容
-    │
-    ▼
-【Kimi】Phase 4：生成产业全景 tab（等所有维度验收完才触发）
-  以各维度可信结论为输入，生成总览：KPI卡片 + BOM图 + 时间轴 + 多空结论
-  同样走 硬检查 + 截图验收 循环
-    │
-    ▼
-组装 tabs → 存入 research_board.db → 前端渲染
-```
-
-**API 端点**（前缀 `/api/rb/`）：
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/projects` | 项目列表 |
-| POST | `/projects` | 创建项目（name/keywords/dimensions） |
-| POST | `/projects/<id>/fetch` | 触发研报抓取 |
-| GET | `/projects/<id>/fetch-status` | 抓取进度 |
-| POST | `/projects/<id>/analyze` | 触发 AI 分析 |
-| GET | `/projects/<id>/analyze-status` | 分析进度（轮询） |
-| GET | `/projects/<id>/result` | 获取分析结果（tabs JSON） |
-| POST | `/projects/<id>/tabs/regenerate` | 单 Tab 重新生成（带指令） |
-| GET | `/projects/<id>/export` | 导出项目 ZIP（含研报全文 + 分析 HTML） |
-| GET | `/projects/<id>/export-html` | 导出为单页自包含 HTML（离线浏览） |
-| POST | `/projects/import` | 从 ZIP 导入项目（总是新建） |
-| DELETE | `/projects/<id>` | 删除项目 |
-
----
-
 ## 注意事项
 
 - 数据来源均为公开可访问的网络接口，仅供个人研究使用
-- `db/market.db` 和 `research_board/research_board.db` 不纳入版本控制，首次运行自动创建
+- `db/market.db` 不纳入版本控制，首次运行自动创建
 - `.env.local` 不纳入版本控制，用于本地环境覆盖
 - 前端 `dashboard/dist/` 需手动执行 `npm run build` 生成，不提交到 git
 - `QUANT_DATA_ROOT` 未配置时，情绪分析区（本地日线指标）显示为空，不影响其他 Tab
 - mootdx 基本面抓取仅在盘中运行，且只针对当日涨停/强势股池中的个股，不扫全市场
 - 雪球热度每次抓取约需 50 秒（全量分页），不影响其他并发任务
-- 投研看板分析单个项目约需 5-15 分钟（取决于维度数量和 Kimi 响应速度），前端有实时进度显示
-- Kimi K2.6 通过 `claude -p` → `codex exec --profile research` subagent 链路调用，claude 自主决定重试策略
-- Claude CLI 需 OAuth 登录（`claude auth`），codex 需配置 `~/.codex/config.toml`（`[profiles.research]`，model = `moonshotai/kimi-k2.6`，model_provider = `openrouter`）
