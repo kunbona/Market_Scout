@@ -53,7 +53,7 @@ def _get_env() -> dict:
 
 def _run_claude(prompt: str, timeout: int, env: dict) -> str:
     """
-    运行 `claude -p --dangerously-skip-permissions <prompt>`，返回文本输出。
+    运行 `claude -p --dangerously-skip-permissions`，prompt 通过 stdin 传入。
     使用 stream-json 格式（--output-format text 在当前 CLI 版本下 stdout 为空）。
     失败抛 RuntimeError。
     """
@@ -63,8 +63,8 @@ def _run_claude(prompt: str, timeout: int, env: dict) -> str:
             "--dangerously-skip-permissions",
             "--output-format", "stream-json",
             "--verbose",
-            prompt,
         ],
+        input=prompt,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -199,17 +199,20 @@ def run_claude_pipeline(
         "--dangerously-skip-permissions",
         "--output-format", "stream-json",
         "--verbose",
-        prompt,
     ]
 
     proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         env=env,
         cwd=os.path.dirname(os.path.dirname(__file__)),
     )
+    # prompt 通过 stdin 写入后立即关闭，避免 ARG_MAX 限制
+    proc.stdin.write(prompt)
+    proc.stdin.close()
 
     # stream-json: result.result 始终为空，实际输出在 assistant 事件的 content[].text 里
     # 收集顶层（非 subagent）assistant 文字块，最后一段即为最终输出
