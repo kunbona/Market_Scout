@@ -235,6 +235,87 @@ docker compose up -d
 
 ---
 
+## 投研看板 AI 依赖
+
+投研看板使用双 CLI 链路：**Claude Code CLI**（supervisor，负责整体 pipeline 调度和截图评审）+ **Codex CLI**（executor subagent，调用 Kimi K2.6 生成 ECharts HTML）。两者均需单独安装并配置。
+
+### 1. Claude Code CLI
+
+```bash
+# macOS / Linux
+npm install -g @anthropic-ai/claude-code
+
+# 验证
+claude --version
+```
+
+安装后登录（OAuth，无需手动填 API key）：
+
+```bash
+claude auth
+# 浏览器弹出 Anthropic 授权页面，完成后自动写入本地凭证
+```
+
+若通过 OpenRouter 代理（无需 Anthropic 账号）：
+
+```bash
+# 不执行 claude auth，改在 .claude/settings.json 中配置：
+# （复制 .claude/settings.json.example，替换 ANTHROPIC_AUTH_TOKEN 为 OpenRouter key）
+cp .claude/settings.json.example .claude/settings.json
+# 然后编辑 .claude/settings.json，填入真实 key
+```
+
+> `.claude/settings.json` 已在 `.gitignore` 中，不会进入版本库。
+
+---
+
+### 2. Codex CLI
+
+Codex 是 OpenAI 开源的 CLI agent，本项目用它作为 Kimi K2.6 的执行载体。
+
+```bash
+# macOS / Linux / WSL2
+npm install -g @openai/codex
+
+# 验证
+codex --version
+```
+
+配置 Kimi K2.6（写入 `~/.codex/config.toml`）：
+
+```toml
+# ~/.codex/config.toml
+
+[profiles.research]
+model          = "moonshotai/kimi-k2"
+model_provider = "openrouter"
+
+[providers.openrouter]
+name    = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key  = "OPENROUTER_API_KEY"
+```
+
+> `OPENROUTER_API_KEY` 在 `.env.local` 中配置，`start.sh` 会自动 `export` 给子进程，codex 运行时可直接读取。
+
+**项目级 Codex 配置**（已在版本库中）：
+
+`.codex/config.toml` 设置了 `sandbox_mode = "read-only"` 和 `approval_policy = "never"`，让 codex 在被 claude -p 调用时全自动运行不弹出确认框。
+
+`.codex/AGENTS.md` 定义了子 Agent 的角色（只输出 JSON、不写文件、不执行命令），无需手动修改。
+
+---
+
+### 3. 依赖检查
+
+```bash
+claude --version   # 需要 ≥ 0.2
+codex --version    # 需要 ≥ 0.1
+node --version     # 需要 ≥ 18（两个 CLI 均依赖）
+```
+
+---
+
 ## 环境变量
 
 配置文件 `.env.local`（不提交到 git，基于 `.env.example` 复制）：
@@ -400,6 +481,11 @@ market-radar/
 ├── requirements.txt
 ├── docker-compose.yml
 ├── .env.example              # 环境变量模板
+├── .claude/
+│   └── settings.json.example # Claude Code CLI 配置模板（复制为 settings.json 并填入 key）
+├── .codex/
+│   ├── config.toml           # Codex 项目级配置（只读沙箱 + 免确认）
+│   └── AGENTS.md             # Codex 子 Agent 角色定义（只输出 JSON，不写文件）
 ├── dashboard/                # React 前端
 │   ├── src/
 │   │   ├── pages/            # 4个主页面
@@ -492,6 +578,11 @@ market-radar/
 | POST | `/projects/<id>/analyze` | 触发 AI 分析 |
 | GET | `/projects/<id>/analyze-status` | 分析进度（轮询） |
 | GET | `/projects/<id>/result` | 获取分析结果（tabs JSON） |
+| POST | `/projects/<id>/tabs/regenerate` | 单 Tab 重新生成（带指令） |
+| GET | `/projects/<id>/export` | 导出项目 ZIP（含研报全文 + 分析 HTML） |
+| GET | `/projects/<id>/export-html` | 导出为单页自包含 HTML（离线浏览） |
+| POST | `/projects/import` | 从 ZIP 导入项目（总是新建） |
+| DELETE | `/projects/<id>` | 删除项目 |
 
 ---
 
