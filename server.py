@@ -1138,7 +1138,7 @@ def api_research_pdf():
 # Manual fetch trigger
 # ---------------------------------------------------------------------------
 
-from fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
+from core.fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
 
 
 def _run_fetch_all():
@@ -1271,7 +1271,7 @@ if __name__ == "__main__":
 
     _port = int(os.environ.get("FLASK_PORT", 20026))
 
-    from scheduler import start_scheduler
+    from core.scheduler import start_scheduler
     start_scheduler()
     start_flask(_port)
     print(f"[server] 仪表盘已启动 → http://0.0.0.0:{_port}")

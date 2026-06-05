@@ -13,7 +13,7 @@ if _env_file.exists():
             os.environ.setdefault(_k.strip(), _v.strip())
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
+from core.fetch_status import fetch_state as _fetch_state, fetch_lock as _fetch_lock
 
 from fetcher.cls_news import fetch as fetch_cls
 from fetcher.policy_rss import fetch as fetch_policy, fetch_cninfo
