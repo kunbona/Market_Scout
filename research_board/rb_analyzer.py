@@ -23,7 +23,7 @@ import os
 import threading
 from datetime import datetime
 
-from research_board.rb_fetcher import get_reports_text_batches
+
 from research_board.rb_storage import (
     get_project,
     get_rb_reports,
@@ -34,7 +34,8 @@ from research_board.rb_storage import (
 )
 from research_board.cli_runner import (
     _call_llm as kimi_call,
-    call_claude_text,
+    _run_claude,
+    _get_env,
     run_claude_pipeline,
     _extract_json,
 )
@@ -433,18 +434,19 @@ def _quick_html_check(html: str) -> list[str]:
 
 # ── Phase 1：Claude 拆解细分模块 & 动态维度 ──────────────────────────────────
 
-_DECOMPOSE_SYSTEM = """你是顶级A股投资研究团队的首席研究员。
-你的核心任务：从研报中提炼投资决策所需的分析框架——每个维度必须能回答"投资者应该关心什么、为什么"。
-只输出 JSON，不要其他文字。"""
+_DECOMPOSE_PROMPT_TPL = """你是顶级A股投资研究团队的首席研究员。
+你的核心任务：阅读研报后提炼投资决策所需的分析框架——每个维度必须能回答"投资者应该关心什么、为什么"。
 
-_DECOMPOSE_USER_TPL = """项目名称：{project_name}
-用户预设分析维度（必须全部保留，顺序不变）：{user_dimensions}
+## 项目名称：{project_name}（project_id={project_id}）
+## 用户预设分析维度（必须全部保留，顺序不变）：{user_dimensions}
 
-以下是该赛道的研报摘要（元数据 + 部分正文）：
-{report_summary}
+## 第一步：阅读研报
+用 Bash 执行以下命令，先获取研报列表，再选择性读取若干篇有代表性的研报全文（建议 5-10 篇，覆盖不同机构和时间段）：
+  python research_board/rb_query.py reports --project_id {project_id}
+  python research_board/rb_query.py report_text --id <report_id>
 
----
-请完成两步分析，输出如下 JSON：
+## 第二步：输出 JSON
+阅读完研报后，直接输出如下 JSON（不加任何说明，不加 markdown 代码块）：
 
 {{
   "sub_modules": ["模块1", "模块2", ...],
@@ -462,21 +464,20 @@ _DECOMPOSE_USER_TPL = """项目名称：{project_name}
 1. sub_modules：3-8 个细分模块，从研报实际内容提炼
 2. extra_dimensions：多篇研报共同高频出现的主题，单篇偶发不加
 3. final_dimensions：用户预设维度（原样、顺序在前）+ extra_dimensions，去重
-4. dimension_questions：为 final_dimensions 中每个维度写一个核心决策问题——这个问题的答案能直接影响仓位判断，不是泛泛的描述性问题
+4. dimension_questions：为 final_dimensions 中每个维度写一个核心决策问题
 5. 用户预设维度一个也不能删，名称不能改写
 6. 只输出 JSON"""
 
 
-def decompose_project(project_name: str, user_dimensions: list[str],
-                      report_batches: list[str]) -> dict:
-    """Claude 拆解细分模块 + 动态扩展维度 + 为每个维度生成核心决策问题。"""
-    summary = "\n\n---\n\n".join(report_batches[:2])[:20000]
-    user_msg = _DECOMPOSE_USER_TPL.format(
+def decompose_project(project_id: int, project_name: str, user_dimensions: list[str]) -> dict:
+    """Claude agent 阅读研报后拆解细分模块 + 动态扩展维度 + 为每个维度生成核心决策问题。"""
+    prompt = _DECOMPOSE_PROMPT_TPL.format(
         project_name=project_name,
+        project_id=project_id,
         user_dimensions=json.dumps(user_dimensions, ensure_ascii=False),
-        report_summary=summary,
     )
-    raw = call_claude_text(_DECOMPOSE_SYSTEM, user_msg)
+    env = _get_env()
+    raw = _run_claude(prompt, timeout=300, env=env)
     result = _extract_json(raw)
     if not isinstance(result, dict) or "final_dimensions" not in result:
         return {
@@ -503,13 +504,19 @@ def decompose_project(project_name: str, user_dimensions: list[str],
 
 _KIMI_HTML_TPL = """你是专业的A股投资研究员，使用 ECharts + HTML 生成研究分析页面。
 
-## 项目：{project_name}
+## 项目：{project_name}（project_id={project_id}）
 ## 当前分析维度：{dimension}
 ## 本维度的核心决策问题：{core_question}
 ## 细分模块参考：{sub_modules}
 
-## 研报原文
-{report_text}
+## 获取研报数据
+使用以下命令查询研报（工作目录为项目根目录）：
+  # 查看所有研报列表（含 ID、标题、机构、日期）
+  python research_board/rb_query.py reports --project_id {project_id}
+  # 读取单篇研报全文
+  python research_board/rb_query.py report_text --id <report_id>
+
+请先读取研报列表，再按维度相关性选择性读取若干篇全文用于分析。
 
 ---
 ## 分析任务
@@ -667,17 +674,17 @@ _PIPELINE_SYSTEM = """你是A股投研分析 pipeline 的 supervisor agent（Cla
 - 文件完整（有 <!DOCTYPE html> 和 </html>，大小 > 3KB）
 """
 
-_PIPELINE_USER_TPL = """## 项目：__PROJECT_NAME__
+_PIPELINE_USER_TPL = """## 项目：__PROJECT_NAME__（project_id=__PROJECT_ID__）
 ## 分析维度列表（共 __DIM_COUNT__ 个）：
 __DIMENSIONS_JSON__
 
 ## 细分模块参考：__SUB_MODULES__
 
-## 研报原文（供 Kimi 分析共享）：
-__REPORT_TEXT__
-
-## 研报元数据（供研究背景 subagent 渲染表格，不含全文）：
-__REPORTS_META_JSON__
+## 研报数据访问方式（工作目录为项目根目录）
+研报存储在 SQLite 数据库中，通过以下命令查询（结果为 JSON）：
+  python research_board/rb_query.py summary --project_id __PROJECT_ID__      # 项目概况
+  python research_board/rb_query.py reports --project_id __PROJECT_ID__      # 所有研报元数据列表
+  python research_board/rb_query.py report_text --id <report_id>             # 单篇研报全文
 
 ---
 ## 维度 HTML 生成规范（Kimi 的任务模板，传给 codex exec）：
@@ -692,10 +699,15 @@ __INTRO_TPL__
 ---
 ## 执行步骤
 
-### 第一步：构造 codex prompt，启动 Kimi 主 agent
+### 第一步：浏览研报概况
+用 Bash 执行：
+  python research_board/rb_query.py summary --project_id __PROJECT_ID__
+了解研报数量、来源分布，作为构造 Kimi prompt 的背景依据。
+
+### 第二步：构造 codex prompt，启动 Kimi 主 agent
 
 构造一条完整的 prompt 交给 `codex exec`，内容包含：
-- 研报原文（完整）
+- project_id 和 rb_query.py 的数据访问说明（让 Kimi 自己查研报）
 - 所有维度的名称、core_question（核心决策问题）、输出路径 `__TMP_DIR__/<hash>.html`
 - 产业全景输出路径 `__TMP_DIR__/overview.html`
 - 研究背景输出路径 `__TMP_DIR__/intro.html`
@@ -703,8 +715,9 @@ __INTRO_TPL__
 
 要求 Kimi 主 agent：
 1. 在 codex 内部用 subagent **并行**生成所有维度 HTML + 研究背景 HTML（各 subagent 互相独立，研究背景 subagent 不需要等维度完成）
-2. 所有维度完成后，读取各维度文件末尾的 `<!-- SUMMARY: ... -->` 注释，汇总为维度摘要
-3. 用汇总的维度摘要生成产业全景 HTML
+2. 每个 subagent 通过 rb_query.py 自己按需读取研报数据，不依赖主 agent 预先传入全文
+3. 所有维度完成后，读取各维度文件末尾的 `<!-- SUMMARY: ... -->` 注释，汇总为维度摘要
+4. 用汇总的维度摘要生成产业全景 HTML
 
 运行命令（只运行一次）：
 `codex exec --profile research --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check`
@@ -712,14 +725,14 @@ __INTRO_TPL__
 等待期间，每检测到文件出现（`test -s __TMP_DIR__/<hash>.html`），输出进度：
 `[PROGRESS] 完成：<维度名或"研究背景">`
 
-### 第二步：Claude 并行验收内容质量
+### 第三步：Claude 并行验收内容质量
 
 codex 完成后，用 Task tool 并行 dispatch Claude subagent 验收所有文件（包括研究背景），每个 subagent：
 1. 用 Bash 读取对应文件（`cat <path>`）
 2. 按上方 system prompt 的质量标准检查
 3. 返回：`{{"name":"<名称>","path":"<路径>","ok":true/false,"issue":"<未通过的具体标准，或空>"}}`
 
-### 第三步：输出路径 JSON（立即输出，不重试）
+### 第四步：输出路径 JSON（立即输出，不重试）
 
 ```json
 {{"tabs":[{{"name":"研究背景","path":"__TMP_DIR__/intro.html"}},{{"name":"<维度名>","path":"__TMP_DIR__/<hash>.html"}},...,{{"name":"产业全景","path":"__TMP_DIR__/overview.html"}}],"review":[{{"name":"...","ok":true/false,"issue":"..."}}]}}
@@ -797,7 +810,7 @@ _REGEN_TPL = """你是专业的A股投资研究员。请根据以下用户指令
 {instruction}
 
 ## 需要保持的原则
-- 维度：{dimension}，项目：{project_name}
+- 维度：{dimension}，项目：{project_name}（project_id={project_id}）
 - 保持白底紫色主题（--primary: #7c3aed）
 - 保留原有所有有价值的图表数据和文字内容，只按用户指令进行修改
 - 所有 ECharts 图表的 series data 必须有真实数据，图表容器数量必须等于 echarts.init() 调用数量
@@ -811,8 +824,9 @@ _REGEN_TPL = """你是专业的A股投资研究员。请根据以下用户指令
 ## 现有版本（供参考，按指令修改）
 {current_html}
 
-## 研报原文参考
-{report_text}
+## 研报数据（如需补充数据，用 Bash 查询）
+  python research_board/rb_query.py reports --project_id {project_id}
+  python research_board/rb_query.py report_text --id <report_id>
 """
 
 
@@ -854,19 +868,14 @@ def regenerate_single_tab(
         raise ValueError(f"项目 {project_id} 不存在")
 
     project_name: str = project["name"]
-    batches = get_reports_text_batches(project_id)
-    if not batches:
-        raise ValueError("没有研报全文可供参考，请先抓取研报 PDF")
-
-    combined = "\n\n---\n\n".join(batches)
 
     _log(f"Kimi 正在根据指令重写【{tab_name}】…")
     regen_prompt = _REGEN_TPL.format(
         instruction=instruction[:2000],
         dimension=tab_name,
         project_name=project_name,
+        project_id=project_id,
         current_html=current_html,
-        report_text=combined,
     )
     raw = kimi_call(regen_prompt)
 
@@ -956,21 +965,20 @@ def run_analysis(project_id: int) -> None:
                       step=1, total_steps=len(_PIPELINE_STEPS), steps=_PIPELINE_STEPS,
                       total_dimensions=0, done_dimensions=[])
 
-        # Phase 0: 获取研报批次
-        _log("准备研报文字批次…")
-        batches = get_reports_text_batches(project_id)
+        # Phase 0: 验证研报数据可用
+        _log("检查研报数据…")
         report_count = len(get_rb_reports(project_id))
-
-        if not batches:
+        has_text_count = len(get_rb_reports(project_id, pdf_status="done"))
+        if has_text_count == 0:
             update_project_status(project_id, "error")
             _set_progress(project_id, status="error", message="没有研报全文可分析，请先抓取")
             return
 
-        # Phase 1: Claude 拆解模块 + 扩展维度
+        # Phase 1: Claude agent 阅读研报，拆解模块 + 扩展维度
         _set_progress(project_id, phase=_PIPELINE_STEPS[1], step=2)
-        _log("Claude 正在拆解细分模块，扩展分析维度…")
+        _log("Claude 正在阅读研报，拆解细分模块，扩展分析维度…")
         try:
-            decomp = decompose_project(project_name, user_dimensions, batches)
+            decomp = decompose_project(project_id, project_name, user_dimensions)
         except Exception as dc_e:
             _log(f"模块拆解失败，使用默认维度继续（{dc_e}）")
             decomp = {"sub_modules": [], "final_dimensions": user_dimensions, "extra_dimensions": [], "dimension_questions": {}}
@@ -988,8 +996,6 @@ def run_analysis(project_id: int) -> None:
         _set_progress(project_id, phase=_PIPELINE_STEPS[2], step=3)
         _log(f"启动 Claude agent，并行生成 {len(final_dimensions)} 个维度 + 产业全景…")
 
-        combined = "\n\n---\n\n".join(batches)[:30000]
-
         # dims_info 带上每个维度的 core_question，供 Kimi subagent 各自聚焦
         dims_info = [
             {
@@ -1001,22 +1007,23 @@ def run_analysis(project_id: int) -> None:
         ]
 
         # 渲染各模板（固定字段 pre-render，动态占位符保留给 Claude/Kimi 填）
-        # 用 __PLACEHOLDER__ 手法保留 {dimension}/{core_question}/{output_path}
+        # 用 __PLACEHOLDER__ 手法保留 {dimension}/{core_question}/{output_path}/{project_id}
         kimi_tpl_rendered = (
             _KIMI_HTML_TPL
             .replace("{dimension}", "__DIM__")
             .replace("{core_question}", "__COREQ__")
             .replace("{output_path}", "__OUTPATH__")
+            .replace("{project_id}", "__PROJID__")
             .format(
                 project_name=project_name,
                 sub_modules="、".join(sub_modules) if sub_modules else "（从研报提炼）",
-                report_text="（完整研报原文已在上方提供，此处省略）",
                 theme_css=THEME_CSS,
                 echarts_cdn=ECHARTS_CDN,
             )
             .replace("__DIM__", "{dimension}")
             .replace("__COREQ__", "{core_question}")
             .replace("__OUTPATH__", "{output_path}")
+            .replace("__PROJID__", str(project_id))
         )
         overview_tpl_rendered = _OVERVIEW_TPL.format(
             project_name=project_name,
@@ -1029,9 +1036,8 @@ def run_analysis(project_id: int) -> None:
             output_path=f"{tmp_dir}/overview.html",
         )
 
-        # 研究背景模板：研报摘要仅前2批，不传全文
-        reports_meta = get_rb_reports(project_id)
         keywords = project.get("keywords", [])
+        reports_meta = get_rb_reports(project_id)
         reports_simple = [
             {
                 "org": r.get("org_name") or "—",
@@ -1042,7 +1048,6 @@ def run_analysis(project_id: int) -> None:
             }
             for r in reports_meta
         ]
-        intro_summary = "\n\n---\n\n".join(batches[:2])[:12000]
         dims_questions_text = "\n".join(
             f"- {d}：{dimension_questions.get(d, '（核心投资逻辑）')}"
             for d in final_dimensions
@@ -1058,7 +1063,7 @@ def run_analysis(project_id: int) -> None:
                 reports_json=json.dumps(reports_simple, ensure_ascii=False, indent=2),
                 dim_count=len(final_dimensions),
                 dimensions_questions=dims_questions_text,
-                report_summary=intro_summary or "（暂无研报摘要）",
+                report_summary="（通过 rb_query.py 查询）",
                 theme_css=THEME_CSS,
             )
             .replace("__PROJNAME__", project_name)
@@ -1068,11 +1073,10 @@ def run_analysis(project_id: int) -> None:
         pipeline_user = (
             _PIPELINE_USER_TPL
             .replace("__PROJECT_NAME__", project_name)
+            .replace("__PROJECT_ID__", str(project_id))
             .replace("__DIM_COUNT__", str(len(final_dimensions)))
             .replace("__DIMENSIONS_JSON__", json.dumps(dims_info, ensure_ascii=False, indent=2))
             .replace("__SUB_MODULES__", "、".join(sub_modules) if sub_modules else "（从研报提炼）")
-            .replace("__REPORT_TEXT__", combined)
-            .replace("__REPORTS_META_JSON__", json.dumps(reports_simple, ensure_ascii=False, indent=2))
             .replace("__KIMI_HTML_TPL__", kimi_tpl_rendered)
             .replace("__OVERVIEW_TPL__", overview_tpl_rendered)
             .replace("__INTRO_TPL__", intro_tpl_rendered)
