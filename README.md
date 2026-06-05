@@ -26,8 +26,7 @@ A 股财经信息聚合仪表盘 + 投研看板，React 前端 + Flask 后端，
 | 存储 | SQLite（`db/market.db` 主库 + `research_board/research_board.db` 投研库） |
 | 本地量价 | Parquet 日线因子（需自备 `Quant_Data/` 目录） |
 | RSS 代理 | RSSHub（Docker 独立服务） |
-| 投研 AI | Claude（supervisor，OAuth）+ Kimi K2.6（executor，via codex subagent） |
-| 投研截图 | Playwright + Chromium headless（ECharts 渲染后截图验收） |
+| 投研 AI | Claude Code CLI（supervisor）+ Kimi K2.6（executor，via codex subagent） |
 
 ---
 
@@ -43,12 +42,7 @@ cd market-radar
 # 2. 安装 Python 依赖（推荐 conda 环境）
 pip install -r requirements.txt
 
-# 3. 安装 Playwright Chromium（投研看板截图验收用，约 120MB）
-python -m playwright install chromium
-# 若系统缺少 libnspr4/libnss3，conda 环境下 start.sh 会自动处理
-# 或手动：sudo apt-get install libnspr4 libnss3
-
-# 4. 配置本地环境变量
+# 3. 配置本地环境变量
 cp .env.example .env.local
 # 编辑 .env.local，设置以下变量（至少设置 QUANT_DATA_ROOT）：
 #   QUANT_DATA_ROOT=/path/to/Quant_Data
@@ -520,7 +514,7 @@ market-radar/
 │   ├── rb_analyzer.py        # 核心 pipeline：拆解→生成→硬检查→截图验收
 │   ├── rb_fetcher.py         # 东方财富研报抓取 + PDF 全文提取（curl_cffi）
 │   ├── rb_storage.py         # SQLite CRUD（research_board.db）
-│   └── llm_runner.py         # claude -p orchestrator + codex subagent（Kimi K2.6）+ playwright 截图
+│   └── llm_runner.py         # claude -p orchestrator + codex subagent（Kimi K2.6）
 └── agent/                    # Agent 分析层（接口预留）
     ├── classifier.py
     ├── sector_agent.py
@@ -550,8 +544,7 @@ market-radar/
     │     scatter误用、body固定高度、深色背景、KPI卡片布局等
     │     不通过 → Kimi 定点修复（只改问题位置，其他不动）
     │
-    └─► 【Claude】截图验收（playwright 渲染 + 截 1-3 张图）
-          Claude 看截图做内容质量评审，不通过 → Kimi 定点修复
+    └─► 【Claude】内容质量评审，不通过 → Kimi 定点修复
           （最多 MAX_REVIEW_ROUNDS=3 轮）
     │
     ▼

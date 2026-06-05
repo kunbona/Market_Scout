@@ -22,12 +22,7 @@ pandas>=2.0.0
 mootdx>=0.11.0
 
 # ── 投研看板（Research Board）─────────────────────────────────────────────────
-anthropic>=0.40.0        # Claude SDK：仅用于截图多模态评审（base64 图片，claude -p 不支持）
-playwright>=1.40.0       # HTML → 截图（ECharts 渲染后截图供 Claude 评审）
-                         # 首次运行需安装 Chromium：python -m playwright install chromium
-                         # 系统依赖（若 libnspr4/libnss3 缺失）：
-                         #   Linux 有 sudo：sudo apt-get install libnspr4 libnss3
-                         #   conda 环境：start.sh 自动从 conda pkgs 注入 LD_LIBRARY_PATH
-                         # 运行时依赖：
-                         #   claude CLI（OAuth 登录）：主要入口，orchestrate codex → Kimi K2.6
-                         #   codex CLI（~/.codex/config.toml 配置 research profile）：驱动 Kimi subagent
+anthropic>=0.40.0        # Claude SDK：多模态 API 调用（投研看板 supervisor）
+                         # 运行时依赖（pip 安装外，需单独安装）：
+                         #   claude CLI：npm install -g @anthropic-ai/claude-code
+                         #   codex CLI：npm install -g @openai/codex
