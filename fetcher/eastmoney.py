@@ -32,8 +32,6 @@ def eastmoney_datacenter(report_name: str, columns: str = "ALL", filter_str: str
         logger.warning("[eastmoney_datacenter] %s failed: %s", report_name, e)
         return []
 
-logger = logging.getLogger(__name__)
-
 
 def fetch_sector_flow() -> None:
     try:

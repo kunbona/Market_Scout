@@ -7,11 +7,11 @@ research_board — 双层分析 Pipeline
     - Phase 2：并行 dispatch N 个 Kimi subagent（via codex exec），每个 subagent
                独立生成一个维度的完整 ECharts HTML，写入临时文件
     - Phase 3：所有维度完成后，Kimi subagent 生成产业全景总览，写入临时文件
-    - Phase 4：输出路径 JSON（不含 HTML 内容，不受 token 限制）
+    - Phase 4：从临时文件读取所有 HTML，执行 _quick_html_check 质量检查，
+               clean_html 清理，打包为 tabs 数组（含完整 HTML 内容）存入数据库
   Python 负责：
     - 数据准备（研报文本批次）
     - stream-json 进度读取 + 前端推送
-    - 从临时文件读取 HTML → _quick_html_check → clean_html → 存库
     - 研究背景 tab（Claude 生成文字科普，Python 硬编码研报表格）
     - 前端"重新生成单 Tab"（_REGEN_TPL + _quick_html_check）
 """
