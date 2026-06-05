@@ -1,12 +1,33 @@
-akshare>=1.16.14
-pdfplumber>=0.10.0
-feedparser>=6.0.11
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-apscheduler>=3.10.4
-pandas>=2.0.0
-waitress>=3.0.0
+# ── 核心 Web 框架 ──────────────────────────────────────────────────────────────
 flask>=3.0.0
 flask-cors>=4.0.0
+waitress>=3.0.0          # 生产 WSGI 服务器
+
+# ── 数据抓取 ───────────────────────────────────────────────────────────────────
+akshare>=1.16.14
+requests>=2.31.0
+curl_cffi>=0.6.0         # 东方财富 PDF 下载（Chrome 指纹模拟，绕过反爬）
+beautifulsoup4>=4.12.0
+feedparser>=6.0.11       # RSS 解析
+pdfplumber>=0.10.0       # PDF 全文提取（研报）
+
+# ── 调度 & 时间 ────────────────────────────────────────────────────────────────
+apscheduler>=3.10.4
 pytz>=2024.1
-mootdx>=0.14.0
+
+# ── 数据处理 ───────────────────────────────────────────────────────────────────
+pandas>=2.0.0
+
+# ── 本地量价（可选，缺少时情绪分析区显示空） ─────────────────────────────────
+mootdx>=0.11.0
+
+# ── 投研看板（Research Board）─────────────────────────────────────────────────
+anthropic>=0.40.0        # Claude SDK：仅用于截图多模态评审（base64 图片，claude -p 不支持）
+playwright>=1.40.0       # HTML → 截图（ECharts 渲染后截图供 Claude 评审）
+                         # 首次运行需安装 Chromium：python -m playwright install chromium
+                         # 系统依赖（若 libnspr4/libnss3 缺失）：
+                         #   Linux 有 sudo：sudo apt-get install libnspr4 libnss3
+                         #   conda 环境：start.sh 自动从 conda pkgs 注入 LD_LIBRARY_PATH
+                         # 运行时依赖：
+                         #   claude CLI（OAuth 登录）：主要入口，orchestrate codex → Kimi K2.6
+                         #   codex CLI（~/.codex/config.toml 配置 research profile）：驱动 Kimi subagent

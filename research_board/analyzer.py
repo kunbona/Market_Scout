@@ -23,7 +23,7 @@ from research_board.rb_storage import (
     upsert_rb_analysis,
     upsert_rb_result,
 )
-from research_board.llm_runner import (
+from research_board.cli_runner import (
     run_dimension_analysis,
     run_merge_analysis,
     _call_llm,

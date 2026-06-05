@@ -2,43 +2,46 @@
 research_board — 双层分析 Pipeline
 
 架构：
-  1. Claude（supervisor）读取研报摘要，拆解细分模块列表 + 动态扩展维度
-  2. Kimi（executor，每维度独立）深研每个模块，输出白紫主题 ECharts HTML
-  3. Claude 评审每个 HTML tab，不通过给修改意见，Kimi 重改（最多 MAX_REVIEW_ROUNDS 轮）
-  4. Claude 生成研究背景 tab（主题科普 / 研报数据来源 / 分析框架说明）
-  5. Claude 生成总览 tab（产业全景 / 核心指标 / BOM 成本面积图 / 产业里程碑）
-  6. 所有 tab 存入 rb_result.summary_json = {"tabs": [{"name": ..., "html": ...}]}
-
-Claude 走 ANTHROPIC_AUTH_TOKEN（OpenRouter 代理），model = ANTHROPIC_MODEL 或 claude-sonnet-4-6。
-Kimi 走 codex exec --profile research（已有 llm_runner._call_llm）。
+  Claude supervisor（claude -p）orchestrate 整个 pipeline：
+    - Phase 1：读研报摘要，拆解细分模块 + 动态扩展用户维度
+    - Phase 2：并行 dispatch N 个 Kimi subagent（via codex exec），每个 subagent
+               独立生成一个维度的完整 ECharts HTML，写入临时文件
+    - Phase 3：所有维度完成后，Kimi subagent 生成产业全景总览，写入临时文件
+    - Phase 4：输出路径 JSON（不含 HTML 内容，不受 token 限制）
+  Python 负责：
+    - 数据准备（研报文本批次）
+    - stream-json 进度读取 + 前端推送
+    - 从临时文件读取 HTML → _quick_html_check → clean_html → 存库
+    - 研究背景 tab（Claude 生成文字科普，Python 硬编码研报表格）
+    - 前端"重新生成单 Tab"（_REGEN_TPL + _quick_html_check）
 """
 
+import hashlib
 import json
 import logging
 import os
 import threading
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from research_board.rb_fetcher import get_reports_text_batches
 from research_board.rb_storage import (
     get_project,
     get_rb_reports,
+    get_rb_result,
     update_project_status,
     upsert_rb_analysis,
     upsert_rb_result,
 )
-from research_board.llm_runner import _call_llm as kimi_call, _extract_json
+from research_board.cli_runner import (
+    _call_llm as kimi_call,
+    call_claude_text,
+    run_claude_pipeline,
+    _extract_json,
+)
 
 logger = logging.getLogger(__name__)
 
-# ── 配置 ──────────────────────────────────────────────────────────────────────
-
-MAX_REVIEW_ROUNDS = 2   # Claude 对 Kimi HTML 的最多重审次数
-MAX_KIMI_WORKERS  = 3   # 各维度并发 Kimi 数
-CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL", "anthropic/claude-sonnet-4.6")
-
-# ── 主题 Token（单一来源，前端 THEME_TOKENS 保持同步） ────────────────────────
+# ── 主题 Token ────────────────────────────────────────────────────────────────
 
 THEME_CSS = """
 :root {
@@ -99,868 +102,887 @@ td { padding: 8px; border-bottom: 1px solid var(--border-light); color: var(--te
 
 ECHARTS_CDN = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"
 
+# ── HTML 质量规则（Python 硬检查，用于 run_analysis 文件读取后 + regenerate_single_tab）──
+
 REVIEW_CRITERIA = """
 评审标准（全部通过才算合格）：
 1. 内容深度：有具体数字、比例、时间节点，不是泛泛而谈
-2. 数据可信：所有数字必须来自研报原文，不得编造；若某年份/字段数据研报中不存在，必须省略该数据点或标注"数据缺失"，不得填写 null 或 0
-3. 可视化质量：ECharts 图表有实际数据，不是占位符
+2. 数据可信：所有数字必须来自研报原文，不得编造；若某年份/字段数据研报中不存在，必须省略该数据点或标注"数据缺失"，不得填写 null 或 0；series data 不得为空数组（[]）或全零数组
+3. 可视化质量：ECharts 图表 series data 有真实数值，不是占位符；不得用 scatter 散点图表达时间进度/量产推进（应改为带文字标注的自定义 HTML 时间轴，或横向条形图）
 4. 主题适配：使用白底紫色主题（--primary: #7c3aed），不使用深色背景
 5. 无语法错误：HTML/JS 代码可正常运行；HTML 内容不得被截断，所有表格的 tbody 必须有完整数据行
 6. 图表初始化完整：页面中每个 <div id="chart..."> 容器必须有对应的 echarts.init() 调用；若发现图表容器数量 > echarts.init() 调用数量，判定为不合格
 7. 无高度截断：body 标签、任何包裹容器（.page-wrapper / .main-wrap / .container 等）均不得设置 height 或 max-height 固定值；页面高度必须由内容自然撑开
-8. 无装饰性遮罩：不得添加 position:sticky/fixed 的渐变遮罩层（如底部 linear-gradient 淡出效果）；不得添加 position:fixed 的侧边导航浮层——这些元素在 iframe 中会遮挡内容
+8. 无装饰性遮罩：不得添加 position:sticky/fixed 的渐变遮罩层；不得添加 position:fixed 的侧边导航浮层——这些元素在 iframe 中会遮挡内容
 9. KPI卡片布局：.kv-grid 必须用 display:flex + flex-wrap:wrap，.kv-card 必须有 flex:1 1 180px；禁止 display:grid 固定列数；禁止任何卡片独占整行（grid-column:1/-1 或 width:100%）
 """
 
-# ── 快速 HTML 预检查（Python 侧，无需 Claude） ────────────────────────────────
+# ── HTML 后处理 ───────────────────────────────────────────────────────────────
 
 import re as _re
 
 
+def _fix_gantt_data(html: str) -> str:
+    """
+    修复 ECharts bar-stack 甘特图中 Kimi 常见的数据格式错误。
+
+    ECharts bar 系列在 value-axis 上绘制时，bars 从 x=0 画到 data 值。
+    正确甘特格式：占位 data = start_year（实际年份），持续 data = duration。
+    堆叠后占位结束位置即为起始年，彩色条从该位置延伸 duration 年。
+
+    Kimi 常见两种错误格式：
+    1. offset 格式：占位 data=[3,3,4,2]（start-xMin），彩色 data=[2,3,2,4]（duration）
+       → 占位条从 x=0 画到 3，在 xMin=2024 的轴上完全看不见
+       → 修复：占位 data 改为 start_year = xMin + offset
+
+    2. 多元素数组格式：data=[{value:[0,0,2024,2]}, ...]（y_idx, y_idx, start, dur）
+       或 data=[{value:[2025,2]}, ...]（start, dur）
+       → bar 系列不接受数组，条形不渲染
+       → 修复：提取 start 和 duration，转换为单值
+    """
+    # 找到所有 option 对象字面量：
+    #   1. chart.setOption({...})  — 内联形式
+    #   2. var option = {...}; chart.setOption(option) — 变量形式
+    # 两种都用括号计数提取对象，交给 _try_fix_gantt_option 处理
+    result = []
+    pos = 0
+    # 匹配两种起始模式，统一提取对象字面量
+    pat_setoption = _re.compile(
+        r'(\.setOption\s*\(\s*\{|var\s+\w+\s*=\s*\{)',
+        _re.DOTALL
+    )
+
+    while pos < len(html):
+        m = pat_setoption.search(html, pos)
+        if not m:
+            result.append(html[pos:])
+            break
+
+        # 追加匹配前的文本
+        result.append(html[pos:m.start()])
+
+        matched = m.group(0)
+        is_setoption = matched.lstrip().startswith('.')
+
+        # 括号计数找到完整对象字面量（找到匹配串中的 '{'）
+        brace_start = matched.rfind('{')
+        abs_brace = m.start() + brace_start
+        depth = 0
+        i = abs_brace
+        while i < len(html):
+            if html[i] == '{':
+                depth += 1
+            elif html[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        option_text = html[abs_brace:i + 1]
+
+        # 只处理含 bar + xAxis(value,min=年份) 的 option 对象
+        fixed = _try_fix_gantt_option(option_text)
+        prefix = matched[:brace_start]  # '.setOption(' 或 'var option = '
+        result.append(prefix + fixed)
+        pos = i + 1
+
+        if is_setoption:
+            # 跳过紧接的 ')' 关闭 setOption(...)
+            while pos < len(html) and html[pos] in ' \t\n\r':
+                pos += 1
+            if pos < len(html) and html[pos] == ')':
+                result.append(')')
+                pos += 1
+
+    return ''.join(result)
+
+
+def _try_fix_gantt_option(option_text: str) -> str:
+    """
+    尝试修复单个 setOption 参数文本中的甘特图数据格式。
+    无法解析时原样返回。
+    """
+    # 必须有 bar series 且 xAxis 是 value 类型且有 min 是年份
+    if "'bar'" not in option_text and '"bar"' not in option_text:
+        return option_text
+
+    xmin_m = _re.search(r'\bmin\s*:\s*(\d{4})\b', option_text)
+    if not xmin_m:
+        return option_text
+    x_min = int(xmin_m.group(1))
+    if x_min < 2000 or x_min > 2050:
+        return option_text
+
+    # 检测嵌套数组格式：data 里有 {value:[...]} 或 [[...]] 元素
+    has_nested = bool(_re.search(
+        r'\bdata\s*:\s*\[(?:[^[\]]*\[[^\]]*\][^[\]]*)+\]',
+        option_text
+    ))
+
+    # 检测 offset 格式：两组 bar series 都是纯数字单值，第一组值均 < 20（offset，不是年份）
+    bar_data_blocks = _re.findall(
+        r"type\s*:\s*['\"]bar['\"].*?data\s*:\s*(\[[^\[\]]+\])",
+        option_text, _re.DOTALL
+    )
+    is_offset_format = False
+    if not has_nested and len(bar_data_blocks) >= 2:
+        try:
+            first_vals = [float(x) for x in _re.findall(r'[-\d.]+', bar_data_blocks[0])]
+            if first_vals and all(v < 50 for v in first_vals):
+                is_offset_format = True
+        except Exception:
+            pass
+
+    if not has_nested and not is_offset_format:
+        return option_text
+
+    if has_nested:
+        return _fix_nested_array_gantt(option_text, x_min)
+    else:
+        return _fix_offset_gantt(option_text, x_min)
+
+
+def _fix_nested_array_gantt(option_text: str, x_min: int) -> str:
+    """
+    修复 {value:[...]} 或 [[...]] 数组格式的甘特数据。
+    识别两种子格式：
+      A: [start, end] 两元素 → 占位=start，持续=end-start
+      B: [y,y,start,dur] 四元素 → 占位=start，持续=dur
+      C: [start, dur] 两元素（start>=2000）→ 占位=start，持续=dur
+    """
+    def rewrite_data_array(data_str: str, series_idx: int) -> str:
+        # 提取每个元素的数值数组
+        items = _re.findall(
+            r'\{[^{}]*value\s*:\s*\[([^\]]+)\][^{}]*\}|\[([^\[\]]+)\]',
+            data_str
+        )
+        values_list = []
+        for v1, v2 in items:
+            raw = v1 or v2
+            try:
+                nums = [float(x) for x in _re.findall(r'[-\d.]+', raw)]
+                values_list.append(nums)
+            except Exception:
+                return data_str  # 无法解析，原样返回
+
+        if not values_list:
+            return data_str
+
+        n = len(values_list[0])
+        new_vals = []
+        for nums in values_list:
+            if n == 4:
+                # [y, y, start, duration]
+                start, dur = nums[2], nums[3]
+            elif n == 2:
+                if nums[0] >= 2000:
+                    # [start_year, duration]
+                    start, dur = nums[0], nums[1]
+                else:
+                    # [start_offset, end] — start_offset < 2000 means relative
+                    start, dur = x_min + nums[0], nums[1] - nums[0]
+            else:
+                return data_str
+
+            if series_idx == 0:
+                new_vals.append(str(int(start)))   # 占位 = 起始年
+            else:
+                new_vals.append(str(int(dur)))     # 持续 = 持续年数
+
+        return '[' + ', '.join(new_vals) + ']'
+
+    # 找到所有 bar series 的 data 块并依次替换
+    series_blocks = list(_re.finditer(
+        r"(type\s*:\s*['\"]bar['\"].*?data\s*:\s*)(\[(?:[^[\]]*\[[^\]]*\][^[\]]*)+\])",
+        option_text, _re.DOTALL
+    ))
+    if not series_blocks:
+        return option_text
+
+    result = option_text
+    offset = 0
+    for idx, m in enumerate(series_blocks):
+        old_data = m.group(2)
+        new_data = rewrite_data_array(old_data, idx)
+        if new_data != old_data:
+            start = m.start(2) + offset
+            end = m.end(2) + offset
+            result = result[:start] + new_data + result[end:]
+            offset += len(new_data) - len(old_data)
+
+    return result
+
+
+def _fix_offset_gantt(option_text: str, x_min: int) -> str:
+    """
+    修复 offset 格式：占位 data 是相对 xMin 的偏移值（如 [3,3,4,2]），
+    需要加上 x_min 变为实际起始年。彩色 series data（duration）保持不变。
+    """
+    bar_blocks = list(_re.finditer(
+        r"(type\s*:\s*['\"]bar['\"].*?data\s*:\s*)(\[[^\[\]]+\])",
+        option_text, _re.DOTALL
+    ))
+    if len(bar_blocks) < 2:
+        return option_text
+
+    # 只修改第一个（占位）series 的 data
+    m = bar_blocks[0]
+    old_data = m.group(2)
+    nums = [float(x) for x in _re.findall(r'[-\d.]+', old_data)]
+    if not nums or any(v >= 2000 for v in nums):
+        return option_text  # 已经是年份格式，不处理
+
+    new_nums = [str(int(x_min + v)) for v in nums]
+    new_data = '[' + ', '.join(new_nums) + ']'
+    result = option_text[:m.start(2)] + new_data + option_text[m.end(2):]
+    return result
+
+
+def clean_html(html: str) -> str:
+    """统一 HTML 后处理：剥离 markdown 代码块标记，移除导致 iframe 截断的 CSS 属性，修复甘特图数据。"""
+    if not html:
+        return html
+    html = _re.sub(r"^```(?:html)?\s*\n?", "", html.strip(), flags=_re.IGNORECASE)
+    html = _re.sub(r"\n?\s*```\s*$", "", html.strip())
+    html = html.strip()
+    html = _re.sub(r'(body\s*\{[^}]*)height\s*:\s*\d+px\s*;?\s*', r'\1', html, flags=_re.IGNORECASE)
+    html = _re.sub(r'\bmax-height\s*:\s*\d+[^;}\n]*;?\s*', '', html, flags=_re.IGNORECASE)
+    html = _re.sub(r'\boverflow-y\s*:\s*(auto|scroll)\s*;?\s*', '', html, flags=_re.IGNORECASE)
+    html = _re.sub(r'\boverflow\s*:\s*(auto|scroll)\s*;?\s*', '', html, flags=_re.IGNORECASE)
+    html = _fix_gantt_data(html)
+    return html
+
+
 def _quick_html_check(html: str) -> list[str]:
-    """Fast pre-review: returns list of critical issues found."""
+    """
+    Python 硬检查——所有可以用正则/计数确定性检测的质量问题。
+    返回问题列表（空列表 = 通过）。
+    """
     issues = []
-    # Check HTML is a complete document (not truncated mid-content)
+
     if '<!doctype' not in html.lower() and '<html' not in html.lower():
-        issues.append("HTML 输出不完整（缺少 <!DOCTYPE html> 和 <html> 标签，内容被截断）；请重新生成完整 HTML 文档")
-        return issues  # no point checking further on a fragment
-    # Count chart divs vs echarts.init calls
+        issues.append("HTML 输出不完整（缺少 <!DOCTYPE html> 和 <html> 标签）；请重新生成完整 HTML 文档")
+        return issues
+
+    if not html.rstrip().endswith('</html>'):
+        issues.append("HTML 被截断（未以 </html> 结尾）；请输出完整文档直到 </html>")
+        return issues
+
+    if '<!doctype' not in html.lower():
+        issues.append("缺少 <!DOCTYPE html> 声明")
+
     chart_divs = len(_re.findall(r'<div[^>]+id=["\'][^"\']*chart[^"\']*["\']', html, _re.IGNORECASE))
     init_calls = len(_re.findall(r'echarts\.init\s*\(', html))
     if chart_divs > 0 and init_calls == 0:
-        issues.append(f"发现 {chart_divs} 个图表容器但没有 echarts.init() 调用，图表将全部显示为空白")
+        issues.append(
+            f"发现 {chart_divs} 个图表容器（<div id='chart...'>）但没有 echarts.init() 调用，"
+            f"图表全部空白；每个容器必须有对应的 echarts.init() + setOption()"
+        )
     elif chart_divs > init_calls + 1:
-        issues.append(f"图表容器 {chart_divs} 个但 echarts.init() 只有 {init_calls} 次，部分图表将显示为空白")
-    # Check DOCTYPE
-    if '<!doctype' not in html.lower():
-        issues.append("缺少 <!DOCTYPE html> 声明")
-    # Check dark background
-    if '#0d1117' in html or 'background: #1' in html or 'background:#1' in html:
-        issues.append("使用了深色背景，应改为白色背景")
-    # Check clipping: max-height or fixed height on body / wrapper elements
-    body_height = _re.search(r'body\s*\{[^}]*\bheight\s*:\s*\d+px', html, _re.IGNORECASE | _re.DOTALL)
-    if body_height:
-        issues.append("body 设置了固定 height，会截断内容；应移除 body 的 height，让内容自然撑开")
-    wrapper_clip = _re.findall(
-        r'(?:page-wrapper|main-wrap|container|wrapper)[^{]*\{[^}]*max-height\s*:[^;]+;[^}]*overflow(?:-y)?\s*:\s*(?:auto|scroll)',
-        html, _re.IGNORECASE | _re.DOTALL,
+        issues.append(
+            f"图表容器 {chart_divs} 个但 echarts.init() 只有 {init_calls} 次，"
+            f"缺少 {chart_divs - init_calls} 个图表的初始化代码"
+        )
+
+    empty_series = _re.findall(r'\bdata\s*:\s*\[\s*\]', html)
+    if empty_series:
+        issues.append(
+            f"发现 {len(empty_series)} 处 series data 为空数组（data: []），图表将空白；"
+            f"必须填入来自研报的真实数值，若确无数据请删除该图表"
+        )
+
+    zero_series = _re.findall(r'\bdata\s*:\s*\[(?:\s*0\s*,\s*){2,}\s*0\s*\]', html)
+    if zero_series:
+        issues.append(
+            f"发现 {len(zero_series)} 处 series data 全为 0；"
+            f"必须填入来自研报的真实数值"
+        )
+
+    null_series = _re.findall(r'\bdata\s*:\s*\[[^\]]*\bnull\b[^\]]*\]', html)
+    if null_series:
+        issues.append(
+            f"发现 {len(null_series)} 处 series data 含 null；"
+            f"数据缺失时直接从 xAxis.data 和 series.data 中省略该年份"
+        )
+
+    empty_value = _re.search(r'\bvalue\s*:\s*(?:0|null|""|\'\')(?:\s*[,}])', html)
+    if empty_value:
+        issues.append("饼图/树图存在 value 为 0/null/空字符串的扇区，图表将显示空扇区；请填入真实数值或删除该数据项")
+
+    empty_tbody = _re.search(r'<tbody>\s*</tbody>', html, _re.IGNORECASE)
+    if empty_tbody:
+        issues.append("存在空 <tbody></tbody>；所有表格必须有完整数据行")
+
+    # tab-shown 消息格式检测：前端发 {type:'tab-shown'} 对象，不是裸字符串
+    if _re.search(r"e\.data\s*===\s*['\"]tab-shown['\"]", html):
+        issues.append(
+            "tab-shown 消息监听写法错误：用了 `e.data === 'tab-shown'`（裸字符串），"
+            "前端发的是 `{type:'tab-shown'}` 对象，导致 resize() 永远不触发，图表宽度为0。"
+            "必须改为 `e.data && e.data.type === 'tab-shown'`"
+        )
+
+    # 甘特图 data 数组检测：bar stack 甘特图的 data 每项必须是单值，不能是 [x,y] 或 [x,y,z] 数组
+    # 典型错误：data: [{value:[2025,2028]}, ...] 或 data: [[2025,2028], ...]
+    gantt_array_data = _re.findall(
+        r'\bdata\s*:\s*\[(?:[^[\]]*\[[^\]]*\][^[\]]*)+\]',
+        html
     )
-    if wrapper_clip:
-        issues.append("包裹容器设置了 max-height + overflow:auto，会导致内容被截断；应移除 max-height，让内容自然撑开")
-    # Check for decorative overlay/fixed nav that clips content in iframe
-    fade_overlay = _re.search(
-        r'position\s*:\s*(?:sticky|fixed)[^}]*linear-gradient[^}]*}',
-        html, _re.IGNORECASE | _re.DOTALL,
-    )
-    if fade_overlay:
-        issues.append("存在 position:sticky/fixed 的渐变遮罩层，在 iframe 中会遮挡正文内容；应删除该装饰元素")
-    fixed_nav = _re.search(
-        r'position\s*:\s*fixed[^}]*(?:right|left)\s*:\s*\d+[^}]*z-index[^}]*}',
-        html, _re.IGNORECASE | _re.DOTALL,
-    )
-    if fixed_nav:
-        issues.append("存在 position:fixed 的侧边/浮层导航，在 iframe 中无意义且遮挡内容；应删除该元素")
-    # Check null in series data (indicates missing data filled with null)
-    null_data = _re.search(r'data\s*:\s*\[[^\]]*\bnull\b', html)
-    if null_data:
-        issues.append("图表 series data 中含有 null 值，会导致折线图断层；数据缺失时应省略该年份或标注'暂无'")
-    # Check KPI grid: display:grid instead of flex
-    kv_grid_css = _re.search(r'\.kv-grid\s*\{[^}]*display\s*:\s*grid', html, _re.DOTALL)
-    if kv_grid_css:
-        issues.append(".kv-grid 使用了 display:grid，应改为 display:flex; flex-wrap:wrap 以确保卡片填满横向空间")
-    # Check kv-card lacking flex property
-    kv_card_css = _re.search(r'\.kv-card\s*\{([^}]+)\}', html, _re.DOTALL)
-    if kv_card_css and 'flex:' not in kv_card_css.group(1) and 'flex :' not in kv_card_css.group(1):
-        issues.append(".kv-card 缺少 flex:1 1 180px 属性，卡片无法均匀填满整行")
-    # Check any kv-card spanning full row
-    full_span = _re.search(r'(?:grid-column\s*:\s*1\s*/\s*-1|width\s*:\s*100%)', html)
-    if full_span:
-        issues.append("存在卡片独占整行（grid-column:1/-1 或 width:100%），应让所有卡片均等分配宽度")
-    # Check for Kimi reasoning/debug text leaking into HTML body
-    # Strip script/style blocks first, then check for reasoning patterns in remaining content
-    _html_no_script = _re.sub(r'<(?:script|style)[^>]*>[\s\S]*?</(?:script|style)>', '', html, flags=_re.IGNORECASE)
-    reasoning_leak = _re.search(
-        r'(?:'
-        r'\*\*chart-'        # markdown **chart-xxx** debug labels in body
-        r'|option\s*=\s*\{'  # raw JS option object outside script tags
-        r'|等等[，,。]'       # "等等，" self-correction
-        r'|不[，,]我'         # "不，我应该" self-correction
-        r'|我应该'            # "我应该" reasoning
-        r'|我想展示'          # reasoning
-        r'|这不是我想要'      # self-correction
-        r')',
-        _html_no_script,
-    )
-    if reasoning_leak:
-        issues.append("Kimi 将推理/调试过程（如 **chart-xxx** markdown标签或 option={...} 代码块）混入了 HTML body；必须删除所有非内容文字，body 中只保留用户可见的分析内容")
-    # Check truncated table body (tbody exists but has no <td> rows, or has <td> with empty content)
-    tbody_empty = _re.search(r'<tbody>\s*</tbody>', html, _re.IGNORECASE)
-    if tbody_empty:
-        issues.append("表格 tbody 为空，内容未生成；请根据研报数据补全表格行")
-    # Check tbody that opens a <td> but content is missing (truncated output)
-    tbody_truncated = _re.search(r'<tbody>[\s\S]{0,200}<td>\s*<strong>\s*$', html, _re.IGNORECASE)
-    if tbody_truncated:
-        issues.append("表格 tbody 内容不完整（HTML 被截断）；请完整输出所有数据行直到 </tbody></table>")
+    if gantt_array_data:
+        issues.append(
+            f"发现 {len(gantt_array_data)} 处 bar series data 含嵌套数组（如 [2025,2028] 或 [0,0,2025,3]），"
+            f"ECharts bar stack 甘特图每项 data 必须是单值：占位 data=[起始年，如2027]，持续 data=[持续年数，如3]"
+        )
+
     return issues
 
 
-# ── Claude API 调用 ───────────────────────────────────────────────────────────
+# ── Phase 1：Claude 拆解细分模块 & 动态维度 ──────────────────────────────────
 
-def _claude_call(system: str, user: str, max_tokens: int = 4096) -> str:
-    """调用 Claude（通过 Anthropic SDK，走 OpenRouter 代理）。"""
-    try:
-        import anthropic as ant
-    except ImportError:
-        raise RuntimeError("pip install anthropic")
-
-    api_key = (
-        os.environ.get("ANTHROPIC_AUTH_TOKEN")
-        or os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("OPENROUTER_API_KEY")  # fallback: 仅 OPENROUTER_API_KEY 时也能工作
-        or ""
-    )
-    # 若 ANTHROPIC_AUTH_TOKEN 未设置但有 OPENROUTER_API_KEY，自动指向 OpenRouter
-    default_base = (
-        "https://openrouter.ai/api"
-        if (not os.environ.get("ANTHROPIC_AUTH_TOKEN") and not os.environ.get("ANTHROPIC_API_KEY")
-            and os.environ.get("OPENROUTER_API_KEY"))
-        else "https://api.anthropic.com"
-    )
-    base_url = os.environ.get("ANTHROPIC_BASE_URL", default_base)
-
-    client = ant.Anthropic(api_key=api_key, base_url=base_url)
-    msg = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    return msg.content[0].text
-
-
-# ── Phase 1：Claude 拆解细分模块 & 动态维度 ────────────────────────────────
-
-_DECOMPOSE_SYSTEM = """你是顶级A股投资研究团队的首席研究员（Claude supervisor）。
-你的职责是：阅读研报摘要，拆解出赛道的细分模块，并为每个模块确定最值得深研的分析维度。
-输出 JSON，不要其他文字。"""
+_DECOMPOSE_SYSTEM = """你是顶级A股投资研究团队的首席研究员。
+你的核心任务：从研报中提炼投资决策所需的分析框架——每个维度必须能回答"投资者应该关心什么、为什么"。
+只输出 JSON，不要其他文字。"""
 
 _DECOMPOSE_USER_TPL = """项目名称：{project_name}
-用户指定的分析维度（基础）：{user_dimensions}
+用户预设分析维度（必须全部保留，顺序不变）：{user_dimensions}
 
 以下是该赛道的研报摘要（元数据 + 部分正文）：
 {report_summary}
 
 ---
-请分析研报内容，输出如下 JSON：
+请完成两步分析，输出如下 JSON：
+
 {{
-  "sub_modules": ["模块1", "模块2", "模块3", ...],   // 3-8 个细分模块，从研报实际内容提炼
-  "extra_dimensions": ["新维度1", "新维度2"],          // 研报中高频出现但用户未指定的维度（0-3 个）
-  "final_dimensions": ["最终维度1", "最终维度2", ...], // 合并用户维度 + extra_dimensions 去重后的列表
-  "rationale": "为什么选这些模块和维度（一段话）"
+  "sub_modules": ["模块1", "模块2", ...],
+  "consensus": "这几篇研报最强的共识判断是什么（1-2句，要有具体数字或事件）",
+  "divergence": "研报之间最主要的分歧或不确定性在哪里（1句）",
+  "extra_dimensions": ["新维度1", "新维度2"],
+  "final_dimensions": ["最终维度1", ...],
+  "dimension_questions": {{
+    "维度名": "这个维度的核心决策问题（投资者最想知道的一个问题，能帮助判断买/持/卖，例如：国产替代进度是否达到量产拐点？）",
+    ...
+  }}
 }}
-只输出 JSON。"""
+
+规则：
+1. sub_modules：3-8 个细分模块，从研报实际内容提炼
+2. extra_dimensions：多篇研报共同高频出现的主题，单篇偶发不加
+3. final_dimensions：用户预设维度（原样、顺序在前）+ extra_dimensions，去重
+4. dimension_questions：为 final_dimensions 中每个维度写一个核心决策问题——这个问题的答案能直接影响仓位判断，不是泛泛的描述性问题
+5. 用户预设维度一个也不能删，名称不能改写
+6. 只输出 JSON"""
 
 
 def decompose_project(project_name: str, user_dimensions: list[str],
                       report_batches: list[str]) -> dict:
-    """Claude 拆解细分模块 + 动态扩展维度。"""
-    # 用前 2 批摘要（避免超长）
+    """Claude 拆解细分模块 + 动态扩展维度 + 为每个维度生成核心决策问题。"""
     summary = "\n\n---\n\n".join(report_batches[:2])[:20000]
     user_msg = _DECOMPOSE_USER_TPL.format(
         project_name=project_name,
         user_dimensions=json.dumps(user_dimensions, ensure_ascii=False),
         report_summary=summary,
     )
-    raw = _claude_call(_DECOMPOSE_SYSTEM, user_msg, max_tokens=1024)
+    raw = call_claude_text(_DECOMPOSE_SYSTEM, user_msg)
     result = _extract_json(raw)
     if not isinstance(result, dict) or "final_dimensions" not in result:
-        # fallback: 使用用户维度
-        return {"sub_modules": [], "final_dimensions": user_dimensions, "extra_dimensions": []}
+        return {
+            "sub_modules": [], "final_dimensions": user_dimensions,
+            "extra_dimensions": [], "dimension_questions": {},
+        }
+
+    # 保证用户预设维度全部存在且顺序在前
+    llm_dims: list[str] = result.get("final_dimensions", [])
+    seen = set(llm_dims)
+    missing = [d for d in user_dimensions if d not in seen]
+    if missing:
+        result["final_dimensions"] = user_dimensions + [d for d in llm_dims if d not in set(user_dimensions)]
+
+    if "dimension_questions" not in result:
+        result["dimension_questions"] = {}
+
     return result
 
 
-# ── Phase 2：Kimi 生成每个维度的 HTML tab ─────────────────────────────────
+# ── Phase 2：Kimi subagent HTML 生成要求 ─────────────────────────────────────
+# 这是传给 claude agent 的模板，claude 为每个维度构造 codex 指令时参考。
+# 不再有"输出长度控制"——Kimi 写文件，内容越详细越好。
 
 _KIMI_HTML_TPL = """你是专业的A股投资研究员，使用 ECharts + HTML 生成研究分析页面。
 
 ## 项目：{project_name}
 ## 当前分析维度：{dimension}
+## 本维度的核心决策问题：{core_question}
 ## 细分模块参考：{sub_modules}
 
-## 研报原文（第{batch_index}/{total_batches}批）
+## 研报原文
 {report_text}
+
+---
+## 分析任务
+
+**首要目标**：回答上方的核心决策问题。所有图表和文字都是支撑这个答案的证据，最终必须给出明确结论（看多/看空/中性 + 核心依据1-2句）。
+
+### 页面结构（按顺序）
+
+**① 核心判断卡片**（页面顶部，最先渲染）
+- 用一个醒目卡片直接给出结论：做多逻辑 vs 做空逻辑 vs 当前判断
+- 必须引用研报中的具体数字或事件支撑
+
+**② 数据论证区**
+- 把研报中该维度的所有相关数据、公司、时间节点都用进来
+- 宁可多也不要泛泛而谈
+- 图表选择规则：
+  - 成本/占比类 → 饼图或堆叠柱状图
+  - 竞争格局/比较类 → 雷达图或对比表格
+  - 趋势/预测类 → 折线图或柱线混合图
+  - 时间进度/里程碑 → 自定义 HTML `<div>` 时间轴（每节点标注年份+事件），**禁止 scatter 散点图**
+  - 甘特图（厂商量产时间段）→ 双 bar+stack，严格按下方示例写法：
+
+```javascript
+// ✅ 正确：占位 data = 起始年（实际年份），持续 data = 持续年数，全部单值
+// 示例：A公司 2025-2028，B公司 2026-2030，C公司 2027-2030
+// ECharts bar 在 value 轴上从 x=0 开始画，所以占位值必须是实际年份才能定位到正确位置
+xAxis: {{ type: 'value', min: 2024, max: 2031 }},
+yAxis: {{ type: 'category', data: ['C公司','B公司','A公司'] }},
+series: [
+  {{ name:'占位', type:'bar', stack:'g', itemStyle:{{color:'transparent'}},
+    data: [2027, 2026, 2025] }},   // 各公司量产起始年：C=2027，B=2026，A=2025
+  {{ name:'量产', type:'bar', stack:'g', itemStyle:{{color:'#7c3aed'}},
+    data: [3, 4, 3] }}             // 各公司持续年数：C=3年，B=4年，A=3年
+]
+// ❌ 禁止：data:[{{value:[2025,2028]}}]、data:[{{value:[1,3,2]}}]、data:[3,2,1]（偏移量写法）
+```
+
+**③ 页面末尾写一行注释（机器读取，不显示在页面上）**
+格式：`<!-- SUMMARY: <30字内的核心判断，含最关键数字> -->`
+例：`<!-- SUMMARY: 国产化率已达47%，2026年龙头毛利率有望回升至35%，看多 -->`
+
+## 格式与质量要求
+
+- **只输出 HTML**，从 `<!DOCTYPE html>` 到 `</html>`，不加说明
+- body 中**禁止**出现 JS 代码文本、调试日志、推理过程
+- 图表数量不限：有多少值得可视化的数据就放多少
+- series data 必须来自研报，不得为空数组 `[]`、全零数组或含 `null`；数据缺失时省略该点
+- 饼/树图 value 不得为 0 或 null；所有 tbody 必须有完整数据行
+
+## 主题与依赖
+{theme_css}
+引入 ECharts：`<script src="{echarts_cdn}"></script>`
+
+**resize 监听（必须原样复制，不得改动）**：
+```javascript
+window.addEventListener('message', function(e) {{
+  if (e.data && e.data.type === 'tab-shown') {{
+    charts.forEach(function(c) {{ c.resize(); }});
+  }}
+}});
+```
+其中 `charts` 是你在 script 里维护的所有 `echarts.init()` 返回值的数组，每 init 一个就 `charts.push(chart)`。
+
+## 布局约束（iframe 内展示，不能截断）
+- body 和任何包裹容器不得设置固定 height / max-height；不得使用 overflow:auto/scroll
+- 不得添加 position:sticky/fixed 的渐变遮罩或侧边导航浮层
+- `.kv-grid` 用 `display:flex; flex-wrap:wrap; gap:10px`；`.kv-card` 用 `flex:1 1 180px; min-width:0`
+
+生成完整 HTML 后，用 bash 将完整内容写入 {output_path}，只输出"已写入 {output_path}"，不要在对话中输出 HTML。
+"""
+
+# ── Phase 3（产业全景）生成要求 ───────────────────────────────────────────────
+
+_OVERVIEW_TPL = """你是专业的A股投资研究员，使用 ECharts + HTML 生成"产业全景"总览分析页。
+
+## 项目：{project_name}
+## 各维度核心判断（已从各维度分析中提炼，直接使用，不需要再读 HTML 文件）：
+{dimension_summaries}
+
+## 研报基本信息：
+- 研报数量：{report_count} 篇
+- 覆盖维度：{dimensions_str}
+- 生成时间：{generated_at}
+
+---
+## 核心任务
+
+产业全景的目标是：**让投资者在60秒内看完，知道该不该投、现在是不是好时机**。
+
+不是把各维度内容再堆一遍，而是**合成**：从上面的维度判断出发，给出整体结论。
+
+### 必须包含的6个部分
+
+**① 一句话投资判断**（页面最顶部，最大字号）
+综合所有维度，当前投资窗口是什么：催化剂是什么、主要风险是什么。不回避，直接说。
+
+**② 核心指标卡片**（4-6 个）
+选最关键的数字指标（如国产化率、市场规模CAGR、龙头净利润增速预期），数据来自维度摘要。
+
+**③ 多空博弈分析**
+- Bull Case（做多逻辑）：2-3 个最强支撑，每条引具体数据
+- Bear Case（做空逻辑）：2-3 个最大风险，不得省略
+- 两部分等权重呈现，不能只写一方
+
+**④ 产业里程碑时间轴**（2024-2030）
+列入各维度发现的催化剂节点，用自定义 HTML `<div>` 时间轴，**禁止 ECharts scatter 散点图**
+
+**⑤ 关键维度横向对比**（表格或雷达图）
+各维度的"信号灯"：✅看多 / ⚠️中性 / ❌看空，加一句核心理由
+
+**⑥ BOM 成本构成或竞争格局图**（如果维度摘要里有占比数据）
+饼图或矩形树图，用真实数据
+
+## 格式与质量要求
+- **只输出 HTML**，从 `<!DOCTYPE html>` 到 `</html>`，不加说明
+- series data 不得为空数组或全零，饼/树图 value 不得为 0/null
+- 甘特图用双 bar+stack，严格格式：占位 data=[各公司起始年，如 2027]，持续 data=[各公司持续年数，如 3]，**禁止**用偏移量（起始年-xAxis.min）或数组元素
+
+## 主题与依赖
+{theme_css}
+引入 ECharts：`<script src="{echarts_cdn}"></script>`
+
+**resize 监听（必须原样复制，不得改动）**：
+```javascript
+window.addEventListener('message', function(e) {{
+  if (e.data && e.data.type === 'tab-shown') {{
+    charts.forEach(function(c) {{ c.resize(); }});
+  }}
+}});
+```
+其中 `charts` 是所有 `echarts.init()` 返回值的数组，每 init 一个就 `charts.push(chart)`。
+
+## 布局约束
+- body 和任何包裹容器不得设置固定 height / max-height，不得使用 overflow:auto/scroll
+- 不得添加 position:sticky/fixed 的渐变遮罩或侧边导航浮层
+
+生成完整 HTML 后，用 bash 将完整内容写入 {output_path}，只输出"已写入 {output_path}"。
+"""
+
+# ── Claude Pipeline 控制 Prompt ───────────────────────────────────────────────
+
+_PIPELINE_SYSTEM = """你是A股投研分析 pipeline 的 supervisor agent（Claude）。
+
+**目标**：产出一套高质量的维度分析 HTML 文件集，每个维度的页面必须能回答该维度的核心决策问题，包含来自研报的真实数据。
+
+**你的工作分两步**：
+1. 用一次 codex exec 启动 Kimi 主 agent，Kimi 在 codex 内部并行生成所有维度 HTML 文件
+2. Kimi 完成后，用 Task tool 并行 dispatch Claude subagent 验收各维度内容质量
+
+**质量标准**（subagent 验收时用这个标准）：
+- 有核心判断卡片：做多/做空/当前结论 + 具体数字支撑
+- 页面末尾有 `<!-- SUMMARY: ... -->` 注释（30字内核心判断）
+- 有具体数字（不是"X%提升"而是"从12%升至18%"）
+- 引用了研报中的具体公司名称或时间节点
+- 文件完整（有 <!DOCTYPE html> 和 </html>，大小 > 3KB）
+"""
+
+_PIPELINE_USER_TPL = """## 项目：__PROJECT_NAME__
+## 分析维度列表（共 __DIM_COUNT__ 个）：
+__DIMENSIONS_JSON__
+
+## 细分模块参考：__SUB_MODULES__
+
+## 研报原文（供 Kimi 分析共享）：
+__REPORT_TEXT__
+
+## 研报元数据（供研究背景 subagent 渲染表格，不含全文）：
+__REPORTS_META_JSON__
+
+---
+## 维度 HTML 生成规范（Kimi 的任务模板，传给 codex exec）：
+__KIMI_HTML_TPL__
+
+## 产业全景生成规范：
+__OVERVIEW_TPL__
+
+## 研究背景生成规范：
+__INTRO_TPL__
+
+---
+## 执行步骤
+
+### 第一步：构造 codex prompt，启动 Kimi 主 agent
+
+构造一条完整的 prompt 交给 `codex exec`，内容包含：
+- 研报原文（完整）
+- 所有维度的名称、core_question（核心决策问题）、输出路径 `__TMP_DIR__/<hash>.html`
+- 产业全景输出路径 `__TMP_DIR__/overview.html`
+- 研究背景输出路径 `__TMP_DIR__/intro.html`
+- 上方三份生成规范（维度、产业全景、研究背景）
+
+要求 Kimi 主 agent：
+1. 在 codex 内部用 subagent **并行**生成所有维度 HTML + 研究背景 HTML（各 subagent 互相独立，研究背景 subagent 不需要等维度完成）
+2. 所有维度完成后，读取各维度文件末尾的 `<!-- SUMMARY: ... -->` 注释，汇总为维度摘要
+3. 用汇总的维度摘要生成产业全景 HTML
+
+运行命令（只运行一次）：
+`codex exec --profile research --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check`
+
+等待期间，每检测到文件出现（`test -s __TMP_DIR__/<hash>.html`），输出进度：
+`[PROGRESS] 完成：<维度名或"研究背景">`
+
+### 第二步：Claude 并行验收内容质量
+
+codex 完成后，用 Task tool 并行 dispatch Claude subagent 验收所有文件（包括研究背景），每个 subagent：
+1. 用 Bash 读取对应文件（`cat <path>`）
+2. 按上方 system prompt 的质量标准检查
+3. 返回：`{{"name":"<名称>","path":"<路径>","ok":true/false,"issue":"<未通过的具体标准，或空>"}}`
+
+### 第三步：输出路径 JSON（立即输出，不重试）
+
+```json
+{{"tabs":[{{"name":"研究背景","path":"__TMP_DIR__/intro.html"}},{{"name":"<维度名>","path":"__TMP_DIR__/<hash>.html"}},...,{{"name":"产业全景","path":"__TMP_DIR__/overview.html"}}],"review":[{{"name":"...","ok":true/false,"issue":"..."}}]}}
+```
+
+验收不通过的文件 path 仍然填入，由 Python 侧处理，Claude 侧不重试。
+"""
+
+
+# ── Phase 4：研究背景 tab ─────────────────────────────────────────────────────
+
+_INTRO_HTML_SYSTEM = """你是专业的A股投研助手，使用 HTML 生成研究背景页面。
+只输出 HTML 代码，从 <!DOCTYPE html> 到 </html>，不加任何说明。"""
+
+_INTRO_HTML_TPL = """你是专业的A股投研助手，使用 HTML 生成研究背景页面。
+只输出 HTML 代码，从 <!DOCTYPE html> 到 </html>，不加任何说明。
+
+## 研究项目：{project_name}
+## 关键词：{keywords}
+## 研报列表（{report_count} 篇，数据来源）：
+{reports_json}
+## 分析维度（{dim_count} 个）及核心决策问题：
+{dimensions_questions}
+
+## 研报摘要（用于科普内容，从中提炼背景知识，不是让你照抄）：
+{report_summary}
 
 ---
 ## 任务
-为"{dimension}"这个维度，生成一个完整的 HTML 分析页面（单个 tab 的内容）。
 
-## 严格要求
-1. **只输出 HTML 代码**，从 `<!DOCTYPE html>` 开始到 `</html>` 结束，不要前后加任何说明文字、代码注释、思考过程或调试日志
-12. **严禁将思考/调试内容混入 HTML**：你的推理过程、图表调试日志（如 `option = {{...}}`）、自我修正（如"等等，""不，我应该"）、任何非内容文字——都**绝对不能出现在 HTML 的 body 中**；HTML body 只包含对用户可见的分析内容
-2. 使用以下 CSS 变量（白底紫色主题，不得改成深色背景）：
+为"{project_name}"生成一个完整的**研究背景**页面，帮助投资者快速建立认知框架，理解为什么要关注这个标的。
+
+### 页面结构（按顺序）
+
+**① 一句话战略价值**（页面顶部醒目展示）
+概括"{project_name}"对投资者的核心价值，有洞见，不套话，40-60字。
+
+**② 主题科普：产业链位置**
+- 上游依赖什么原材料/设备/工艺
+- 自身核心技术壁垒是什么
+- 下游覆盖哪些应用场景/终端市场
+- 用一个直观的量化感知句结尾（如"一部手机含X颗，一辆新能源车需要Y颗以上"）
+- 用横向流程图展示上游→{project_name}（★标注）→下游，每个节点有副标题
+
+**③ 当前为什么值得关注**
+客观描述当前时间节点（2025-2026年）投资者关注这个标的的核心焦点：
+- 有明确催化剂（政策/供需拐点/大客户动向/技术突破）→ 具体列举，引用研报中的数字
+- 整体偏谨慎或观察期 → 如实反映，不强行拔高
+- 主要关注点来自哪几篇研报（引用机构名）
+
+**④ 数据来源：研报列表**
+展示所有研报的表格：序号、机构、分析师、发布日期、评级（颜色标注）、标题
+评级颜色：买入/推荐/强烈推荐→绿色，增持/优于大市→蓝色，持有/中性→橙色，减持/卖出→红色
+
+**⑤ 本次分析框架**
+列出所有分析维度，每个维度显示：维度名（紫色标签）+ 核心决策问题（来自上方维度问题列表）
+
+## 主题与布局
 {theme_css}
-3. 引入 ECharts：`<script src="{echarts_cdn}"></script>`
-4. 图表必须有真实数据（来自研报），不得使用占位符
-5. 每种图表类型选择最能说明问题的：成本构成 → 面积/饼图；竞争格局 → 雷达/表格；估值 → 柱状+折线；替代风险 → 表格
-6. **body 标签和任何包裹容器**均不得设置固定 height 或 max-height；页面高度由内容自然撑开，iframe 会自动滚动
-7. **不得添加**：① position:sticky/fixed 的渐变淡出遮罩（如底部 linear-gradient 效果）；② position:fixed 的侧边导航浮层。这些元素在 iframe 中无意义且会遮挡内容
-8. 图表 series data 中**不得出现 `null`**；若某年份数据研报中不存在，直接从 xAxis 和 data 数组中省略该年份，不要用 null 占位
-9. 所有表格的 tbody **必须有完整数据行**；若研报数据不足，减少行数但不得留空 tbody
-10. 加 `window.addEventListener('message', ...)` 监听 `tab-shown` 消息后执行 `chart.resize()`
-11. **KPI 卡片布局原则**（重要）：
-    - `.kv-grid` 必须使用 `display: flex; flex-wrap: wrap; gap: 10px;`，**禁止使用 `display: grid`**
-    - `.kv-card` 必须设置 `flex: 1 1 180px; min-width: 0;`，让所有卡片均匀拉伸填满整行横向空间
-    - **禁止**给任何 `.kv-card` 设置 `grid-column: 1/-1`、`width: 100%` 或其他独占整行的属性
-    - KPI 卡片数量应与页面宽度匹配：横向空间充足时优先横向排列，**不要为了凑数量而让卡片纵向堆叠**
-    - 每张卡片的文字内容不宜过长，label ≤ 8字，value ≤ 10字，sub ≤ 18字，避免卡片内换行
+- 白底紫色主题（--primary: #7c3aed），不使用深色背景
+- body 和任何包裹容器不得设置固定 height / max-height，不得使用 overflow:auto/scroll
+- 不得添加 position:sticky/fixed 的遮罩或侧边导航
+- .kv-grid 用 display:flex; flex-wrap:wrap；.kv-card 用 flex:1 1 180px; min-width:0
+
+生成完整 HTML 后，用 bash 将完整内容写入 {output_path}，只输出"已写入 {output_path}"，不要在对话中输出 HTML。
 """
-
-def _build_kimi_prompt(project_name: str, dimension: str, sub_modules: list,
-                       report_batch: str, batch_idx: int, total_batches: int) -> str:
-    return _KIMI_HTML_TPL.format(
-        project_name=project_name,
-        dimension=dimension,
-        sub_modules="、".join(sub_modules) if sub_modules else "（从研报提炼）",
-        batch_index=batch_idx,
-        total_batches=total_batches,
-        report_text=report_batch,
-        theme_css=THEME_CSS,
-        echarts_cdn=ECHARTS_CDN,
-    )
-
-
-def _extract_html(text: str) -> str:
-    """从 LLM 输出中提取 HTML 块，剥离所有 markdown 代码块标记。"""
-    import re
-
-    # 1. 优先匹配 ```html ... ``` (含或不含闭合 ```)
-    m = re.search(r"```html\s*([\s\S]*?)(?:```|$)", text, re.IGNORECASE)
-    if m:
-        candidate = m.group(1).strip()
-        if "<!doctype" in candidate.lower() or "<html" in candidate.lower():
-            return candidate
-
-    # 2. 裸 ``` ... ``` 中含 DOCTYPE
-    m2 = re.search(r"```\s*(<!DOCTYPE[\s\S]*?)(?:```|$)", text, re.IGNORECASE)
-    if m2:
-        return m2.group(1).strip()
-
-    # 3. 直接在原文找 DOCTYPE ... </html>
-    idx = text.lower().find("<!doctype")
-    if idx >= 0:
-        end = text.lower().rfind("</html>")
-        if end > idx:
-            return text[idx:end + 7].strip()
-
-    # 4. 兜底：找 <html ... </html>
-    idx2 = text.lower().find("<html")
-    if idx2 >= 0:
-        end2 = text.lower().rfind("</html>")
-        if end2 > idx2:
-            return text[idx2:end2 + 7].strip()
-
-    logger.warning(f"[_extract_html] 未找到 HTML 结构，原文长度={len(text)}，前200字: {text[:200]!r}")
-    return text.strip()
-
-
-# ── Phase 3：Claude 评审 HTML ──────────────────────────────────────────────
-
-_REVIEW_SYSTEM = """你是投研看板质量评审官（Claude supervisor）。
-你的职责是审查 Kimi 生成的 HTML 分析页面，判断是否符合标准。
-输出 JSON，不要其他文字。"""
-
-_REVIEW_USER_TPL = """## 待评审的 HTML（维度：{dimension}）
-
-{html_content}
-
----
-## 评审标准
-{criteria}
-
-## 输出格式
-{{
-  "passed": true 或 false,
-  "score": 0-100,
-  "issues": ["问题1", "问题2"],          // passed=false 时列出具体问题
-  "suggestions": "给 Kimi 的改进指令"   // passed=false 时提供，直接可粘贴进 prompt
-}}
-只输出 JSON。"""
-
-
-def _claude_review(dimension: str, html: str) -> dict:
-    """Claude 评审单个 HTML tab，返回评审结果。"""
-    user_msg = _REVIEW_USER_TPL.format(
-        dimension=dimension,
-        html_content=html[:8000],  # 限长避免超 token
-        criteria=REVIEW_CRITERIA,
-    )
-    raw = _claude_call(_REVIEW_SYSTEM, user_msg, max_tokens=512)
-    result = _extract_json(raw)
-    if not isinstance(result, dict):
-        return {"passed": True, "score": 70, "issues": [], "suggestions": ""}
-    return result
-
-
-_REWRITE_TPL = """你是专业的A股投资研究员。
-
-上一版 HTML 存在以下问题：
-{issues}
-
-改进建议：
-{suggestions}
-
-请修改后重新输出完整 HTML（维度：{dimension}，项目：{project_name}）。
-主题要求同上（白底紫色：--primary: #7c3aed），不得改为深色背景。
-
-**必须遵守**：
-- 每个 <div id="chart..."> 容器都必须有对应的 echarts.init() 初始化代码，否则图表显示为空白
-- 所有表格的 tbody 必须有完整数据行，不得为空也不得截断
-- 图表 series data 中不得出现 null，数据缺失时从 xAxis 和 data 数组中省略该年份
-- body 和包裹容器不得设置固定 height 或 max-height，页面高度由内容自然撑开
-- 不得添加 position:sticky/fixed 的渐变遮罩层或侧边导航浮层
-- KPI卡片：.kv-grid 用 `display:flex;flex-wrap:wrap;gap:10px`，.kv-card 用 `flex:1 1 180px;min-width:0`，禁止固定列数 grid 或独占整行
-**只输出 HTML 代码，不加任何说明。**
-
-原始研报内容（供参考）：
-{report_text}
-"""
-
-
-def generate_tab_with_review(
-    project_name: str,
-    dimension: str,
-    sub_modules: list,
-    report_batches: list[str],
-    progress_cb=None,
-) -> str:
-    """
-    生成单个维度的 HTML tab，包含 Kimi 生成 + Claude 评审 + Kimi 修改。
-    返回最终 HTML 字符串。
-    """
-    def _log(msg: str):
-        logger.info(msg)
-        if progress_cb:
-            progress_cb(msg)
-
-    # 合并所有批次（限长 25000 chars，避免 Kimi 超时）
-    combined = "\n\n---\n\n".join(report_batches)[:25000]
-    total = len(report_batches)
-
-    # 初始生成
-    _log(f"  Kimi 正在分析【{dimension}】（研报文本 {len(combined)} 字）…")
-    kimi_prompt = _build_kimi_prompt(project_name, dimension, sub_modules,
-                                      combined, 1, total)
-    raw = kimi_call(kimi_prompt)
-    html = _extract_html(raw)
-
-    # Claude 评审 + 最多 MAX_REVIEW_ROUNDS 轮修改
-    for round_no in range(1, MAX_REVIEW_ROUNDS + 1):
-        # Python 侧快速预检，发现致命问题时跳过 Claude 直接触发 Kimi 重写
-        quick_issues = _quick_html_check(html)
-        if quick_issues:
-            _log(f"  快速预检【{dimension}】发现 {len(quick_issues)} 个问题，跳过 Claude 直接重写…")
-            issues = quick_issues
-            suggestions = "请逐一修正上述问题后重新生成完整 HTML。"
-        else:
-            _log(f"  Claude 评审【{dimension}】第 {round_no} 轮…")
-            review = _claude_review(dimension, html)
-            score = review.get('score', '?')
-            passed = review.get('passed')
-            _log(f"  评审结果：{'通过' if passed else '需修改'} （得分 {score}/100）")
-
-            if review.get("passed", True):
-                break
-
-            issues = review.get("issues", [])
-            suggestions = review.get("suggestions", "")
-            if not issues and not suggestions:
-                break
-
-        _log(f"  Kimi 根据评审意见修改【{dimension}】（问题：{'; '.join(issues[:2])}）")
-        rewrite_prompt = _REWRITE_TPL.format(
-            dimension=dimension,
-            project_name=project_name,
-            issues="\n".join(f"- {x}" for x in issues),
-            suggestions=suggestions,
-            report_text=combined[:20000],
-        )
-        raw2 = kimi_call(rewrite_prompt)
-        new_html = _extract_html(raw2)
-        if new_html and len(new_html) > 200:
-            html = new_html
-
-    return html
-
-
-# ── Phase 4：Claude 生成研究背景 tab ─────────────────────────────────────────
-# 架构：Claude 只生成纯文字内容（主题科普 + 分析框架），Python 硬编码研报表格。
-# 原因：让 LLM 渲染表格会导致行数被截断（token 耗尽）或 echarts.init 缺失。
-# 表格直接由 Python 用真实数据生成，永远正确、永远完整。
-
-_INTRO_TEXT_SYSTEM = """你是专业的A股投研助手。严格按照指定格式输出结构化文本，不要 HTML 标签，不要 markdown 符号（**/#/- 等）。"""
-
-_INTRO_TEXT_TPL = """研究项目：{project_name}
-关键词：{keywords}
-
----
-请输出以下六段内容，严格使用【】标记每段，段内只有纯文字：
-
-【产业链位置】
-100-150字。解释"{project_name}"在产业链中处于哪个位置：上游依赖什么原材料/设备，自身的核心制造工艺是什么，下游覆盖哪些应用场景/终端市场。
-结尾加一个具体数字感知句（例如：一部智能手机约含 X 颗，一辆新能源汽车需要约 Y 颗以上）。
-
-【关键词:产业链位置】
-从【产业链位置】中抽取3-5个最重要的专业名词或数字，逗号分隔（例如：上游关键材料、陶瓷粉体/镍粉、高阶MLCC）。
-这些词将在正文中加粗高亮显示。
-
-【为什么现在特别重要】
-100-150字。解释当前时间节点（2025-2026年）"{project_name}"为什么特别值得投资关注：列举2-3个具体催化剂（行业事件、政策、供需变化、大客户动向）。
-语气积极，面向投资者。
-
-【关键词:为什么重要】
-从【为什么现在特别重要】中抽取3-5个最重要的关键词或事件名，逗号分隔。
-
-【产业链节点】
-按上游→核心→下游顺序，列出5个节点，格式严格如下（每行一个节点，用|分隔名称和说明）：
-节点名称1|副说明1（10字内）
-节点名称2|副说明2（10字内）
-节点名称3★|副说明3（10字内，★表示"{project_name}"所在位置，只有一个节点加★）
-节点名称4|副说明4（10字内）
-节点名称5|副说明5（10字内）
-
-【一句话战略价值】
-一句话（40-60字），概括"{project_name}"对投资者的核心战略价值，要有洞见，不要套话。
-
-【分析框架】
-本次分析覆盖 {dim_count} 个维度，请逐条说明每个维度聚焦什么核心问题（一行一条，格式："维度名：一句话说明"）：
-{dimensions_list}
-"""
-
-# Rating badge color mapping
-_RATING_COLOR = {
-    "买入": "#16a34a", "强烈推荐": "#16a34a", "推荐": "#16a34a",
-    "增持": "#2563eb", "优于大市": "#2563eb", "跑赢行业": "#2563eb",
-    "持有": "#d97706", "中性": "#d97706", "观望": "#d97706",
-    "减持": "#dc2626", "卖出": "#dc2626",
-}
-
-
-def _render_report_table(reports: list[dict]) -> str:
-    """Python 硬编码渲染研报表格，不依赖 LLM，永远完整。"""
-    rows = []
-    for i, r in enumerate(reports, 1):
-        title = (r.get("title") or "").replace("<", "&lt;").replace(">", "&gt;")
-        org = (r.get("org_name") or "—").replace("<", "&lt;")
-        researcher = (r.get("researcher") or "—").replace("<", "&lt;")
-        pub_date = r.get("publish_date") or "—"
-        rating = (r.get("rating") or "").strip()
-        rating_color = _RATING_COLOR.get(rating, "#6b7280")
-        rating_html = (
-            f'<span style="display:inline-block;padding:1px 7px;border-radius:10px;'
-            f'background:{rating_color}22;color:{rating_color};'
-            f'border:1px solid {rating_color}55;font-size:10px;font-weight:700;">'
-            f'{rating or "—"}</span>'
-        ) if rating else "—"
-        rows.append(f"""      <tr>
-        <td style="color:var(--text-muted);font-size:11px;text-align:center;">{i:02d}</td>
-        <td><span style="background:var(--primary-muted);color:var(--primary);padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600;">{org}</span></td>
-        <td style="font-size:12px;color:var(--text-secondary);">{researcher}</td>
-        <td style="font-size:12px;color:var(--text-muted);">{pub_date}</td>
-        <td>{rating_html}</td>
-        <td style="font-size:12px;color:var(--text-primary);">{title}</td>
-      </tr>""")
-    return "\n".join(rows)
-
-
-def _render_dimension_list(dimensions: list[str], framework_text: str) -> str:
-    """将 Claude 输出的维度说明文字渲染为 HTML 列表项。"""
-    # Parse "维度名：说明" lines from framework_text
-    import re as _re2
-    parsed = {}
-    for line in framework_text.splitlines():
-        line = line.strip().lstrip("•·-–— 　")
-        m = _re2.match(r"^(.+?)[：:](.+)$", line)
-        if m:
-            parsed[m.group(1).strip()] = m.group(2).strip()
-
-    items = []
-    for dim in dimensions:
-        desc = parsed.get(dim, "")
-        # fuzzy match: find key that contains or is contained by dim
-        if not desc:
-            for k, v in parsed.items():
-                if k in dim or dim in k:
-                    desc = v
-                    break
-        items.append(
-            f'<div style="display:flex;gap:10px;align-items:baseline;margin-bottom:8px;">'
-            f'<span style="flex-shrink:0;background:var(--primary);color:#fff;'
-            f'padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;">{dim}</span>'
-            f'<span style="font-size:12px;color:var(--text-secondary);">{desc}</span>'
-            f'</div>'
-        )
-    return "\n".join(items)
-
 
 def generate_intro_tab(
     project_name: str,
     keywords: list[str],
     dimensions: list[str],
     reports: list[dict],
+    dimension_questions: dict | None = None,
+    report_batches: list[str] | None = None,
     progress_cb=None,
 ) -> str:
     """
-    研究背景 tab 生成：
-    - Claude 只生成纯文字（主题科普 + 分析框架说明）
-    - Python 硬编码渲染研报表格（不依赖 LLM，永远完整）
-    - 无 ECharts 图表（研究背景不需要）
+    研究背景 tab：Claude 直接输出完整 HTML，包含科普内容 + 研报表格 + 分析框架。
     """
     def _log(msg: str):
         logger.info(msg)
         if progress_cb:
             progress_cb(msg)
 
-    _log("Claude 正在生成研究背景文字内容…")
+    _log("Claude 正在生成研究背景页面…")
 
-    dimensions_list = "\n".join(f"- {d}" for d in dimensions)
-    user_msg = _INTRO_TEXT_TPL.format(
+    # 研报元数据 JSON（不含全文，供 Claude 渲染表格）
+    reports_simple = [
+        {
+            "org": r.get("org_name") or "—",
+            "researcher": r.get("researcher") or "—",
+            "date": r.get("publish_date") or "—",
+            "rating": (r.get("rating") or "").strip() or "—",
+            "title": r.get("title") or "—",
+        }
+        for r in reports
+    ]
+
+    # 维度 + 核心决策问题
+    dq = dimension_questions or {}
+    dimensions_questions_text = "\n".join(
+        f"- {d}：{dq.get(d, '（核心投资逻辑）')}"
+        for d in dimensions
+    )
+
+    # 研报摘要（仅前2批，用于科普背景，不传全文避免 token 超限）
+    summary = ""
+    if report_batches:
+        summary = "\n\n---\n\n".join(report_batches[:2])[:12000]
+
+    user_msg = _INTRO_HTML_TPL.format(
         project_name=project_name,
         keywords="、".join(keywords) if keywords else project_name,
+        report_count=len(reports),
+        reports_json=json.dumps(reports_simple, ensure_ascii=False, indent=2),
         dim_count=len(dimensions),
-        dimensions_list=dimensions_list,
+        dimensions_questions=dimensions_questions_text,
+        report_summary=summary or "（暂无研报摘要）",
+        theme_css=THEME_CSS,
     )
-    raw_text = _claude_call(_INTRO_TEXT_SYSTEM, user_msg, max_tokens=4000)
 
-    import re as _re3
+    raw = call_claude_text(_INTRO_HTML_SYSTEM, user_msg, timeout=180)
 
-    def _extract_section(tag: str, text: str) -> str:
-        """Extract content between 【tag】 and the next 【...】 or end of string."""
-        m = _re3.search(r"【" + _re3.escape(tag) + r"】([\s\S]*?)(?=【|$)", text)
-        return m.group(1).strip() if m else ""
+    # 提取 HTML
+    html = ""
+    for marker in ["<!DOCTYPE", "<!doctype", "<html"]:
+        idx = raw.lower().find(marker.lower())
+        if idx >= 0:
+            end = raw.lower().rfind("</html>")
+            if end > idx:
+                html = raw[idx:end + 7].strip()
+                break
+    if not html:
+        html = raw.strip()
 
-    # Parse all sections
-    chain_pos_text   = _extract_section("产业链位置", raw_text)
-    chain_pos_kws    = _extract_section("关键词:产业链位置", raw_text) or _extract_section("关键词：产业链位置", raw_text)
-    why_now_text     = _extract_section("为什么现在特别重要", raw_text)
-    why_now_kws      = _extract_section("关键词:为什么重要", raw_text) or _extract_section("关键词：为什么重要", raw_text)
-    chain_nodes_text = _extract_section("产业链节点", raw_text)
-    value_sentence   = _extract_section("一句话战略价值", raw_text)
-    framework_text   = _extract_section("分析框架", raw_text)
-
-    # Fallback: if parsing failed, put raw text in chain_pos
-    if not chain_pos_text and not why_now_text:
-        chain_pos_text = raw_text.strip()
-
-    def _highlight_keywords(text: str, kws_str: str) -> str:
-        """Bold-highlight comma-separated keywords in text."""
-        if not kws_str or not text:
-            return text
-        kws = [k.strip() for k in _re3.split(r"[,，、]", kws_str) if k.strip() and len(k.strip()) > 1]
-        for kw in kws:
-            escaped = _re3.escape(kw)
-            text = _re3.sub(
-                escaped,
-                f'<strong style="color:var(--text-primary);font-weight:700;">{kw}</strong>',
-                text,
-                count=1,
-            )
-        return text
-
-    chain_pos_html = _highlight_keywords(chain_pos_text, chain_pos_kws)
-    why_now_html   = _highlight_keywords(why_now_text, why_now_kws)
-
-    # Parse chain nodes: "名称★|副说明" per line
-    def _render_chain_nodes(nodes_text: str, project_name: str) -> str:
-        lines = [l.strip() for l in nodes_text.splitlines() if l.strip() and "|" in l]
-        if not lines:
-            return ""
-        items = []
-        for line in lines:
-            parts = line.split("|", 1)
-            name = parts[0].strip()
-            sub  = parts[1].strip() if len(parts) > 1 else ""
-            is_core = "★" in name
-            name_clean = name.replace("★", "").strip()
-            if is_core:
-                style = ('background:var(--primary);color:#fff;border:2px solid var(--primary);'
-                         'font-weight:700;')
-                label_style = 'color:rgba(255,255,255,0.85);'
-            else:
-                style = ('background:var(--bg-card);color:var(--text-primary);'
-                         'border:1px solid var(--border);')
-                label_style = 'color:var(--text-muted);'
-            items.append(
-                f'<div style="display:flex;flex-direction:column;align-items:center;'
-                f'border-radius:8px;padding:10px 12px;text-align:center;'
-                f'flex:1 1 80px;min-width:0;{style}">'
-                f'<span style="font-size:12px;font-weight:600;">{name_clean}</span>'
-                f'<span style="font-size:10px;margin-top:3px;{label_style}">{sub}</span>'
-                f'</div>'
-            )
-        # Interleave arrows
-        parts_html = []
-        for i, item in enumerate(items):
-            parts_html.append(item)
-            if i < len(items) - 1:
-                parts_html.append(
-                    '<div style="display:flex;align-items:center;padding:0 4px;'
-                    'color:var(--primary-light);font-size:18px;flex-shrink:0;">›</div>'
-                )
-        return "\n".join(parts_html)
-
-    chain_nodes_html = _render_chain_nodes(chain_nodes_text, project_name)
-
-    # Render report table (Python, always complete)
-    report_table_rows = _render_report_table(reports)
-
-    # Render dimension framework
-    dim_html = _render_dimension_list(dimensions, framework_text)
-
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{project_name} — 研究背景</title>
-<style>
-{THEME_CSS}
-.section-num {{
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; border-radius: 50%;
-  background: var(--primary); color: #fff;
-  font-size: 12px; font-weight: 700; margin-right: 8px; flex-shrink: 0;
-}}
-.section-header {{
-  display: flex; align-items: center; font-size: 15px; font-weight: 700;
-  color: var(--text-primary); margin: 24px 0 6px;
-}}
-.section-sub {{ font-size: 11px; color: var(--text-muted); margin-bottom: 14px; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-th {{ text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--border);
-  color: var(--primary); font-size: 11px; font-weight: 700;
-  background: var(--primary-muted); }}
-td {{ padding: 9px 10px; border-bottom: 1px solid var(--border-light);
-  vertical-align: middle; }}
-tr:hover td {{ background: var(--border-light); }}
-.meta-bar {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px;
-  padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: 8px; font-size: 11px; color: var(--text-muted); }}
-.meta-bar strong {{ color: var(--text-primary); }}
-/* Pipeline flow diagram */
-.pipeline {{ display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin-bottom: 16px; }}
-.pipe-step {{
-  flex: 1 1 120px; display: flex; flex-direction: column; align-items: center;
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
-  padding: 12px 10px; text-align: center; position: relative; min-width: 0;
-}}
-.pipe-step + .pipe-step {{ margin-left: 0; }}
-.pipe-arrow {{
-  display: flex; align-items: center; padding: 0 4px; color: var(--primary-light);
-  font-size: 18px; flex-shrink: 0; align-self: center;
-}}
-.pipe-icon {{
-  width: 32px; height: 32px; border-radius: 50%;
-  background: var(--primary-muted); display: flex; align-items: center;
-  justify-content: center; font-size: 16px; margin-bottom: 6px;
-}}
-.pipe-title {{ font-size: 11px; font-weight: 700; color: var(--text-primary); margin-bottom: 3px; }}
-.pipe-desc {{ font-size: 10px; color: var(--text-muted); line-height: 1.4; }}
-.pipe-badge {{
-  position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
-  background: var(--primary); color: #fff; font-size: 9px; font-weight: 700;
-  padding: 1px 7px; border-radius: 10px; white-space: nowrap;
-}}
-@media(max-width:600px) {{
-  .pipeline {{ flex-direction: column; }}
-  .pipe-arrow {{ transform: rotate(90deg); align-self: flex-start; margin-left: 48px; }}
-  .two-col {{ grid-template-columns: 1fr !important; }}
-}}
-</style>
-</head>
-<body>
-
-<div class="meta-bar">
-  <span>项目：<strong>{project_name}</strong></span>
-  <span>关键词：<strong>{'、'.join(keywords) if keywords else project_name}</strong></span>
-  <span>研报数量：<strong>{len(reports)} 篇</strong></span>
-  <span>分析维度：<strong>{len(dimensions)} 个</strong></span>
-  <span>生成时间：<strong>{generated_at}</strong></span>
-</div>
-
-<div class="section-header"><span class="section-num">1</span>主题科普</div>
-<p class="section-sub">快速建立对研究标的的认知框架</p>
-
-<!-- 产业链位置 + 为什么现在重要 两栏 -->
-<div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;">
-    <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:10px;">产业链位置</div>
-    <p style="font-size:12px;line-height:1.8;color:var(--text-secondary);margin:0;">{chain_pos_html}</p>
-  </div>
-  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;">
-    <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:10px;">为什么现在特别重要</div>
-    <p style="font-size:12px;line-height:1.8;color:var(--text-secondary);margin:0;">{why_now_html}</p>
-  </div>
-</div>
-
-<!-- 产业链位置示意图 -->
-{f'''<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:12px;">
-  <div style="font-size:11px;font-weight:700;color:var(--primary);text-align:center;margin-bottom:12px;letter-spacing:.06em;">
-    ⬡ {project_name} 产业链位置示意
-  </div>
-  <div style="display:flex;align-items:stretch;gap:0;flex-wrap:wrap;">
-    {chain_nodes_html}
-  </div>
-</div>''' if chain_nodes_html else ''}
-
-<!-- 一句话战略价值 -->
-{f'''<div style="background:var(--primary-muted);border:1px solid var(--border);border-left:4px solid var(--primary);border-radius:0 10px 10px 0;padding:12px 18px;margin-bottom:16px;display:flex;gap:12px;align-items:center;">
-  <span style="font-size:20px;flex-shrink:0;">💡</span>
-  <p style="font-size:12px;line-height:1.7;color:var(--text-primary);margin:0;">
-    <strong>一句话理解 {project_name} 的战略价值：</strong>{value_sentence}
-  </p>
-</div>''' if value_sentence else ''}
-
-<div class="section-header"><span class="section-num">2</span>研报数据来源</div>
-<p class="section-sub">本次分析共收录 {len(reports)} 篇专业机构研报</p>
-<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:16px;">
-  <table>
-    <thead>
-      <tr>
-        <th style="width:36px;">#</th>
-        <th>机构</th>
-        <th>分析师</th>
-        <th>发布日期</th>
-        <th>评级</th>
-        <th>报告标题</th>
-      </tr>
-    </thead>
-    <tbody>
-{report_table_rows}
-    </tbody>
-  </table>
-</div>
-
-<div class="section-header"><span class="section-num">3</span>分析框架说明</div>
-<p class="section-sub">本次分析覆盖 {len(dimensions)} 个维度，各维度聚焦问题如下</p>
-<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:16px;">
-{dim_html if dim_html else '<p style="color:var(--text-muted);font-size:12px;">维度说明生成失败</p>'}
-</div>
-
-<div class="section-header"><span class="section-num">4</span>分析流程</div>
-<p class="section-sub">双层 AI 协作 Pipeline：Claude 规划 + Kimi 深研 + Claude 评审</p>
-<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:16px;">
-  <div class="pipeline">
-    <div class="pipe-step">
-      <span class="pipe-badge">输入</span>
-      <div class="pipe-icon">📄</div>
-      <div class="pipe-title">研报原文</div>
-      <div class="pipe-desc">{len(reports)} 篇机构研报<br>PDF 全文提取</div>
-    </div>
-    <div class="pipe-arrow">›</div>
-    <div class="pipe-step">
-      <span class="pipe-badge">Phase 1</span>
-      <div class="pipe-icon">🧭</div>
-      <div class="pipe-title">Claude 拆解</div>
-      <div class="pipe-desc">识别细分模块<br>确定 {len(dimensions)} 个分析维度</div>
-    </div>
-    <div class="pipe-arrow">›</div>
-    <div class="pipe-step">
-      <span class="pipe-badge">Phase 2</span>
-      <div class="pipe-icon">⚡</div>
-      <div class="pipe-title">Kimi 深研</div>
-      <div class="pipe-desc">每维度独立生成<br>ECharts 可视化页面</div>
-    </div>
-    <div class="pipe-arrow">›</div>
-    <div class="pipe-step">
-      <span class="pipe-badge">Phase 3</span>
-      <div class="pipe-icon">🔍</div>
-      <div class="pipe-title">Claude 评审</div>
-      <div class="pipe-desc">质量检查 + 修改建议<br>最多 2 轮迭代</div>
-    </div>
-    <div class="pipe-arrow">›</div>
-    <div class="pipe-step">
-      <span class="pipe-badge">输出</span>
-      <div class="pipe-icon">📊</div>
-      <div class="pipe-title">分析看板</div>
-      <div class="pipe-desc">{len(dimensions)} 个维度 Tab<br>+ 产业全景总览</div>
-    </div>
-  </div>
-</div>
-
-</body>
-</html>"""
-
-    return html
+    return clean_html(html) if html else f"<p style='color:#d97706;padding:20px'>研究背景生成失败</p>"
 
 
-# ── Phase 5：Claude 生成总览 tab ───────────────────────────────────────────
+# ── 单 Tab 重新生成（前端"重新生成"按钮） ────────────────────────────────────
 
-_OVERVIEW_SYSTEM = """你是顶级A股投研团队首席研究员，负责撰写投研看板的总览页。
-只输出完整 HTML 代码（<!DOCTYPE html> 到 </html>），不加任何说明。"""
+_REGEN_TPL = """你是专业的A股投资研究员。请根据以下用户指令，基于现有版本重新输出完整 HTML。
 
-_OVERVIEW_USER_TPL = """## 项目：{project_name}
-## 已完成的各维度分析摘要：
-{dimension_summaries}
+## 用户指令（最高优先级）
+{instruction}
 
-## 研报基本信息：
-- 研报数量：{report_count} 篇
-- 分析维度：{dimensions_str}
-- 生成时间：{generated_at}
+## 需要保持的原则
+- 维度：{dimension}，项目：{project_name}
+- 保持白底紫色主题（--primary: #7c3aed）
+- 保留原有所有有价值的图表数据和文字内容，只按用户指令进行修改
+- 所有 ECharts 图表的 series data 必须有真实数据，图表容器数量必须等于 echarts.init() 调用数量
+- 所有表格 tbody 必须有完整数据行，不得留空 tbody
+- body 和任何包裹容器均不得设置固定 height 或 max-height；页面高度由内容自然撑开
+- 不得使用 overflow:auto/scroll；不得添加 position:sticky/fixed 的遮罩或侧边导航
+- .kv-grid 用 display:flex; flex-wrap:wrap；.kv-card 用 flex:1 1 180px; min-width:0
+- 甘特图必须用双 bar+stack：占位 series data 每项为单值（起始年-xAxis.min），持续 series data 每项为单值（结束年-起始年），禁止 data 用 [x,y] 或 [x,y,z] 数组
+- 只输出 HTML 代码（<!DOCTYPE html> 到 </html>），不加任何说明
 
----
-生成"产业全景"总览 HTML tab，包含：
-1. 核心指标卡片（3-4 个，如国产化率、市场规模、CAGR、龙头数量）
-2. BOM 成本构成面积/矩形树图（用实际数据）
-3. 最大卡脖子 / 最不可替代 / 追赶最快（各1-2句结论）
-4. 产业里程碑时间轴（2024-2030，列关键节点）
-5. 多空结论摘要（各2-3句）
+## 现有版本（供参考，按指令修改）
+{current_html}
 
-主题要求（白底紫色）：
-{theme_css}
-引入 ECharts：<script src="{echarts_cdn}"></script>
-监听 tab-shown 消息执行 chart.resize()。
-高度 550-650px，overflow:auto。
-只输出 HTML 代码。"""
+## 研报原文参考
+{report_text}
+"""
 
 
-def generate_overview_tab(
-    project_name: str,
-    dimensions: list[str],
-    dim_htmls: dict[str, str],
-    report_count: int,
+def regenerate_single_tab(
+    project_id: int,
+    tab_name: str,
+    instruction: str,
     progress_cb=None,
 ) -> str:
-    """Claude 生成总览 tab。"""
+    """前端"重新生成"按钮：针对单个 Tab 重新生成 HTML，写回 summary_json。"""
     def _log(msg: str):
         logger.info(msg)
         if progress_cb:
             progress_cb(msg)
 
-    _log("Claude 正在生成产业全景总览…")
+    result = get_rb_result(project_id)
+    if not result:
+        raise ValueError(f"项目 {project_id} 尚无分析结果，请先完整运行分析")
 
-    # 从各维度 HTML 提取文字摘要（取前 500 字作为上下文）
-    summaries = []
-    for dim, html in dim_htmls.items():
-        import re
-        text = re.sub(r"<[^>]+>", " ", html)
-        text = re.sub(r"\s+", " ", text).strip()[:500]
-        summaries.append(f"【{dim}】{text}")
+    try:
+        summary = json.loads(result.get("summary_json", "{}"))
+    except Exception:
+        summary = {}
 
-    user_msg = _OVERVIEW_USER_TPL.format(
+    tabs: list[dict] = summary.get("tabs", [])
+    current_html = ""
+    tab_index = -1
+    for i, tab in enumerate(tabs):
+        if tab.get("name") == tab_name:
+            current_html = tab.get("html", "")
+            tab_index = i
+            break
+
+    if tab_index == -1:
+        raise ValueError(f"未找到 tab '{tab_name}'，现有 tabs：{[t.get('name') for t in tabs]}")
+
+    project = get_project(project_id)
+    if not project:
+        raise ValueError(f"项目 {project_id} 不存在")
+
+    project_name: str = project["name"]
+    batches = get_reports_text_batches(project_id)
+    if not batches:
+        raise ValueError("没有研报全文可供参考，请先抓取研报 PDF")
+
+    combined = "\n\n---\n\n".join(batches)[:25000]
+
+    _log(f"Kimi 正在根据指令重写【{tab_name}】…")
+    regen_prompt = _REGEN_TPL.format(
+        instruction=instruction,
+        dimension=tab_name,
         project_name=project_name,
-        dimension_summaries="\n\n".join(summaries),
-        report_count=report_count,
-        dimensions_str="、".join(dimensions),
-        generated_at=datetime.now().strftime("%Y-%m-%d"),
-        theme_css=THEME_CSS,
-        echarts_cdn=ECHARTS_CDN,
+        current_html=current_html[:15000],
+        report_text=combined[:15000],
     )
+    raw = kimi_call(regen_prompt)
 
-    raw = _claude_call(_OVERVIEW_SYSTEM, user_msg, max_tokens=6000)
-    html = _extract_html(raw)
-    return html if html and len(html) > 200 else "<p>总览生成失败</p>"
+    # 提取 HTML
+    html = ""
+    for marker in ["<!DOCTYPE", "<!doctype", "<html"]:
+        idx = raw.find(marker) if marker[0] != "<" else raw.lower().find(marker)
+        if idx >= 0:
+            end = raw.lower().rfind("</html>")
+            if end > idx:
+                html = raw[idx:end + 7].strip()
+                break
+    if not html:
+        html = raw.strip()
+
+    # 硬检查（最多 1 次修复）
+    issues = _quick_html_check(html)
+    if issues:
+        _log(f"硬检查发现 {len(issues)} 个问题，触发 Kimi 修复…")
+        fix_prompt = (
+            f"以下 HTML 分析页面有问题，请**定点修复**后重新输出完整 HTML。\n\n"
+            f"## 问题列表\n" + "\n".join(f"- {x}" for x in issues) + "\n\n"
+            f"## 硬性要求\n维度：{tab_name}，只修复上述问题，其余内容一字不改。\n"
+            f"只输出 HTML 代码（<!DOCTYPE html> 到 </html>），不加任何说明。\n\n"
+            f"## 当前 HTML\n{html}"
+        )
+        raw2 = kimi_call(fix_prompt)
+        for marker in ["<!DOCTYPE", "<!doctype", "<html"]:
+            idx = raw2.lower().find(marker.lower())
+            if idx >= 0:
+                end = raw2.lower().rfind("</html>")
+                if end > idx:
+                    html = raw2[idx:end + 7].strip()
+                    break
+
+    final_html = clean_html(html)
+
+    tabs[tab_index]["html"] = final_html
+    summary["tabs"] = tabs
+    upsert_rb_result(project_id, json.dumps(summary, ensure_ascii=False))
+    _log(f"【{tab_name}】重新生成完成，已写回数据库")
+
+    return final_html
 
 
 # ── 进度状态 ──────────────────────────────────────────────────────────────────
@@ -969,11 +991,22 @@ _progress: dict[int, dict] = {}
 _progress_lock = threading.Lock()
 
 
+_PIPELINE_STEPS = [
+    "准备数据",
+    "Claude 拆解维度",
+    "Kimi 并行分析",
+    "整理结果",
+    "完成",
+]
+
+
 def get_progress(project_id: int) -> dict:
     with _progress_lock:
         return dict(_progress.get(project_id, {
             "status": "idle", "phase": "", "message": "",
             "done_dimensions": [], "total_dimensions": 0,
+            "step": 0, "total_steps": len(_PIPELINE_STEPS),
+            "steps": _PIPELINE_STEPS,
         }))
 
 
@@ -1002,7 +1035,8 @@ def run_analysis(project_id: int) -> None:
 
     try:
         update_project_status(project_id, "analyzing")
-        _set_progress(project_id, status="analyzing", phase="准备数据",
+        _set_progress(project_id, status="analyzing", phase=_PIPELINE_STEPS[0],
+                      step=1, total_steps=len(_PIPELINE_STEPS), steps=_PIPELINE_STEPS,
                       total_dimensions=0, done_dimensions=[])
 
         # Phase 0: 获取研报批次
@@ -1011,81 +1045,201 @@ def run_analysis(project_id: int) -> None:
         report_count = len(get_rb_reports(project_id))
 
         if not batches:
-            _log("没有可分析的研报全文，请先点击「抓取全文」下载 PDF 内容")
             update_project_status(project_id, "error")
             _set_progress(project_id, status="error", message="没有研报全文可分析，请先抓取")
             return
 
-        # Phase 1: Claude 拆解模块 + 扩展维度（失败时 fallback 到用户维度）
-        _set_progress(project_id, phase="Claude 拆解细分模块")
+        # Phase 1: Claude 拆解模块 + 扩展维度
+        _set_progress(project_id, phase=_PIPELINE_STEPS[1], step=2)
         _log("Claude 正在拆解细分模块，扩展分析维度…")
         try:
             decomp = decompose_project(project_name, user_dimensions, batches)
         except Exception as dc_e:
             _log(f"模块拆解失败，使用默认维度继续（{dc_e}）")
             decomp = {"sub_modules": [], "final_dimensions": user_dimensions, "extra_dimensions": []}
+
         sub_modules: list[str] = decomp.get("sub_modules", [])
         final_dimensions: list[str] = decomp.get("final_dimensions", user_dimensions)
+        dimension_questions: dict = decomp.get("dimension_questions", {})
 
         if sub_modules:
             _log(f"识别到细分模块：{'、'.join(sub_modules)}")
         _log(f"将分析 {len(final_dimensions)} 个维度：{'、'.join(final_dimensions)}")
+        _set_progress(project_id, total_dimensions=len(final_dimensions) + 2)
 
-        _set_progress(project_id, total_dimensions=len(final_dimensions) + 2)  # +2 研究背景+总览
+        # Phase 2-3: 单个 claude agent 并行 dispatch Kimi subagent
+        _set_progress(project_id, phase=_PIPELINE_STEPS[2], step=3)
+        _log(f"启动 Claude agent，并行生成 {len(final_dimensions)} 个维度 + 产业全景…")
 
-        # Phase 2 & 3: 各维度 Kimi 生成 + Claude 评审（并发）
-        _set_progress(project_id, phase="Kimi 深研 + Claude 评审")
-        dim_htmls: dict[str, str] = {}
+        combined = "\n\n---\n\n".join(batches)[:30000]
 
-        def _do_dim(dim: str) -> tuple[str, str]:
-            html = generate_tab_with_review(
-                project_name, dim, sub_modules, batches,
-                progress_cb=_log,
+        # dims_info 带上每个维度的 core_question，供 Kimi subagent 各自聚焦
+        dims_info = [
+            {
+                "name": d,
+                "hash": hashlib.md5(d.encode()).hexdigest()[:8],
+                "core_question": dimension_questions.get(d, f"{d}的核心投资逻辑是什么？"),
+            }
+            for d in final_dimensions
+        ]
+
+        # 中间 HTML 存放在项目根目录 tmp/ 下，分析完成后自动删除
+        _project_root = os.path.dirname(os.path.dirname(__file__))
+        tmp_dir = os.path.join(
+            _project_root, "tmp",
+            f"rb_{project_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+        )
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        # 渲染各模板（固定字段 pre-render，动态占位符保留给 Claude/Kimi 填）
+        # 用 __PLACEHOLDER__ 手法保留 {dimension}/{core_question}/{output_path}
+        kimi_tpl_rendered = (
+            _KIMI_HTML_TPL
+            .replace("{dimension}", "__DIM__")
+            .replace("{core_question}", "__COREQ__")
+            .replace("{output_path}", "__OUTPATH__")
+            .format(
+                project_name=project_name,
+                sub_modules="、".join(sub_modules) if sub_modules else "（从研报提炼）",
+                report_text="（完整研报原文已在上方提供，此处省略）",
+                theme_css=THEME_CSS,
+                echarts_cdn=ECHARTS_CDN,
             )
-            return dim, html
+            .replace("__DIM__", "{dimension}")
+            .replace("__COREQ__", "{core_question}")
+            .replace("__OUTPATH__", "{output_path}")
+        )
+        overview_tpl_rendered = _OVERVIEW_TPL.format(
+            project_name=project_name,
+            dimension_summaries="（由 Kimi 主 agent 从各维度文件末尾 <!-- SUMMARY: ... --> 注释中提取，汇总后填入此处）",
+            report_count=report_count,
+            dimensions_str="、".join(final_dimensions),
+            generated_at=datetime.now().strftime("%Y-%m-%d"),
+            theme_css=THEME_CSS,
+            echarts_cdn=ECHARTS_CDN,
+            output_path=f"{tmp_dir}/overview.html",
+        )
 
-        with ThreadPoolExecutor(max_workers=MAX_KIMI_WORKERS) as executor:
-            futures = {executor.submit(_do_dim, d): d for d in final_dimensions}
-            for future in as_completed(futures):
-                try:
-                    dim, html = future.result()
-                    dim_htmls[dim] = html
-                    upsert_rb_analysis(project_id, dim, 0, json.dumps({"html": html[:500]}, ensure_ascii=False), "done")
-                    with _progress_lock:
-                        done = _progress.get(project_id, {}).get("done_dimensions", [])
-                        _progress[project_id]["done_dimensions"] = done + [dim]
-                    _log(f"【{dim}】分析完成")
-                except Exception as e:
-                    dim = futures[future]
-                    _log(f"【{dim}】分析失败：{e}")
-                    upsert_rb_analysis(project_id, dim, 0, "{}", "failed", str(e))
-                    dim_htmls[dim] = f"<p style='color:#dc2626;padding:20px'>【{dim}】分析失败：{e}</p>"
-
-        # Phase 4: Claude 生成总览 tab（独立 try/except，总览失败不影响维度 tabs）
-        _set_progress(project_id, phase="Claude 生成总览")
-        try:
-            overview_html = generate_overview_tab(
-                project_name, final_dimensions, dim_htmls, report_count,
-                progress_cb=_log,
-            )
-        except Exception as ov_e:
-            _log(f"产业全景总览生成失败（维度分析不受影响）：{ov_e}")
-            overview_html = f"<p style='color:#d97706;padding:20px'>总览生成失败：{ov_e}</p>"
-
-        # Phase 5: Claude 生成研究背景 tab
-        _set_progress(project_id, phase="Claude 生成研究背景")
+        # 研究背景模板：研报摘要仅前2批，不传全文
         reports_meta = get_rb_reports(project_id)
         keywords = project.get("keywords", [])
-        try:
-            intro_html = generate_intro_tab(
-                project_name, keywords, final_dimensions, reports_meta,
-                progress_cb=_log,
+        reports_simple = [
+            {
+                "org": r.get("org_name") or "—",
+                "researcher": r.get("researcher") or "—",
+                "date": r.get("publish_date") or "—",
+                "rating": (r.get("rating") or "").strip() or "—",
+                "title": r.get("title") or "—",
+            }
+            for r in reports_meta
+        ]
+        intro_summary = "\n\n---\n\n".join(batches[:2])[:12000]
+        dims_questions_text = "\n".join(
+            f"- {d}：{dimension_questions.get(d, '（核心投资逻辑）')}"
+            for d in final_dimensions
+        )
+        # {project_name} 在模板里出现多次（流程图节点等），用 __PROJNAME__ 保护
+        intro_tpl_rendered = (
+            _INTRO_HTML_TPL
+            .replace("{project_name}", "__PROJNAME__")
+            .replace("{output_path}", "__INTRO_OUTPATH__")
+            .format(
+                keywords="、".join(keywords) if keywords else project_name,
+                report_count=len(reports_meta),
+                reports_json=json.dumps(reports_simple, ensure_ascii=False, indent=2),
+                dim_count=len(final_dimensions),
+                dimensions_questions=dims_questions_text,
+                report_summary=intro_summary or "（暂无研报摘要）",
+                theme_css=THEME_CSS,
             )
-        except Exception as intro_e:
-            _log(f"研究背景生成失败（不影响其他 tabs）：{intro_e}")
-            intro_html = f"<p style='color:#d97706;padding:20px'>研究背景生成失败：{intro_e}</p>"
+            .replace("__PROJNAME__", project_name)
+            .replace("__INTRO_OUTPATH__", f"{tmp_dir}/intro.html")
+        )
 
-        # 组装 tabs：研究背景第一、产业全景第二、各维度依次排列
+        pipeline_user = (
+            _PIPELINE_USER_TPL
+            .replace("__PROJECT_NAME__", project_name)
+            .replace("__DIM_COUNT__", str(len(final_dimensions)))
+            .replace("__DIMENSIONS_JSON__", json.dumps(dims_info, ensure_ascii=False, indent=2))
+            .replace("__SUB_MODULES__", "、".join(sub_modules) if sub_modules else "（从研报提炼）")
+            .replace("__REPORT_TEXT__", combined)
+            .replace("__REPORTS_META_JSON__", json.dumps(reports_simple, ensure_ascii=False, indent=2))
+            .replace("__KIMI_HTML_TPL__", kimi_tpl_rendered)
+            .replace("__OVERVIEW_TPL__", overview_tpl_rendered)
+            .replace("__INTRO_TPL__", intro_tpl_rendered)
+            .replace("__TMP_DIR__", tmp_dir)
+        )
+
+        def _pipeline_progress(msg: str):
+            logger.info(f"[pipeline] {msg[:200]}")
+            m = _re.match(r"\[PROGRESS\]\s*完成[：:]\s*(.+)", msg.strip())
+            if m:
+                dim_done = m.group(1).strip()
+                with _progress_lock:
+                    done = _progress.get(project_id, {}).get("done_dimensions", [])
+                    if dim_done not in done:
+                        _progress[project_id]["done_dimensions"] = done + [dim_done]
+                _set_progress(project_id, message=f"完成：{dim_done}")
+            elif len(msg) <= 120 and not msg.strip().startswith("<"):
+                _set_progress(project_id, message=msg.strip())
+
+        pipeline_result = run_claude_pipeline(
+            f"{_PIPELINE_SYSTEM}\n\n{pipeline_user}",
+            progress_cb=_pipeline_progress,
+            timeout=3600,
+        )
+
+        # Phase 4: 从临时文件读取 HTML，Python 侧硬检查
+        _set_progress(project_id, phase=_PIPELINE_STEPS[3], step=4)
+        raw_tabs: list[dict] = pipeline_result.get("tabs", [])
+        dim_htmls: dict[str, str] = {}
+        dim_summaries: dict[str, str] = {}  # 从 <!-- SUMMARY: ... --> 提取的核心判断
+        overview_html = "<p style='color:#d97706;padding:20px'>产业全景待生成</p>"
+        intro_html = "<p style='color:#d97706;padding:20px'>研究背景待生成</p>"
+
+        def _extract_summary_comment(html: str) -> str:
+            m = _re.search(r"<!--\s*SUMMARY:\s*([\s\S]+?)\s*-->", html)
+            return m.group(1).strip() if m else ""
+
+        for tab in raw_tabs:
+            name = tab.get("name", "")
+            path = tab.get("path", "")
+            html = ""
+
+            if path and os.path.isfile(path):
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        html = f.read()
+                except Exception as e:
+                    logger.warning(f"[analyzer] 读取 {path} 失败: {e}")
+
+            if html:
+                summary_comment = _extract_summary_comment(html)
+                if summary_comment:
+                    dim_summaries[name] = summary_comment
+                    logger.info(f"[analyzer] {name} SUMMARY: {summary_comment}")
+                issues = _quick_html_check(html)
+                if issues:
+                    logger.warning(f"[analyzer] {name} 硬检查问题（已记录，不阻断）: {issues}")
+                html = clean_html(html)
+
+            if not html or len(html) < 500:
+                html = f"<p style='color:#dc2626;padding:20px'>【{name}】生成失败</p>"
+
+            if name == "研究背景":
+                intro_html = html
+            elif name == "产业全景":
+                overview_html = html
+            elif name in final_dimensions:
+                dim_htmls[name] = html
+                upsert_rb_analysis(project_id, name, 0,
+                                   json.dumps({"html": html}, ensure_ascii=False), "done")
+                with _progress_lock:
+                    done = _progress.get(project_id, {}).get("done_dimensions", [])
+                    if name not in done:
+                        _progress[project_id]["done_dimensions"] = done + [name]
+
+        # 组装最终 tabs
         tabs = [
             {"name": "研究背景", "html": intro_html},
             {"name": "产业全景", "html": overview_html},
@@ -1101,13 +1255,22 @@ def run_analysis(project_id: int) -> None:
             "sub_modules": sub_modules,
             "dimensions": final_dimensions,
             "extra_dimensions": decomp.get("extra_dimensions", []),
+            "dimension_questions": dimension_questions,
+            "dimension_summaries": dim_summaries,
         }
 
         upsert_rb_result(project_id, json.dumps(result_payload, ensure_ascii=False))
         update_project_status(project_id, "done", report_count)
-        _set_progress(project_id, status="done", phase="完成",
+        _set_progress(project_id, status="done", phase=_PIPELINE_STEPS[4], step=5,
                       message=f"分析完成，共 {len(tabs)} 个分析页面")
-        _log(f"分析完成！共生成 {len(tabs)} 个分析页面（{project_name}）")
+
+        # 清理中间临时目录
+        try:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            logger.info(f"[analyzer] 已清理临时目录 {tmp_dir}")
+        except Exception as clean_e:
+            logger.warning(f"[analyzer] 清理临时目录失败（不影响结果）: {clean_e}")
 
     except Exception as e:
         logger.exception(f"[analyzer] 项目 {project_id} 分析异常: {e}")
@@ -1117,10 +1280,8 @@ def run_analysis(project_id: int) -> None:
 
 def start_analysis_thread(project_id: int) -> threading.Thread:
     t = threading.Thread(
-        target=run_analysis,
-        args=(project_id,),
-        daemon=True,
-        name=f"rb-analyzer-{project_id}",
+        target=run_analysis, args=(project_id,),
+        daemon=True, name=f"rb-analyzer-{project_id}",
     )
     t.start()
     return t

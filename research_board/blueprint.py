@@ -32,6 +32,7 @@ from research_board.rb_fetcher import (
 from research_board.rb_analyzer import (
     start_analysis_thread,
     get_progress,
+    regenerate_single_tab,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ DEFAULT_DIMENSIONS = [
 # 抓取任务状态（per project_id）
 _fetch_state: dict[int, dict] = {}
 _fetch_lock = threading.Lock()
+
+# 单 Tab 重新生成任务状态（per project_id）
+_regen_state: dict[int, dict] = {}
+_regen_lock = threading.Lock()
 
 
 def _ok(data=None, **kwargs):
@@ -132,17 +137,19 @@ def rb_fetch(pid: int):
 
         try:
             update_project_status(pid, "fetching")
-            count = fetch_reports_for_project(pid, progress_cb=_cb)
+            fetch_reports_for_project(pid, progress_cb=_cb)
 
             if download_pdf:
                 with _fetch_lock:
                     _fetch_state[pid]["phase"] = "downloading_pdf"
                 download_pdfs_for_project(pid, max_count=max_pdf, progress_cb=_cb)
 
-            update_project_status(pid, "idle", count)
+            # 用数据库实际行数（而非本次新增数）更新 report_count，避免重复抓时归零
+            actual_count = len(get_rb_reports(pid))
+            update_project_status(pid, "idle", actual_count)
             with _fetch_lock:
                 _fetch_state[pid] = {"status": "done", "phase": "done",
-                                      "message": f"抓取完成，共 {count} 篇"}
+                                      "message": f"抓取完成，共 {actual_count} 篇"}
         except Exception as e:
             logger.exception(f"[rb_fetch] pid={pid} error: {e}")
             update_project_status(pid, "error")
@@ -221,31 +228,6 @@ def rb_analyze_status(pid: int):
 
 # ── 结果 ──────────────────────────────────────────────────────────────────
 
-import re as _re
-
-def _clean_html(html: str) -> str:
-    """剥离 LLM 可能残留的 markdown 代码块标记，并移除 body 的固定高度约束。"""
-    if not html:
-        return html
-    # 1. 去掉开头的 ```html 或 ```（含换行）
-    html = _re.sub(r"^```(?:html)?\s*\n?", "", html.strip(), flags=_re.IGNORECASE)
-    # 2. 去掉结尾的 ``` （含前置换行）
-    html = _re.sub(r"\n?\s*```\s*$", "", html.strip())
-    html = html.strip()
-    # 3. 移除 body 上的固定 height
-    html = _re.sub(
-        r'(body\s*\{[^}]*)height\s*:\s*\d+px\s*;?\s*',
-        r'\1',
-        html, flags=_re.IGNORECASE
-    )
-    # 4. 移除任意 CSS 规则块里的 max-height 和 overflow-y 约束
-    #    Kimi 有时生成 .page-wrapper { max-height: 640px; overflow-y: auto; }
-    #    导致内容在 iframe 里被裁切。直接删掉这两个属性即可。
-    html = _re.sub(r'\bmax-height\s*:\s*\d+[^;}\n]*;?\s*', '', html, flags=_re.IGNORECASE)
-    html = _re.sub(r'\boverflow-y\s*:\s*(auto|scroll)\s*;?\s*', '', html, flags=_re.IGNORECASE)
-    return html
-
-
 @rb_bp.route("/api/rb/projects/<int:pid>/result", methods=["GET"])
 def rb_result(pid: int):
     result = get_rb_result(pid)
@@ -256,11 +238,7 @@ def rb_result(pid: int):
         parsed = json.loads(raw)
     except Exception:
         parsed = {}
-    # 清洗每个 tab 的 html，去除 LLM 残留的 markdown 标记
-    if isinstance(parsed.get("tabs"), list):
-        for tab in parsed["tabs"]:
-            if isinstance(tab.get("html"), str):
-                tab["html"] = _clean_html(tab["html"])
+    # HTML 在写入 DB 前已经过 clean_html()，这里直接返回
     result["data"] = parsed
     return _ok(result)
 
@@ -283,3 +261,69 @@ def rb_analyses(pid: int):
             except Exception:
                 r["result"] = {}
     return _ok(rows)
+
+
+# ── 单 Tab 重新生成 ───────────────────────────────────────────────────────────
+
+@rb_bp.route("/api/rb/projects/<int:pid>/tabs/regenerate", methods=["POST"])
+def rb_tab_regenerate(pid: int):
+    p = get_project(pid)
+    if not p:
+        return _err("项目不存在", 404)
+
+    body = request.get_json(silent=True) or {}
+    tab_name = (body.get("tab_name") or "").strip()
+    instruction = (body.get("instruction") or "").strip()
+
+    if not tab_name:
+        return _err("tab_name 不能为空")
+    if not instruction:
+        return _err("instruction 不能为空")
+
+    with _regen_lock:
+        state = _regen_state.get(pid, {})
+        if state.get("status") == "running":
+            return _err(f"已有重生成任务在运行中（tab: {state.get('tab_name', '?')}）")
+        _regen_state[pid] = {
+            "status": "running",
+            "tab_name": tab_name,
+            "message": "任务已启动",
+        }
+
+    def _run():
+        def _cb(msg: str):
+            with _regen_lock:
+                _regen_state[pid]["message"] = msg
+
+        try:
+            regenerate_single_tab(pid, tab_name, instruction, progress_cb=_cb)
+            with _regen_lock:
+                _regen_state[pid] = {
+                    "status": "done",
+                    "tab_name": tab_name,
+                    "message": f"【{tab_name}】重新生成完成",
+                }
+        except Exception as e:
+            logger.exception(f"[rb_tab_regenerate] pid={pid} tab={tab_name} error: {e}")
+            with _regen_lock:
+                _regen_state[pid] = {
+                    "status": "error",
+                    "tab_name": tab_name,
+                    "message": str(e),
+                }
+
+    threading.Thread(
+        target=_run, daemon=True, name=f"rb-regen-{pid}"
+    ).start()
+    return _ok({"started": True})
+
+
+@rb_bp.route("/api/rb/projects/<int:pid>/tabs/regen-status", methods=["GET"])
+def rb_tab_regen_status(pid: int):
+    with _regen_lock:
+        state = dict(_regen_state.get(pid, {
+            "status": "idle",
+            "tab_name": "",
+            "message": "",
+        }))
+    return _ok(state)

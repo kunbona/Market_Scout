@@ -1,3 +1,6 @@
+# 分析中间临时文件
+tmp/
+
 # 数据库
 db/market.db
 db/market.db-shm

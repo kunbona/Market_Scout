@@ -32,6 +32,9 @@ interface AnalysisProgress {
   message: string;
   done_dimensions: string[];
   total_dimensions: number;
+  step: number;
+  total_steps: number;
+  steps: string[];
 }
 
 interface KeyStock {
@@ -284,7 +287,10 @@ function BoardView({ result }: { result: BoardResult }) {
         </div>
         {/* iframe 区域撑满剩余高度 */}
         <div className="flex-1 min-h-0">
-          <AnalysisViewer tabs={result.tabs} frameHeight="100%" />
+          <AnalysisViewer
+            tabs={result.tabs}
+            frameHeight="100%"
+          />
         </div>
       </div>
     );
@@ -576,33 +582,70 @@ function ProjectCard({
 }) {
   const [fetchState, setFetchState] = useState<{ status: string; message: string }>({ status: 'idle', message: '' });
   const [analyzeProgress, setAnalyzeProgress] = useState<AnalysisProgress | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 抓取和分析用独立 ref，互不干扰
+  const fetchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const analyzePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  const stopFetchPoll = () => { if (fetchPollRef.current) { clearInterval(fetchPollRef.current); fetchPollRef.current = null; } };
+  const stopAnalyzePoll = () => { if (analyzePollRef.current) { clearInterval(analyzePollRef.current); analyzePollRef.current = null; } };
 
-  useEffect(() => () => stopPoll(), []);
-
-  const pollFetch = () => {
-    stopPoll();
-    pollRef.current = setInterval(async () => {
+  const pollFetch = (onDone?: () => void) => {
+    stopFetchPoll();
+    fetchPollRef.current = setInterval(async () => {
       try {
         const d = await rbFetch<{ status: string; message: string }>(`/api/rb/projects/${project.id}/fetch-status`);
         setFetchState(d);
-        if (d.status === 'done' || d.status === 'error') stopPoll();
-      } catch { stopPoll(); }
+        if (d.status === 'done' || d.status === 'error') {
+          stopFetchPoll();
+          onDone?.();
+        }
+      } catch { stopFetchPoll(); onDone?.(); }
     }, 1000);
   };
 
-  const pollAnalyze = () => {
-    stopPoll();
-    pollRef.current = setInterval(async () => {
+  const pollAnalyze = (onDone?: () => void) => {
+    stopAnalyzePoll();
+    let failCount = 0;
+    analyzePollRef.current = setInterval(async () => {
       try {
         const d = await rbFetch<AnalysisProgress>(`/api/rb/projects/${project.id}/analyze-status`);
+        failCount = 0;
         setAnalyzeProgress(d);
-        if (d.status === 'done' || d.status === 'error') stopPoll();
-      } catch { stopPoll(); }
+        if (d.status === 'done' || d.status === 'error') {
+          stopAnalyzePoll();
+          onDone?.();
+        }
+      } catch {
+        failCount++;
+        if (failCount >= 3) {
+          stopAnalyzePoll();
+          setAnalyzeProgress(prev => ({
+            status: 'error',
+            phase: prev?.phase ?? '分析中',
+            message: '后端无响应（连续 3 次请求失败），进程可能已崩溃。请检查后端日志后重新分析。',
+            done_dimensions: prev?.done_dimensions ?? [],
+            total_dimensions: prev?.total_dimensions ?? 0,
+            step: prev?.step ?? 0,
+            total_steps: prev?.total_steps ?? 5,
+            steps: prev?.steps ?? [],
+          }));
+        }
+      }
     }, 1500);
   };
+
+  // 清理
+  useEffect(() => () => { stopFetchPoll(); stopAnalyzePoll(); }, []);
+
+  // mount 时：若后端仍在运行（刷新/tab 切换后回来），自动恢复进度轮询
+  useEffect(() => {
+    if (project.status === 'analyzing') {
+      pollAnalyze(() => onAnalyze());
+    } else if (project.status === 'fetching') {
+      pollFetch(() => onFetch(true));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleFetch = async (downloadPdf: boolean) => {
     try {
@@ -611,8 +654,8 @@ function ProjectCard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ download_pdf: downloadPdf, max_pdf: 100 }),
       });
-      pollFetch();
-      onFetch(downloadPdf);
+      // 完成后回调 onFetch 刷新项目列表（更新 report_count 显示）
+      pollFetch(() => onFetch(downloadPdf));
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : '操作失败');
     }
@@ -621,7 +664,7 @@ function ProjectCard({
   const handleAnalyze = async () => {
     try {
       await rbFetch(`/api/rb/projects/${project.id}/analyze`, { method: 'POST' });
-      pollAnalyze();
+      pollAnalyze(() => onAnalyze());
       onAnalyze();
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : '操作失败');
@@ -655,23 +698,112 @@ function ProjectCard({
       </div>
 
       {/* 进度条 */}
-      {isAnalyzing && analyzeProgress && (
-        <div className="mb-3 bg-indigo-50 rounded-lg px-3 py-2 text-xs">
-          <div className="flex justify-between mb-1">
-            <span className="text-indigo-700 font-medium">{analyzeProgress.phase}</span>
-            <span className="text-indigo-500">{analyzeProgress.done_dimensions.length}/{analyzeProgress.total_dimensions}</span>
+      {analyzeProgress && (analyzeProgress.status === 'analyzing' || analyzeProgress.status === 'error') && (() => {
+        const isError = analyzeProgress.status === 'error';
+        const steps = analyzeProgress.steps?.length ? analyzeProgress.steps : ['准备数据', 'Claude 拆解维度', 'Kimi 并行分析', '生成研究背景', '完成'];
+        const totalSteps = steps.length;
+        const currentStep = analyzeProgress.step ?? 0;
+        const isKimiPhase = currentStep === 3; // "Kimi 并行分析" 是第3步
+        const dimTotal = analyzeProgress.total_dimensions;
+        const dimDone = analyzeProgress.done_dimensions.length;
+
+        // 总进度：步骤粒度。Kimi 阶段内部再细分维度子进度
+        let pct: number;
+        if (isError) {
+          pct = 0;
+        } else if (isKimiPhase && dimTotal > 0) {
+          const stepBase = (currentStep - 1) / totalSteps * 100;
+          const stepSize = 1 / totalSteps * 100;
+          pct = stepBase + (dimDone / dimTotal) * stepSize;
+        } else {
+          pct = Math.min((currentStep - 1) / totalSteps * 100, 95);
+        }
+
+        return (
+          <div className={`mb-3 rounded-lg px-3 pt-2.5 pb-2 text-xs ${isError ? 'bg-red-50 border border-red-100' : 'bg-indigo-50 border border-indigo-100'}`}>
+            {/* 步骤指示器 */}
+            {!isError && (
+              <div className="flex items-center gap-0 mb-2">
+                {steps.map((s, i) => {
+                  const stepNum = i + 1;
+                  const done = stepNum < currentStep;
+                  const active = stepNum === currentStep;
+                  return (
+                    <div key={s} className="flex items-center min-w-0" style={{ flex: i < steps.length - 1 ? '1' : 'none' }}>
+                      <div className="flex flex-col items-center flex-shrink-0" style={{ minWidth: 0 }}>
+                        <div
+                          className="w-5 h-5 rounded-full flex items-center justify-center font-bold transition-all duration-300"
+                          style={{
+                            background: done ? '#4f46e5' : active ? '#6366f1' : '#c7d2fe',
+                            color: done || active ? '#fff' : '#818cf8',
+                            fontSize: 9,
+                            boxShadow: active ? '0 0 0 3px #c7d2fe' : 'none',
+                          }}
+                        >
+                          {done ? '✓' : stepNum}
+                        </div>
+                        <span
+                          className="mt-0.5 text-center leading-tight"
+                          style={{
+                            fontSize: 9,
+                            color: done ? '#4f46e5' : active ? '#6366f1' : '#a5b4fc',
+                            fontWeight: active ? 700 : 400,
+                            maxWidth: 52,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {s}
+                        </span>
+                      </div>
+                      {i < steps.length - 1 && (
+                        <div
+                          className="flex-1 mx-1 transition-all duration-500"
+                          style={{
+                            height: 2,
+                            background: done ? '#4f46e5' : '#c7d2fe',
+                            borderRadius: 1,
+                            marginBottom: 14,
+                          }}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* 总进度条 */}
+            {!isError && (
+              <div className="h-1 bg-indigo-200 rounded-full overflow-hidden mb-1.5">
+                <div
+                  className="h-full bg-indigo-600 transition-all duration-500"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            )}
+
+            {/* 当前消息 */}
+            {analyzeProgress.message && (
+              <p className={`leading-relaxed break-all mt-1 ${isError ? 'text-red-600' : 'text-indigo-500'}`}>
+                {isError ? '✗ ' : ''}{analyzeProgress.message}
+              </p>
+            )}
+
+            {/* 已完成维度 tag（仅 Kimi 阶段） */}
+            {!isError && dimDone > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {analyzeProgress.done_dimensions.map(dim => (
+                  <span key={dim} className="px-1.5 py-0.5 rounded font-medium" style={{ background: '#e0e7ff', color: '#3730a3' }}>
+                    ✓ {dim}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
-          <div className="h-1.5 bg-indigo-200 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-indigo-600 transition-all duration-500"
-              style={{ width: `${analyzeProgress.total_dimensions > 0 ? (analyzeProgress.done_dimensions.length / analyzeProgress.total_dimensions) * 100 : 0}%` }}
-            />
-          </div>
-          {analyzeProgress.message && (
-            <p className="text-indigo-500 mt-1 truncate">{analyzeProgress.message}</p>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {isFetching && (
         <div className="mb-3 bg-blue-50 rounded-lg px-3 py-2 text-xs text-blue-600">
@@ -876,7 +1008,9 @@ export function ResearchBoardPage() {
 
         {selectedId && !loadingResult && boardResult && (
           <div className="flex-1 min-h-0">
-            <BoardView result={boardResult} />
+            <BoardView
+              result={boardResult}
+            />
           </div>
         )}
       </div>
