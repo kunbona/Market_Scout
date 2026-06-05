@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time as _time
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,9 @@ def _get_env() -> dict:
     env = os.environ.copy()
     env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env.local")
     if os.path.exists(env_file):
-        for line in open(env_file):
+        with open(env_file) as _f:
+            lines = _f.readlines()
+        for line in lines:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
@@ -257,6 +260,19 @@ def run_claude_pipeline(
     is_error = False
     start = _time.time()
 
+    # 并发消耗 stderr，防止管道写满导致子进程阻塞
+    import threading as _threading
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr():
+        try:
+            stderr_chunks.append(proc.stderr.read())
+        except Exception:
+            pass
+
+    _stderr_thread = _threading.Thread(target=_drain_stderr, daemon=True)
+    _stderr_thread.start()
+
     try:
         for raw_line in proc.stdout:
             if _time.time() - start > timeout:
@@ -295,13 +311,14 @@ def run_claude_pipeline(
 
     finally:
         proc.stdout.close()
-        proc.wait(timeout=10)
+        _stderr_thread.join(timeout=5)
         try:
-            stderr_out = proc.stderr.read()
-            if stderr_out:
-                logger.error(f"[pipeline] stderr: {stderr_out[:1000]}")
-        except Exception:
-            pass
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        stderr_out = "".join(stderr_chunks)
+        if stderr_out:
+            logger.error(f"[pipeline] stderr: {stderr_out[:1000]}")
 
     final_text = "\n".join(text_blocks)
     logger.info(f"[pipeline] text_blocks={len(text_blocks)} final_text_len={len(final_text)}")
@@ -322,7 +339,7 @@ def run_claude_pipeline(
 # ── playwright 截图 ───────────────────────────────────────────────────────────
 
 _playwright_ready = False
-_playwright_lock = None
+_playwright_lock = threading.Lock()
 
 
 def _ensure_nss_in_path():
@@ -352,10 +369,7 @@ def _ensure_nss_in_path():
 
 def _ensure_playwright():
     """首次调用时安装 playwright + chromium（只装一次）。"""
-    global _playwright_ready, _playwright_lock
-    import threading
-    if _playwright_lock is None:
-        _playwright_lock = threading.Lock()
+    global _playwright_ready
 
     with _playwright_lock:
         if _playwright_ready:

@@ -19,6 +19,9 @@ def _conn():
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -44,6 +47,8 @@ def _migrate_db(conn) -> None:
 
 def init_db() -> None:
     with _conn() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS rb_project (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -834,15 +834,20 @@ def generate_intro_tab(
     if report_batches:
         summary = "\n\n---\n\n".join(report_batches[:2])[:12000]
 
-    user_msg = _INTRO_HTML_TPL.format(
-        project_name=project_name,
-        keywords="、".join(keywords) if keywords else project_name,
-        report_count=len(reports),
-        reports_json=json.dumps(reports_simple, ensure_ascii=False, indent=2),
-        dim_count=len(dimensions),
-        dimensions_questions=dimensions_questions_text,
-        report_summary=summary or "（暂无研报摘要）",
-        theme_css=THEME_CSS,
+    user_msg = (
+        _INTRO_HTML_TPL
+        .replace("{output_path}", "__INTRO_OUTPATH__")
+        .format(
+            project_name=project_name,
+            keywords="、".join(keywords) if keywords else project_name,
+            report_count=len(reports),
+            reports_json=json.dumps(reports_simple, ensure_ascii=False, indent=2),
+            dim_count=len(dimensions),
+            dimensions_questions=dimensions_questions_text,
+            report_summary=summary or "（暂无研报摘要）",
+            theme_css=THEME_CSS,
+        )
+        .replace("__INTRO_OUTPATH__", "")
     )
 
     raw = call_claude_text(_INTRO_HTML_SYSTEM, user_msg, timeout=180)
@@ -931,15 +936,15 @@ def regenerate_single_tab(
     if not batches:
         raise ValueError("没有研报全文可供参考，请先抓取研报 PDF")
 
-    combined = "\n\n---\n\n".join(batches)[:25000]
+    combined = "\n\n---\n\n".join(batches)
 
     _log(f"Kimi 正在根据指令重写【{tab_name}】…")
     regen_prompt = _REGEN_TPL.format(
-        instruction=instruction,
+        instruction=instruction[:2000],
         dimension=tab_name,
         project_name=project_name,
-        current_html=current_html[:15000],
-        report_text=combined[:15000],
+        current_html=current_html,
+        report_text=combined,
     )
     raw = kimi_call(regen_prompt)
 
@@ -1033,6 +1038,12 @@ def run_analysis(project_id: int) -> None:
         logger.info(msg)
         _set_progress(project_id, message=msg)
 
+    import tempfile
+    _project_root = os.path.dirname(os.path.dirname(__file__))
+    _tmp_base = os.path.join(_project_root, "tmp")
+    os.makedirs(_tmp_base, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix=f"rb_{project_id}_", dir=_tmp_base)
+
     try:
         update_project_status(project_id, "analyzing")
         _set_progress(project_id, status="analyzing", phase=_PIPELINE_STEPS[0],
@@ -1082,14 +1093,6 @@ def run_analysis(project_id: int) -> None:
             }
             for d in final_dimensions
         ]
-
-        # 中间 HTML 存放在项目根目录 tmp/ 下，分析完成后自动删除
-        _project_root = os.path.dirname(os.path.dirname(__file__))
-        tmp_dir = os.path.join(
-            _project_root, "tmp",
-            f"rb_{project_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-        )
-        os.makedirs(tmp_dir, exist_ok=True)
 
         # 渲染各模板（固定字段 pre-render，动态占位符保留给 Claude/Kimi 填）
         # 用 __PLACEHOLDER__ 手法保留 {dimension}/{core_question}/{output_path}
@@ -1176,9 +1179,10 @@ def run_analysis(project_id: int) -> None:
             if m:
                 dim_done = m.group(1).strip()
                 with _progress_lock:
-                    done = _progress.get(project_id, {}).get("done_dimensions", [])
+                    proj_p = _progress.setdefault(project_id, {})
+                    done = proj_p.get("done_dimensions", [])
                     if dim_done not in done:
-                        _progress[project_id]["done_dimensions"] = done + [dim_done]
+                        proj_p["done_dimensions"] = done + [dim_done]
                 _set_progress(project_id, message=f"完成：{dim_done}")
             elif len(msg) <= 120 and not msg.strip().startswith("<"):
                 _set_progress(project_id, message=msg.strip())
@@ -1235,9 +1239,10 @@ def run_analysis(project_id: int) -> None:
                 upsert_rb_analysis(project_id, name, 0,
                                    json.dumps({"html": html}, ensure_ascii=False), "done")
                 with _progress_lock:
-                    done = _progress.get(project_id, {}).get("done_dimensions", [])
+                    proj_p = _progress.setdefault(project_id, {})
+                    done = proj_p.get("done_dimensions", [])
                     if name not in done:
-                        _progress[project_id]["done_dimensions"] = done + [name]
+                        proj_p["done_dimensions"] = done + [name]
 
         # 组装最终 tabs
         tabs = [
@@ -1264,18 +1269,14 @@ def run_analysis(project_id: int) -> None:
         _set_progress(project_id, status="done", phase=_PIPELINE_STEPS[4], step=5,
                       message=f"分析完成，共 {len(tabs)} 个分析页面")
 
-        # 清理中间临时目录
-        try:
-            import shutil
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            logger.info(f"[analyzer] 已清理临时目录 {tmp_dir}")
-        except Exception as clean_e:
-            logger.warning(f"[analyzer] 清理临时目录失败（不影响结果）: {clean_e}")
-
     except Exception as e:
         logger.exception(f"[analyzer] 项目 {project_id} 分析异常: {e}")
         update_project_status(project_id, "error")
         _set_progress(project_id, status="error", message=f"分析出错：{e}")
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.info(f"[analyzer] 已清理临时目录 {tmp_dir}")
 
 
 def start_analysis_thread(project_id: int) -> threading.Thread:

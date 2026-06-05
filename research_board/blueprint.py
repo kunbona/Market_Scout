@@ -30,9 +30,9 @@ from research_board.rb_fetcher import (
     download_pdfs_for_project,
 )
 from research_board.rb_analyzer import (
-    start_analysis_thread,
     get_progress,
     regenerate_single_tab,
+    run_analysis,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,10 @@ _fetch_lock = threading.Lock()
 # 单 Tab 重新生成任务状态（per project_id）
 _regen_state: dict[int, dict] = {}
 _regen_lock = threading.Lock()
+
+# 分析任务去重锁（防止并发双启动）
+_analyze_running: set[int] = set()
+_analyze_lock = threading.Lock()
 
 
 def _ok(data=None, **kwargs):
@@ -213,11 +217,20 @@ def rb_analyze(pid: int):
     if not p:
         return _err("项目不存在", 404)
 
-    progress = get_progress(pid)
-    if progress.get("status") == "analyzing":
-        return _err("分析任务已在运行中")
+    with _analyze_lock:
+        if pid in _analyze_running:
+            return _err("分析任务已在运行中")
+        _analyze_running.add(pid)
 
-    start_analysis_thread(pid)
+    def _wrapped():
+        try:
+            run_analysis(pid)
+        finally:
+            with _analyze_lock:
+                _analyze_running.discard(pid)
+
+    import threading as _t
+    _t.Thread(target=_wrapped, daemon=True, name=f"rb-analyzer-{pid}").start()
     return _ok({"started": True})
 
 
@@ -279,6 +292,8 @@ def rb_tab_regenerate(pid: int):
         return _err("tab_name 不能为空")
     if not instruction:
         return _err("instruction 不能为空")
+    if len(instruction) > 2000:
+        return _err("instruction 不得超过 2000 字符")
 
     with _regen_lock:
         state = _regen_state.get(pid, {})
