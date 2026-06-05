@@ -62,6 +62,7 @@ dashboard/.vite/
 .claude/projects/
 .claude/todos/
 .claude/plans/
+.claude/wiki/
 
 # pnpm
 dashboard/node_modules/
