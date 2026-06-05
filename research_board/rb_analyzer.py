@@ -346,7 +346,49 @@ def clean_html(html: str) -> str:
     html = _re.sub(r'\boverflow-y\s*:\s*(auto|scroll)\s*;?\s*', '', html, flags=_re.IGNORECASE)
     html = _re.sub(r'\boverflow\s*:\s*(auto|scroll)\s*;?\s*', '', html, flags=_re.IGNORECASE)
     html = _fix_gantt_data(html)
+    html = _fix_js_string_newlines(html)
     return html
+
+
+def _fix_js_string_newlines(html: str) -> str:
+    """修复 <script> 块内 JS 单引号字符串中的原始换行符，替换为 \\n 转义。
+    Kimi 有时在 formatter: '{b}\n{c}%' 这类字符串里输出真实换行，导致 SyntaxError。
+    """
+    def _fix_script(m: "_re.Match") -> str:
+        script = m.group(0)
+        # 在单引号字符串内，把原始 \n 替换为 \\n
+        # 策略：逐字符扫描，遇到单引号开始/结束字符串，遇到 \n 时替换
+        result = []
+        in_sq = False   # 在单引号字符串内
+        in_dq = False   # 在双引号字符串内
+        in_bt = False   # 在反引号字符串内
+        i = 0
+        while i < len(script):
+            ch = script[i]
+            if ch == '\\' and (in_sq or in_dq or in_bt):
+                # 转义序列，原样保留两个字符
+                result.append(ch)
+                i += 1
+                if i < len(script):
+                    result.append(script[i])
+                    i += 1
+                continue
+            if ch == "'" and not in_dq and not in_bt:
+                in_sq = not in_sq
+            elif ch == '"' and not in_sq and not in_bt:
+                in_dq = not in_dq
+            elif ch == '`' and not in_sq and not in_dq:
+                in_bt = not in_bt
+            elif ch == '\n' and in_sq:
+                # 单引号字符串内的原始换行 → \\n
+                result.append('\\n')
+                i += 1
+                continue
+            result.append(ch)
+            i += 1
+        return ''.join(result)
+
+    return _re.sub(r'<script[\s\S]*?</script>', _fix_script, html, flags=_re.IGNORECASE)
 
 
 def _quick_html_check(html: str) -> list[str]:
@@ -428,6 +470,20 @@ def _quick_html_check(html: str) -> list[str]:
             f"发现 {len(gantt_array_data)} 处 bar series data 含嵌套数组（如 [2025,2028] 或 [0,0,2025,3]），"
             f"ECharts bar stack 甘特图每项 data 必须是单值：占位 data=[起始年，如2027]，持续 data=[持续年数，如3]"
         )
+
+    # JS 字符串内嵌原始换行检测：单引号字符串跨行会导致 SyntaxError，整个 <script> 静默崩溃
+    # 典型错误：formatter: '{b}\n{c}%'（Kimi 输出时用了真实换行而不是 \\n）
+    script_blocks = _re.findall(r'<script[\s\S]*?</script>', html, _re.IGNORECASE)
+    for script in script_blocks:
+        bad_str = _re.findall(r"'[^'\n]{0,80}\n[^'\n]{0,80}'", script)
+        if bad_str:
+            issues.append(
+                f"JS 单引号字符串内含原始换行符（{len(bad_str)} 处），"
+                f"会导致 SyntaxError 使所有 ECharts 图表静默失败。"
+                f"示例：{repr(bad_str[0][:60])}。"
+                f"将 formatter 等字符串内的换行改为 \\\\n（转义）或用模板字符串（反引号）"
+            )
+            break
 
     return issues
 
@@ -1115,6 +1171,16 @@ def run_analysis(project_id: int) -> None:
             m = _re.search(r"<!--\s*SUMMARY:\s*([\s\S]+?)\s*-->", html)
             return m.group(1).strip() if m else ""
 
+        # 维度名 normalize：去掉所有括号（全角/半角）和空白，用于模糊匹配
+        # Kimi 有时会丢掉括号，如 "CSP资本开支与长协（LTA）锁产能进展" → "CSP资本开支与长协LTA锁产能进展"
+        import unicodedata as _unicodedata
+        def _norm_dim(s: str) -> str:
+            # 去掉括号类字符和空白，仅保留字母/数字/汉字
+            return _re.sub(r'[\s\(\)\（\）【】\[\]「」『』〔〕《》〈〉]', '', s)
+
+        # 用 normalize 后的 key → 原始维度名 的反查表
+        _final_dim_norm = {_norm_dim(d): d for d in final_dimensions}
+
         for tab in raw_tabs:
             name = tab.get("name", "")
             path = tab.get("path", "")
@@ -1140,19 +1206,43 @@ def run_analysis(project_id: int) -> None:
             if not html or len(html) < 500:
                 html = f"<p style='color:#dc2626;padding:20px'>【{name}】生成失败</p>"
 
+            # 确定存入 dim_htmls 用的 canonical 维度名
+            _store_name: str | None = None
             if name == "研究背景":
                 intro_html = html
             elif name == "产业全景":
                 overview_html = html
             elif name in final_dimensions:
-                dim_htmls[name] = html
-                upsert_rb_analysis(project_id, name, 0,
+                _store_name = name
+            else:
+                # 精确匹配失败，尝试 normalize 模糊匹配（应对 Kimi 丢括号等变形）
+                canonical = _final_dim_norm.get(_norm_dim(name))
+                if canonical:
+                    logger.warning(
+                        f"[analyzer] 维度名模糊匹配：Kimi 返回 {repr(name)} → "
+                        f"匹配到 {repr(canonical)}（括号/空白差异）"
+                    )
+                    _store_name = canonical
+                    # 把 summary 也迁移到 canonical key
+                    if name in dim_summaries:
+                        dim_summaries.setdefault(canonical, dim_summaries.pop(name))
+                else:
+                    logger.warning(f"[analyzer] 未知维度名 {repr(name)}，不在 final_dimensions 中，跳过")
+
+            if _store_name:
+                dim_htmls[_store_name] = html
+                upsert_rb_analysis(project_id, _store_name, 0,
                                    json.dumps({"html": html}, ensure_ascii=False), "done")
                 with _progress_lock:
                     proj_p = _progress.setdefault(project_id, {})
                     done = proj_p.get("done_dimensions", [])
-                    if name not in done:
-                        proj_p["done_dimensions"] = done + [name]
+                    if _store_name not in done:
+                        proj_p["done_dimensions"] = done + [_store_name]
+
+        # 检查是否有维度 HTML 缺失
+        missing_dims = [d for d in final_dimensions if d not in dim_htmls]
+        if missing_dims:
+            logger.error(f"[analyzer] 以下维度 HTML 未生成，将显示为空：{missing_dims}")
 
         # 组装最终 tabs
         tabs = [
