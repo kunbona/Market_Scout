@@ -12,7 +12,6 @@ run_claude_pipeline()：整个分析 pipeline 的入口。
   以 stream-json 流式读取进度，最终返回结构化 JSON。
 
 _call_llm()：单次 Kimi 调用（用于单 tab 重生成、修复等场景）。
-_call_llm_two_pass()：两步续写（产业全景长 HTML 防截断）。
 call_claude_text()：纯文字 Claude 调用（decompose 等）。
 screenshot_html()：playwright 截图工具（维度验收时由 cli 内部 agent 调用）。
 """
@@ -157,45 +156,6 @@ def _call_llm(prompt: str, timeout: int = LLM_TIMEOUT, _retries: int = 2) -> str
 
     raise last_err
 
-
-def _call_llm_two_pass(prompt_part1: str, prompt_part2: str,
-                       timeout: int = LLM_TIMEOUT) -> str:
-    """
-    两步续写：claude 在同一个 codex session 内先生成 HTML 主体，
-    再用 `codex exec resume --session-id` 续写 <script> 初始化。
-    用于产业全景等长 HTML，避免 token 截断。
-    失败时退化为单次调用。
-    """
-    env = _get_env()
-    rand = hashlib.md5(f"{_time.time()}{id(prompt_part1)}".encode()).hexdigest()[:8]
-
-    orchestrator_prompt = (
-        f"用 codex exec --profile research 通过两步调用生成完整 HTML，"
-        f"两步在同一 codex session 内完成（用 session resume 避免 token 截断）。\n\n"
-        f"第一步：执行第一步 Prompt，记录 session id，将输出存入 /tmp/kr1_{rand}.txt\n"
-        f"第二步：用 codex exec resume --session-id <session_id> 执行第二步 Prompt，"
-        f"将输出存入 /tmp/kr2_{rand}.txt\n"
-        f"第三步：拼接两步输出，直接输出完整 HTML（<!DOCTYPE html> 到 </html>），不加任何说明。\n\n"
-        f"若无法获取 session id，用第一步末尾 1000 字符为上下文前缀，退化为普通 codex exec 执行第二步。\n\n"
-        f"## 第一步 Prompt\n```\n{prompt_part1}\n```\n\n"
-        f"## 第二步 Prompt\n```\n{prompt_part2}\n```\n\n"
-        f"只输出最终完整 HTML，不加任何说明。"
-    )
-
-    try:
-        content = _run_claude(orchestrator_prompt, timeout=timeout * 2, env=env)
-        content = _unwrap_html(content)
-        if not content:
-            raise RuntimeError("two-pass 输出为空")
-        return content
-    except Exception as e:
-        logger.warning(f"[cli_runner] two-pass 失败，退化为单次: {e}")
-        combined = (
-            f"{prompt_part1}\n\n"
-            "请继续，输出所有 ECharts 图表的 <script> 初始化代码，"
-            "然后紧接着输出 </body> 和 </html>，不要重复之前任何内容。"
-        )
-        return _call_llm(combined, timeout=timeout)
 
 
 def _unwrap_html(text: str) -> str:
