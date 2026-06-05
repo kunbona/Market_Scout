@@ -6,7 +6,11 @@ Market Radar — Flask 服务
 
 import sys
 import os
+import warnings
 from datetime import datetime
+
+# akshare 内部 pandas 兼容问题，与本项目代码无关，静默掉
+warnings.filterwarnings("ignore", message="A value is trying to be set on a copy of a slice")
 
 # 加载本地配置（.env.local 优先级最高，覆盖 .env）
 def _load_env_local():
