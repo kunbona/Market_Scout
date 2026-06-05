@@ -107,6 +107,17 @@ ECHARTS_CDN = "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"
 import re as _re
 
 
+def _extract_html(raw: str) -> str:
+    """从 LLM 输出中提取完整 HTML（<!DOCTYPE/html> … </html>）。"""
+    for marker in ["<!doctype", "<html"]:
+        idx = raw.lower().find(marker)
+        if idx >= 0:
+            end = raw.lower().rfind("</html>")
+            if end > idx:
+                return raw[idx:end + 7].strip()
+    return ""
+
+
 def _fix_gantt_data(html: str) -> str:
     """
     修复 ECharts bar-stack 甘特图中 Kimi 常见的数据格式错误。
@@ -859,17 +870,7 @@ def regenerate_single_tab(
     )
     raw = kimi_call(regen_prompt)
 
-    # 提取 HTML
-    html = ""
-    for marker in ["<!DOCTYPE", "<!doctype", "<html"]:
-        idx = raw.find(marker) if marker[0] != "<" else raw.lower().find(marker)
-        if idx >= 0:
-            end = raw.lower().rfind("</html>")
-            if end > idx:
-                html = raw[idx:end + 7].strip()
-                break
-    if not html:
-        html = raw.strip()
+    html = _extract_html(raw) or raw.strip()
 
     # 硬检查（最多 1 次修复）
     issues = _quick_html_check(html)
@@ -883,13 +884,7 @@ def regenerate_single_tab(
             f"## 当前 HTML\n{html}"
         )
         raw2 = kimi_call(fix_prompt)
-        for marker in ["<!DOCTYPE", "<!doctype", "<html"]:
-            idx = raw2.lower().find(marker.lower())
-            if idx >= 0:
-                end = raw2.lower().rfind("</html>")
-                if end > idx:
-                    html = raw2[idx:end + 7].strip()
-                    break
+        html = _extract_html(raw2) or html
 
     final_html = clean_html(html)
 
@@ -978,7 +973,7 @@ def run_analysis(project_id: int) -> None:
             decomp = decompose_project(project_name, user_dimensions, batches)
         except Exception as dc_e:
             _log(f"模块拆解失败，使用默认维度继续（{dc_e}）")
-            decomp = {"sub_modules": [], "final_dimensions": user_dimensions, "extra_dimensions": []}
+            decomp = {"sub_modules": [], "final_dimensions": user_dimensions, "extra_dimensions": [], "dimension_questions": {}}
 
         sub_modules: list[str] = decomp.get("sub_modules", [])
         final_dimensions: list[str] = decomp.get("final_dimensions", user_dimensions)
@@ -987,7 +982,7 @@ def run_analysis(project_id: int) -> None:
         if sub_modules:
             _log(f"识别到细分模块：{'、'.join(sub_modules)}")
         _log(f"将分析 {len(final_dimensions)} 个维度：{'、'.join(final_dimensions)}")
-        _set_progress(project_id, total_dimensions=len(final_dimensions) + 2)
+        _set_progress(project_id, total_dimensions=len(final_dimensions))
 
         # Phase 2-3: 单个 claude agent 并行 dispatch Kimi subagent
         _set_progress(project_id, phase=_PIPELINE_STEPS[2], step=3)
@@ -1094,7 +1089,7 @@ def run_analysis(project_id: int) -> None:
                     done = proj_p.get("done_dimensions", [])
                     if dim_done not in done:
                         proj_p["done_dimensions"] = done + [dim_done]
-                _set_progress(project_id, message=f"完成：{dim_done}")
+                    proj_p["message"] = f"完成：{dim_done}"
             elif len(msg) <= 120 and not msg.strip().startswith("<"):
                 _set_progress(project_id, message=msg.strip())
 
@@ -1190,10 +1185,3 @@ def run_analysis(project_id: int) -> None:
         logger.info(f"[analyzer] 已清理临时目录 {tmp_dir}")
 
 
-def start_analysis_thread(project_id: int) -> threading.Thread:
-    t = threading.Thread(
-        target=run_analysis, args=(project_id,),
-        daemon=True, name=f"rb-analyzer-{project_id}",
-    )
-    t.start()
-    return t

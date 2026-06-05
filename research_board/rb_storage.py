@@ -4,10 +4,13 @@ research_board — 独立 SQLite 存储层
 """
 
 import json
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 _DB_PATH = os.path.join(os.path.dirname(__file__), "..", "research_board.db")
 
@@ -138,13 +141,13 @@ def get_project(project_id: int) -> dict | None:
 def list_projects() -> list[dict]:
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM rb_project ORDER BY id DESC").fetchall()
-    result = []
-    for row in rows:
-        d = dict(row)
-        d["keywords"] = json.loads(d["keywords"])
-        d["dimensions"] = json.loads(d["dimensions"])
-        d["qtype_filter"] = json.loads(d["qtype_filter"])
-        result.append(d)
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["keywords"] = json.loads(d["keywords"])
+            d["dimensions"] = json.loads(d["dimensions"])
+            d["qtype_filter"] = json.loads(d["qtype_filter"])
+            result.append(d)
     return result
 
 
@@ -210,6 +213,8 @@ def update_rb_report_text(report_id: int, full_text: str, status: str = "done") 
 
 
 def update_rb_report_pdf_status(report_id: int, status: str, error: str = "") -> None:
+    if error:
+        logger.warning(f"[rb_storage] report {report_id} pdf error: {error}")
     with _conn() as conn:
         conn.execute(
             "UPDATE rb_report SET pdf_status=? WHERE id=?",

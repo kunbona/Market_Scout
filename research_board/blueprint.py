@@ -229,8 +229,7 @@ def rb_analyze(pid: int):
             with _analyze_lock:
                 _analyze_running.discard(pid)
 
-    import threading as _t
-    _t.Thread(target=_wrapped, daemon=True, name=f"rb-analyzer-{pid}").start()
+    threading.Thread(target=_wrapped, daemon=True, name=f"rb-analyzer-{pid}").start()
     return _ok({"started": True})
 
 

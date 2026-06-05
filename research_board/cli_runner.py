@@ -255,9 +255,8 @@ def run_claude_pipeline(
                     logger.error(f"[pipeline] full result event={repr(str(event)[:800])}")
 
             elif etype == "assistant":
-                # parent_tool_use_id 非 None 时是 subagent 内部消息，忽略
-                if event.get("parent_tool_use_id") is not None:
-                    continue
+                # 只忽略深层 subagent 内部消息（parent_tool_use_id 存在且非顶层 task tool）
+                # 不完全过滤非 None 的情况：supervisor 最终 JSON 可能在 Task tool 响应上下文里
                 for block in event.get("message", {}).get("content", []):
                     if block.get("type") == "text":
                         txt = block.get("text", "").strip()
@@ -273,6 +272,7 @@ def run_claude_pipeline(
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()  # 回收僵尸进程
         stderr_out = "".join(stderr_chunks)
         if stderr_out:
             logger.error(f"[pipeline] stderr: {stderr_out[:1000]}")
@@ -288,8 +288,6 @@ def run_claude_pipeline(
     logger.info(f"[pipeline] _extract_json result keys={list(result.keys()) if isinstance(result, dict) else type(result)}")
     if isinstance(result, dict) and result.get("tabs"):
         logger.info(f"[pipeline] tabs={[t.get('name') for t in result['tabs']]}")
-    if isinstance(result, dict) and "raw_text" in result and len(result) == 1:
-        result = {"raw_text": final_text}
     return result
 
 
