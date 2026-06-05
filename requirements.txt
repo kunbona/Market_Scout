@@ -21,8 +21,3 @@ pandas>=2.0.0
 # ── 本地量价（可选，缺少时情绪分析区显示空） ─────────────────────────────────
 mootdx>=0.11.0
 
-# ── 投研看板（Research Board）─────────────────────────────────────────────────
-anthropic>=0.40.0        # Claude SDK：多模态 API 调用（投研看板 supervisor）
-                         # 运行时依赖（pip 安装外，需单独安装）：
-                         #   claude CLI：npm install -g @anthropic-ai/claude-code
-                         #   codex CLI：npm install -g @openai/codex

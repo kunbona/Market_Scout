@@ -9,7 +9,6 @@ import { ResearchPage } from './pages/ResearchPage';
 import { MarketRealtimePage } from './pages/MarketRealtimePage';
 import { MarketSentimentPage } from './pages/MarketSentimentPage';
 import { AgentPage } from './pages/AgentPage';
-import { ResearchBoardPage } from './pages/ResearchBoardPage';
 import { useSettings } from './lib/useSettings';
 
 import type { AppSettings } from './lib/useSettings';
@@ -433,7 +432,7 @@ function SettingsPage({ settings, onUpdate }: {
   );
 }
 
-type TabId = 'news' | 'policy' | 'market' | 'research' | 'ai-analysis' | 'research-board' | 'settings';
+type TabId = 'news' | 'policy' | 'market' | 'research' | 'ai-analysis' | 'settings';
 
 interface DataAlert {
   level: 'error' | 'warning';
@@ -496,8 +495,6 @@ export default function App() {
         return <ResearchPage />;
       case 'ai-analysis':
         return <AgentPage />;
-      case 'research-board':
-        return <ResearchBoardPage />;
       case 'settings':
         return <SettingsPage settings={settings} onUpdate={updateSettings} />;
     }
@@ -533,15 +530,9 @@ export default function App() {
           </div>
         ))}
         <div className="flex-1 overflow-hidden">
-          {activeTab === 'research-board' ? (
-            <div key={activeTab} className="h-full page-enter">
-              {renderPage()}
-            </div>
-          ) : (
-            <div key={activeTab} className="p-8 page-enter overflow-y-auto h-full">
-              {renderPage()}
-            </div>
-          )}
+          <div key={activeTab} className="p-8 page-enter overflow-y-auto h-full">
+            {renderPage()}
+          </div>
         </div>
       </main>
     </div>
