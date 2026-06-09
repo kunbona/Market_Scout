@@ -91,8 +91,6 @@ from db.storage import (
     get_margin_latest,
     get_block_trade_latest,
     get_holder_count_latest,
-    get_fundamentals_finance,
-    get_fundamentals_f10,
     get_lockup_expiry,
     get_dividend_latest,
     get_industry_ranking_latest,
@@ -767,65 +765,12 @@ def api_trade_calendar_today():
         return _err(exc)
 
 
-@app.route("/api/agent/fundamental/trigger", methods=["POST"])
-def api_fundamental_trigger():
-    """手动触发基本面分析（独立于日常 pipeline）。"""
-    try:
-        from agent.orchestrator import run_fundamental_analysis
-        result = run_fundamental_analysis()
-        return _ok(result)
-    except Exception as exc:
-        return _err(exc)
 
 
-@app.route("/api/agent/fundamental/status")
-def api_fundamental_status():
-    """返回基本面分析运行状态。"""
-    try:
-        from agent.orchestrator import get_fundamental_state
-        return _ok(get_fundamental_state())
-    except Exception as exc:
-        return _err(exc)
 
 
-@app.route("/api/agent/fundamental/latest")
-def api_fundamental_latest():
-    """返回最新一条未过期的基本面覆盖图。"""
-    try:
-        from db.storage import get_fundamental_coverage_latest
-        import json as _json
-        row = get_fundamental_coverage_latest()
-        if not row:
-            return _ok({"available": False})
-        # 解析 coverage_json 减少前端处理量
-        try:
-            coverage = _json.loads(row.get("coverage_json") or "{}")
-        except Exception:
-            coverage = {}
-        return _ok({
-            "available": True,
-            "id": row["id"],
-            "generated_at": row["generated_at"],
-            "expires_at": row["expires_at"],
-            "has_html": bool(row.get("report_html")),
-            "coverage": coverage,
-        })
-    except Exception as exc:
-        return _err(exc)
 
 
-@app.route("/api/agent/fundamental/report")
-def api_fundamental_report():
-    """返回最新基本面覆盖图的 HTML 报告，供 iframe 渲染。"""
-    try:
-        from db.storage import get_fundamental_coverage_latest
-        row = get_fundamental_coverage_latest()
-        if not row or not row.get("report_html"):
-            return _err("暂无基本面覆盖图 HTML 报告", 404)
-        from flask import Response
-        return Response(row["report_html"], mimetype="text/html")
-    except Exception as exc:
-        return _err(exc)
 
 
 @app.route("/api/agent/time-slot")
@@ -1015,18 +960,6 @@ def api_compute_status():
 # ---------------------------------------------------------------------------
 # Runtime config (DATA_ROOT / RSSHub)
 # ---------------------------------------------------------------------------
-
-def _get_fundamental_coverage_status():
-    """返回 (is_fresh: bool, expires_at: str|None)，失败时静默返回 (False, None)。"""
-    try:
-        from db.storage import get_fundamental_coverage_latest
-        row = get_fundamental_coverage_latest()
-        if row:
-            return True, row.get("expires_at")
-        return False, None
-    except Exception:
-        return False, None
-
 
 @app.route("/api/config", methods=["GET"])
 def api_config_get():
@@ -1297,27 +1230,7 @@ def api_holder_count():
         return _err(exc)
 
 
-@app.route("/api/fundamentals/finance")
-def api_fundamentals_finance():
-    try:
-        fetch_date = request.args.get("date", "").strip() or None
-        rows = get_fundamentals_finance(fetch_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
 
-
-@app.route("/api/fundamentals/f10")
-def api_fundamentals_f10():
-    try:
-        code = request.args.get("code", "").strip()
-        fetch_date = request.args.get("date", "").strip() or None
-        if not code:
-            return _err("缺少 code 参数", 400)
-        rows = get_fundamentals_f10(code, fetch_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
 
 
 @app.route("/api/lockup-expiry")

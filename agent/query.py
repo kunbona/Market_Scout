@@ -27,8 +27,6 @@ Commands:
   strong_pool             今日强势股池
   big_deal                大单异动最新50条
   market_breadth          实时全市涨跌家数+成交额（xtquant，1分钟粒度）
-  fundamental_research    research_board 已完成项目的结构化摘要（供 mra-fundamental 使用）
-  fundamental_coverage    最新基本面覆盖图的压缩文本（供 mra-chief 使用）
 """
 import argparse
 import json
@@ -1098,68 +1096,6 @@ def cmd_market_breadth(args):
     })
 
 
-def cmd_fundamental_research(args):
-    """
-    读取 research_board 所有已完成项目的结构化摘要，供 mra-fundamental 使用。
-    返回：[{project_id, project_name, text_summary, generated_at, report_count}, ...]
-    """
-    try:
-        from research_board.rb_storage import list_projects, get_rb_result
-        import json as _json
-        projects = list_projects()
-        result = []
-        for p in projects:
-            if p.get("status") != "done":
-                continue
-            rb_result = get_rb_result(p["id"])
-            if not rb_result:
-                continue
-            payload_raw = rb_result.get("summary_json", "{}")
-            try:
-                payload = _json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
-            except Exception:
-                payload = {}
-            text_summary = payload.get("text_summary", "")
-            result.append({
-                "project_id": p["id"],
-                "project_name": p.get("name", ""),
-                "text_summary": text_summary,
-                "generated_at": payload.get("generated_at", ""),
-                "report_count": payload.get("report_count", 0),
-                "dimensions": payload.get("dimensions", []),
-            })
-        if not result:
-            _out({"note": "research_board 暂无已完成的项目，请先在投研看板完成至少一个分析项目", "data": []})
-            return
-        _out({"count": len(result), "data": result})
-    except ImportError:
-        _out({"error": "research_board 模块不可用", "data": []})
-    except Exception as e:
-        _out({"error": str(e), "data": []})
-
-
-def cmd_fundamental_coverage(args):
-    """
-    返回最新基本面覆盖图的压缩文本（供 mra-chief 使用）。
-    若无有效覆盖图或已过期，返回 available=false。
-    """
-    from db.storage import get_fundamental_coverage_latest, get_fundamental_coverage_hint
-    row = get_fundamental_coverage_latest()
-    if not row:
-        _out({
-            "available": False,
-            "reason": "无有效基本面覆盖图，请在 Agent 页面手动触发基本面分析",
-        })
-        return
-    hint = get_fundamental_coverage_hint()
-    _out({
-        "available": True,
-        "generated_at": row.get("generated_at"),
-        "expires_at": row.get("expires_at"),
-        "hint": hint,
-    })
-
-
 def cmd_context(args):
     """完整上下文，一次性返回所有分析所需数据。"""
     from db.storage import get_agent_context
@@ -1211,8 +1147,6 @@ COMMANDS = {
     "strong_pool":       cmd_strong_pool,
     "big_deal":          cmd_big_deal,
     "market_breadth":          cmd_market_breadth,
-    "fundamental_research":    cmd_fundamental_research,
-    "fundamental_coverage":    cmd_fundamental_coverage,
 }
 
 
