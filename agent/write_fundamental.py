@@ -1,16 +1,14 @@
 """
-结果落地脚本。Claude 分析完成后调用，把 JSON 结果写入 agent_summary 表。
+基本面覆盖图落地脚本。mra-fundamental skill 分析完成后调用，
+把覆盖结果写入 fundamental_coverage 表。
 
 用法：
-  python agent/write_result.py --run-type evening --result '<JSON字符串>'
-
-或从文件读取（JSON 较长时推荐）：
-  python agent/write_result.py --run-type evening --result-file /tmp/result.json
+  python agent/write_fundamental.py --result '<JSON字符串>' --html-file /tmp/mra-xxx/fundamental.html
 """
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -18,19 +16,17 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="写入 Agent 分析结果")
-    parser.add_argument("--run-type", required=True,
-                        choices=["morning", "auction", "intraday", "closing", "evening"],
-                        help="分析类型")
+    parser = argparse.ArgumentParser(description="写入基本面覆盖图")
     parser.add_argument("--result", type=str, default="",
-                        help="JSON 结果字符串")
+                        help="JSON 结果字符串（coverage_json 内容）")
     parser.add_argument("--result-file", type=str, default="",
                         help="JSON 结果文件路径（与 --result 二选一）")
     parser.add_argument("--html-file", type=str, default="",
-                        help="HTML 报告文件路径，写入 report_html 字段")
+                        help="HTML 报告文件路径")
+    parser.add_argument("--expire-days", type=int, default=7,
+                        help="覆盖图有效天数（默认 7 天）")
     args = parser.parse_args()
 
-    # 读取 JSON
     if args.result_file:
         try:
             result_json = Path(args.result_file).read_text(encoding="utf-8")
@@ -43,18 +39,12 @@ def main():
         print("ERROR: 必须提供 --result 或 --result-file", file=sys.stderr)
         sys.exit(1)
 
-    # 解析 JSON
     try:
-        result = json.loads(result_json)
+        coverage = json.loads(result_json)
     except json.JSONDecodeError as e:
         print(f"ERROR: JSON 解析失败: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 补充元数据
-    result.setdefault("run_type", args.run_type)
-    result.setdefault("run_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-    # 读取 HTML 文件（可选）
     report_html = ""
     if args.html_file:
         try:
@@ -62,29 +52,27 @@ def main():
         except Exception as e:
             print(f"WARNING: 读取 HTML 文件失败（忽略）: {e}", file=sys.stderr)
 
-    # 提取摘要文本
-    summary_text = (
-        result.get("summary_text")
-        or (result.get("changes") or [""])[0]
-        or f"{args.run_type} 分析完成"
-    )
+    now = datetime.now()
+    generated_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    expires_at = (now + timedelta(days=args.expire_days)).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 写入数据库
+    project_ids = json.dumps(coverage.get("project_ids", []), ensure_ascii=False)
+
     try:
-        from db.storage import insert_agent_summary
-        row_id = insert_agent_summary(
-            content=summary_text,
-            data_snapshot_json=json.dumps(result, ensure_ascii=False, default=str),
-            run_type=args.run_type,
+        from db.storage import insert_fundamental_coverage
+        row_id = insert_fundamental_coverage(
+            generated_at=generated_at,
+            expires_at=expires_at,
+            project_ids=project_ids,
+            coverage_json=result_json,
             report_html=report_html,
         )
         print(json.dumps({
             "status": "ok",
-            "run_type": args.run_type,
             "id": row_id,
+            "generated_at": generated_at,
+            "expires_at": expires_at,
             "has_html": bool(report_html),
-            "summary": summary_text[:100],
-            "written_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }, ensure_ascii=False))
     except Exception as e:
         print(f"ERROR: 写入数据库失败: {e}", file=sys.stderr)

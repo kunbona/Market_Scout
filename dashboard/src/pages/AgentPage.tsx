@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, Component } from 'react';
+import { useEffect, useRef, useState, Component, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import {
   AlertTriangle,
@@ -92,6 +92,8 @@ interface FullReport {
   run_type: 'evening' | 'morning';
   run_time: string;
   summary_time?: string;
+  id?: number;
+  has_html?: boolean;
   core_narrative?: string;
   market_status: MarketStatus;
   verdict_summary?: VerdictSummary;
@@ -103,6 +105,8 @@ interface FullReport {
 interface IntradayReport {
   run_type: 'intraday';
   run_time?: string;
+  id?: number;
+  has_html?: boolean;
   market_status: MarketStatus;
   intraday_pulse: string;
   theme_status: string;
@@ -116,6 +120,7 @@ interface HistoryItem {
   run_time: string;
   run_type: string;
   summary?: string;
+  has_html?: boolean;
   data?: AgentReport;
 }
 
@@ -253,37 +258,117 @@ function PhaseBar({
 
 // ─── Trigger Buttons ──────────────────────────────────────────────────────────
 
+function useTimeSlot(): 'morning' | 'intraday' | 'evening' {
+  const [slot, setSlot] = useState<'morning' | 'intraday' | 'evening'>(() => {
+    // 初始值用本地时间快速计算（避免白屏）
+    const t = new Date().getHours() * 60 + new Date().getMinutes();
+    if (t < 9 * 60 + 15) return 'morning';
+    if (t < 15 * 60 + 30) return 'intraday';
+    return 'evening';
+  });
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function fetchSlot() {
+      try {
+        const res = await fetch('/api/agent/time-slot');
+        const json = await res.json();
+        if (json.success && json.data) {
+          setSlot(json.data.slot as 'morning' | 'intraday' | 'evening');
+          // 在 next_change_at 时刻自动重新请求
+          const nextChange = new Date(json.data.next_change_at).getTime();
+          const now = Date.now();
+          const delay = Math.max(nextChange - now, 10_000); // 最少10秒后再查
+          timer = setTimeout(fetchSlot, delay);
+        }
+      } catch {
+        // 网络失败：60秒后重试
+        timer = setTimeout(fetchSlot, 60_000);
+      }
+    }
+
+    fetchSlot();
+    return () => { if (timer) clearTimeout(timer); };
+  }, []);
+
+  return slot;
+}
+
 function TriggerPanel({
   running,
   onTrigger,
 }: {
   running: boolean;
-  onTrigger: (type: 'intraday' | 'evening') => void;
+  onTrigger: (type: 'intraday' | 'morning' | 'evening') => void;
 }) {
+  const slot = useTimeSlot();
+
+  const btnBase = "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed";
+
   return (
-    <div className="flex items-center gap-3 mb-6">
-      <button
-        onClick={() => onTrigger('intraday')}
-        disabled={running}
-        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold
-                   bg-blue-600 text-white hover:bg-blue-700
-                   disabled:opacity-50 disabled:cursor-not-allowed
-                   transition-colors shadow-sm"
-      >
-        <Zap className="w-4 h-4" />
-        盘中分析
-      </button>
-      <button
-        onClick={() => onTrigger('evening')}
-        disabled={running}
-        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold
-                   accent-solid disabled:opacity-50 disabled:cursor-not-allowed
-                   transition-colors"
-        style={{ boxShadow: '0 2px 8px var(--accent-glow)' }}
-      >
-        <Brain className="w-4 h-4" />
-        盘后总结
-      </button>
+    <div className="flex flex-wrap items-center gap-3 mb-6">
+      {/* 盘前分析 */}
+      <div className="relative group">
+        <button
+          onClick={() => onTrigger('morning')}
+          disabled={running}
+          title={slot !== 'morning' ? '建议在 0:00–9:15 盘前时段使用' : undefined}
+          className={`${btnBase} ${
+            slot === 'morning'
+              ? 'bg-amber-500 text-white hover:bg-amber-600'
+              : 'bg-amber-100 text-amber-700 hover:bg-amber-200 ring-1 ring-amber-300'
+          }`}
+        >
+          <Brain className="w-4 h-4" />
+          盘前分析
+          {slot !== 'morning' && (
+            <span className="ml-1 text-xs opacity-60">（非盘前时段）</span>
+          )}
+        </button>
+      </div>
+
+      {/* 盘中分析 */}
+      <div className="relative group">
+        <button
+          onClick={() => onTrigger('intraday')}
+          disabled={running}
+          title={slot !== 'intraday' ? '建议在 9:15–15:30 盘中时段使用' : undefined}
+          className={`${btnBase} ${
+            slot === 'intraday'
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'bg-blue-100 text-blue-700 hover:bg-blue-200 ring-1 ring-blue-300'
+          }`}
+        >
+          <Zap className="w-4 h-4" />
+          盘中分析
+          {slot !== 'intraday' && (
+            <span className="ml-1 text-xs opacity-60">（非盘中时段）</span>
+          )}
+        </button>
+      </div>
+
+      {/* 盘后总结 */}
+      <div className="relative group">
+        <button
+          onClick={() => onTrigger('evening')}
+          disabled={running}
+          title={slot !== 'evening' ? '建议在 15:30 后盘后时段使用' : undefined}
+          className={`${btnBase} ${
+            slot === 'evening'
+              ? 'accent-solid'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 ring-1 ring-gray-300'
+          }`}
+          style={slot === 'evening' ? { boxShadow: '0 2px 8px var(--accent-glow)' } : undefined}
+        >
+          <TrendingUp className="w-4 h-4" />
+          盘后总结
+          {slot !== 'evening' && (
+            <span className="ml-1 text-xs opacity-60">（非盘后时段）</span>
+          )}
+        </button>
+      </div>
+
       {running && (
         <span className="text-xs text-gray-400 flex items-center gap-1">
           <Loader2 className="w-3 h-3 animate-spin" />
@@ -595,6 +680,38 @@ function SummaryCard({ text }: { text: string }) {
   );
 }
 
+// ─── HTML Report (iframe) ────────────────────────────────────────────────────
+
+function HtmlReportView({ reportId }: { reportId: number }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(600);
+
+  const onMessage = useCallback((e: MessageEvent) => {
+    if (e.data?.type === 'mra-report-height' && typeof e.data.height === 'number') {
+      setHeight(Math.max(400, e.data.height + 32));
+    }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onMessage]);
+
+  return (
+    <iframe
+      ref={iframeRef}
+      src={`/api/agent/report/${reportId}`}
+      style={{ width: '100%', height, border: 'none', borderRadius: '16px', display: 'block' }}
+      onLoad={() => {
+        // 注入高度上报脚本
+        try {
+          iframeRef.current?.contentWindow?.postMessage({ type: 'mra-request-height' }, '*');
+        } catch { /* cross-origin guard */ }
+      }}
+    />
+  );
+}
+
 // ─── Intraday Report ──────────────────────────────────────────────────────────
 
 function IntradayReportView({ r }: { r: IntradayReport }) {
@@ -676,13 +793,19 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
     closing:  '收盘后',
   };
 
-  const handleToggle = async (id: number | string) => {
+  const handleToggle = async (item: HistoryItem) => {
+    const id = item.id;
     if (expanded === id) {
       setExpanded(null);
       return;
     }
     setExpanded(id);
     if (detailCache[id]) return;
+    // HTML 报告直接用 iframe，无需加载完整 JSON
+    if (item.has_html) {
+      setDetailCache(prev => ({ ...prev, [id]: { run_type: item.run_type as AgentReport['run_type'], id: id as number, has_html: true } as AgentReport }));
+      return;
+    }
     setLoadingId(id);
     const data = await safeFetch<AgentReport>(`/api/agent/history/${id}`);
     if (data) setDetailCache(prev => ({ ...prev, [id]: data }));
@@ -718,7 +841,7 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
                 return (
                   <div key={item.id}>
                     <button
-                      onClick={() => handleToggle(item.id)}
+                      onClick={() => handleToggle(item)}
                       className="w-full flex items-center gap-3 px-6 py-3.5 hover:bg-gray-50 transition-colors text-left"
                     >
                       <span className={`shrink-0 text-xs px-2 py-0.5 rounded font-semibold ${
@@ -747,9 +870,11 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
                             加载中…
                           </div>
                         ) : detail ? (
-                          isFullReport(detail)
-                            ? <FullReportView r={detail} />
-                            : <IntradayReportView r={detail} />
+                          detail.has_html && detail.id
+                            ? <HtmlReportView reportId={detail.id} />
+                            : isFullReport(detail)
+                              ? <FullReportView r={detail} />
+                              : <IntradayReportView r={detail} />
                         ) : (
                           <div className="py-6 text-center text-sm text-gray-400">加载失败，请重试</div>
                         )}
@@ -791,6 +916,183 @@ class AgentErrorBoundary extends Component<{ children: ReactNode }, { error: str
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
+interface FundamentalCoverage {
+  available: boolean;
+  id?: number;
+  generated_at?: string;
+  expires_at?: string;
+  has_html?: boolean;
+  coverage?: {
+    hot_sectors?: Array<{
+      sector: string;
+      coverage: 'direct' | 'related' | 'none';
+      project_name: string | null;
+      support_summary: string | null;
+      confidence: string;
+    }>;
+    overall_note?: string;
+    coverage_rate?: number;
+  };
+}
+
+function FundamentalPanel() {
+  const [fundState, setFundState]     = useState<{ running: boolean; last_run: string | null; last_error: string | null } | null>(null);
+  const [coverage, setCoverage]       = useState<FundamentalCoverage | null>(null);
+  const [expanded, setExpanded]       = useState(false);
+  const pollRef                        = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadCoverage = async () => {
+    try {
+      const res = await fetch('/api/agent/fundamental/latest');
+      const json = await res.json();
+      if (json.success) setCoverage(json.data);
+    } catch { /* ignore */ }
+  };
+
+  const loadState = async () => {
+    try {
+      const res = await fetch('/api/agent/fundamental/status');
+      const json = await res.json();
+      if (json.success) setFundState(json.data);
+    } catch { /* ignore */ }
+  };
+
+  const startPoll = () => {
+    if (pollRef.current) return;
+    pollRef.current = setInterval(async () => {
+      await loadState();
+      const res = await fetch('/api/agent/fundamental/status');
+      const json = await res.json();
+      if (json.success && !json.data.running) {
+        clearInterval(pollRef.current!);
+        pollRef.current = null;
+        await loadCoverage();
+        await loadState();
+      }
+    }, 3000);
+  };
+
+  useEffect(() => {
+    loadState();
+    loadCoverage();
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  const handleTrigger = async () => {
+    try {
+      const res = await fetch('/api/agent/fundamental/trigger', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setFundState(prev => prev ? { ...prev, running: true } : { running: true, last_run: null, last_error: null });
+        startPoll();
+      }
+    } catch { /* ignore */ }
+  };
+
+  const isRunning = fundState?.running ?? false;
+  const hasCoverage = coverage?.available;
+  const coverageRate = coverage?.coverage?.coverage_rate;
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-[var(--shadow-sm)] mb-6 overflow-hidden">
+      {/* 头部 */}
+      <div className="flex items-center justify-between px-5 py-4">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center shrink-0">
+            <span className="text-base">📚</span>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-gray-800">基本面分析</p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {hasCoverage
+                ? `覆盖图有效至 ${coverage!.expires_at?.slice(0, 10)} · 覆盖率 ${coverageRate !== undefined ? Math.round(coverageRate * 100) + '%' : '—'}`
+                : '尚未生成覆盖图，触发后 chief 可参考基本面研究'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {hasCoverage && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
+              已覆盖
+            </span>
+          )}
+          <button
+            onClick={handleTrigger}
+            disabled={isRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {isRunning ? <><Loader2 className="w-3 h-3 animate-spin" />分析中...</> : <>刷新基本面分析</>}
+          </button>
+          {hasCoverage && (
+            <button onClick={() => setExpanded(v => !v)} className="p-1 text-gray-400 hover:text-gray-600">
+              {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 运行中进度条 */}
+      {isRunning && (
+        <div className="px-5 pb-3">
+          <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-full bg-emerald-400 rounded-full animate-pulse" style={{ width: '60%' }} />
+          </div>
+          <p className="text-xs text-gray-400 mt-1">正在匹配研究覆盖与市场热点...</p>
+        </div>
+      )}
+
+      {/* 错误提示 */}
+      {fundState?.last_error && !isRunning && (
+        <div className="mx-5 mb-3 px-3 py-2 bg-red-50 rounded-lg text-xs text-red-600">
+          上次运行出错：{fundState.last_error}
+        </div>
+      )}
+
+      {/* 覆盖图展开详情 */}
+      {expanded && hasCoverage && coverage?.coverage?.hot_sectors && (
+        <div className="border-t border-gray-100 px-5 py-4">
+          <p className="text-xs font-medium text-gray-500 mb-3">
+            热点板块覆盖情况
+            {coverage.coverage.overall_note && (
+              <span className="ml-2 font-normal text-gray-400">— {coverage.coverage.overall_note}</span>
+            )}
+          </p>
+          <div className="space-y-2">
+            {coverage.coverage.hot_sectors.map((item, i) => (
+              <div key={i} className="flex items-start gap-3 text-xs">
+                <span className={`shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-xs font-medium ${
+                  item.coverage === 'direct'  ? 'bg-emerald-50 text-emerald-700' :
+                  item.coverage === 'related' ? 'bg-blue-50 text-blue-700' :
+                                               'bg-gray-50 text-gray-500'
+                }`}>
+                  {item.coverage === 'direct' ? '有支撑' : item.coverage === 'related' ? '相关' : '无覆盖'}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <span className="font-medium text-gray-700">{item.sector}</span>
+                  {item.project_name && <span className="text-gray-400 ml-1">({item.project_name})</span>}
+                  {item.support_summary && (
+                    <p className="text-gray-400 mt-0.5 leading-relaxed">{item.support_summary}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          {coverage.has_html && (
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <button
+                onClick={() => window.open('/api/agent/fundamental/report', '_blank')}
+                className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+              >
+                查看完整 HTML 报告 →
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentPageInner() {
   const [status, setStatus]     = useState<AgentStatus | null>(null);
   const [report, setReport]     = useState<AgentReport | null>(null);
@@ -813,13 +1115,14 @@ function AgentPageInner() {
   };
 
   const loadHistory = async () => {
-    const raw = await safeFetch<Array<{ id: number | string; run_time: string; run_type: string; summary_text?: string; summary_time?: string }>>('/api/agent/history');
+    const raw = await safeFetch<Array<{ id: number | string; run_time: string; run_type: string; summary_text?: string; summary_time?: string; has_html?: boolean }>>('/api/agent/history');
     if (raw) {
       setHistory(raw.map(item => ({
         id: item.id,
         run_time: item.run_time,
         run_type: item.run_type,
         summary: item.summary_text,
+        has_html: item.has_html,
       })));
     }
   };
@@ -855,7 +1158,7 @@ function AgentPageInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleTrigger = async (run_type: 'intraday' | 'evening') => {
+  const handleTrigger = async (run_type: 'intraday' | 'morning' | 'evening') => {
     setError(null);
     try {
       const res = await fetch('/api/agent/trigger', {
@@ -942,10 +1245,14 @@ function AgentPageInner() {
 
       <TriggerPanel running={isRunning} onTrigger={handleTrigger} />
 
+      <FundamentalPanel />
+
       {report ? (
-        isFullReport(report)
-          ? <FullReportView r={report} />
-          : <IntradayReportView r={report} />
+        report.has_html && report.id
+          ? <HtmlReportView reportId={report.id} />
+          : isFullReport(report)
+            ? <FullReportView r={report} />
+            : <IntradayReportView r={report} />
       ) : (
         <div className="bg-white rounded-2xl border border-gray-100 p-12 shadow-[var(--shadow-sm)]
                         flex flex-col items-center justify-center gap-3 text-center mb-6">

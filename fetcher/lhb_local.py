@@ -1,25 +1,26 @@
 """
 从本地量化数据读取龙虎榜席位明细。
 
-数据路径：/mnt/ssd_1T/runist/data/Quant_Data/stock-lhb-organ/<YYYY-MM-DD>.csv
+数据路径：$QUANT_DATA_ROOT/stock-lhb-organ/<YYYY-MM-DD>.csv
 字段：交易日期, 股票代码, 营业部名称, 买入金额, 买入占总成交比例,
        卖出金额, 卖出占总成交比例, 净成交额, 买卖类型, 上榜理由, 排名
 
 调度：每天 18:30 运行（收盘后本地数据落库后）
+QUANT_DATA_ROOT 未配置或子目录不存在时跳过（不报错）。
 """
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-LHB_DATA_DIR = Path(
-    os.environ.get(
-        "LHB_LOCAL_DIR",
-        "/mnt/ssd_1T/runist/data/Quant_Data/stock-lhb-organ",
-    )
-)
+def _resolve_lhb_dir() -> Path | None:
+    """从 QUANT_DATA_ROOT 派生 LHB 数据目录，无需单独配置。"""
+    from quant.loader import DATA_ROOT
+    if DATA_ROOT and DATA_ROOT.is_dir():
+        p = DATA_ROOT / "stock-lhb-organ"
+        return p if p.is_dir() else None
+    return None
 
 # 已知游资席位关键词（模糊匹配）
 _YOUZI_KEYWORDS = [
@@ -57,11 +58,16 @@ def fetch_lhb_local(trade_date: str | None = None) -> None:
     读取指定交易日的本地龙虎榜文件，写入 lhb_seat 表。
     trade_date: YYYY-MM-DD，默认今日。
     """
+    lhb_dir = _resolve_lhb_dir()
+    if not lhb_dir:
+        logger.debug("[lhb_local] QUANT_DATA_ROOT 未配置或 stock-lhb-organ 子目录不存在，跳过")
+        return
+
     from db.storage import insert_lhb_seat, init_db
     init_db()
 
     date = trade_date or datetime.now().strftime("%Y-%m-%d")
-    csv_path = LHB_DATA_DIR / f"{date}.csv"
+    csv_path = lhb_dir / f"{date}.csv"
 
     if not csv_path.exists():
         logger.info("[lhb_local] 本地文件不存在: %s", csv_path)
@@ -111,8 +117,6 @@ def fetch_lhb_local(trade_date: str | None = None) -> None:
             if stock_code[:2].lower() in ("sz", "sh", "bj"):
                 stock_code = stock_code[2:]
 
-            seat_type = _classify_seat(seat_name)
-
             insert_lhb_seat(
                 trade_date  = date,
                 stock_code  = stock_code,
@@ -122,7 +126,7 @@ def fetch_lhb_local(trade_date: str | None = None) -> None:
                 net_amount  = float(row.get("net_amount") or 0),
                 buy_ratio   = float(row.get("buy_ratio") or 0),
                 sell_ratio  = float(row.get("sell_ratio") or 0),
-                seat_type   = seat_type,
+                seat_type   = _classify_seat(seat_name),
                 reason      = str(row.get("reason") or ""),
                 rank        = int(float(row.get("rank") or 0)),
             )

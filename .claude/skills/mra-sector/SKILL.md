@@ -20,7 +20,7 @@ description: 板块热度分析师 — 用板块热度指数、均线加速信�
 ## Step 0：先读数据健康报告
 
 ```bash
-cat /tmp/mra-${MRA_RUN_ID}/data_health.json
+cat ${MRA_TMP_DIR}/data_health.json
 ```
 
 检查 `static.sector_zt_density.fresh`：

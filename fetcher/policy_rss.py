@@ -24,6 +24,8 @@ RSS_SOURCES = [
     (f"{RSSHUB}/sse/inquire", "上交所问询"),
     (f"{RSSHUB}/szse/inquire", "深交所问询"),
     (f"{RSSHUB}/szse/notice", "深交所公告"),
+    # 财新深度文章：RSSHub 路由（内容比 akshare 更新，但需 RSSHub 可用）
+    (f"{RSSHUB}/caixin/article", "财新"),
 ]
 
 # RSSHub 不可用时的 HTML scrape 兜底（发改委 + 证监会）
@@ -85,8 +87,8 @@ def _fetch_rss(url: str, source: str) -> None:
 
 def _fetch_html(url: str, source: str, link_must_contain: str = "", container_selector: str = "") -> None:
     try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        resp.raise_for_status()
+        from fetcher.http_util import fetch_with_retry
+        resp = fetch_with_retry(url, domain=url.split("/")[2], referer=url, timeout=10)
     except Exception as e:
         logger.warning(f"[policy_rss] {source} request failed: {e}")
         return
@@ -135,20 +137,54 @@ def fetch() -> None:
             except Exception as e:
                 logger.warning(f"[policy_rss] {source} failed: {e}")
 
-    # 财新：始终尝试，不依赖 RSSHub
+    # 财新补充：无论 RSSHub 是否可用，始终用 akshare 抓财新首页文章
+    # akshare stock_news_main_cx() 返回的 URL 固定但标题唯一，UNIQUE(title,source) 可正常去重
     try:
         df = ak.stock_news_main_cx()
+        fetch_time = datetime.now(_CST).strftime("%Y-%m-%d %H:%M:%S")
+        count = 0
         for _, row in df.iterrows():
-            title = str(row.get("summary", ""))
-            link = str(row.get("url", ""))
-            if title and link:
-                insert_policy_news(title, link, "", "财新")
+            title = str(row.get("summary", "") or row.get("title", ""))
+            link  = str(row.get("url", "") or row.get("link", ""))
+            if not title:
+                continue
+            pub_time = (
+                _parse_time(str(row.get("pub_time", "")))
+                or _parse_time(str(row.get("time", "")))
+                or _parse_time(str(row.get("date", "")))
+                or fetch_time
+            )
+            insert_policy_news(title, link, pub_time, "财新")
+            count += 1
+        if count:
+            logger.debug("[policy_rss] 财新 akshare 补充 %d 条", count)
     except Exception as e:
-        logger.warning(f"[policy_rss] 财新 failed: {e}")
+        logger.debug("[policy_rss] 财新 akshare 补充失败: %s", e)
+
+    # 财新降级：RSSHub 不可用时尝试财新官方 RSS
+    if not use_rsshub:
+        for cx_url in [
+            "https://www.caixin.com/rss/caixinnews.xml",
+            "https://rss.caixin.com/home",
+        ]:
+            try:
+                feed = feedparser.parse(cx_url)
+                if feed.entries:
+                    for entry in feed.entries:
+                        title = getattr(entry, "title", "")
+                        link  = getattr(entry, "link", "")
+                        pub   = getattr(entry, "published", "")
+                        if title:
+                            insert_policy_news(title, link, _parse_time(pub), "财新")
+                    logger.info("[policy_rss] 财新降级 RSS %s 获取 %d 条", cx_url, len(feed.entries))
+                    break
+            except Exception as e:
+                logger.debug("[policy_rss] 财新降级 %s failed: %s", cx_url, e)
 
 
 def fetch_cninfo() -> None:
     """巨潮资讯公司公告（东方财富接口）"""
+    import akshare as ak
     from datetime import datetime
     # 重要公告类型白名单
     IMPORTANT_TYPES = {
@@ -174,5 +210,7 @@ def fetch_cninfo() -> None:
                     insert_policy_news(title.strip(), link, pub_time, "巨潮公告")
             except Exception:
                 continue
+    except KeyError:
+        logger.debug("[policy_rss] fetch_cninfo skipped: akshare stock_notice_report 列名变更，等待库更新")
     except Exception as e:
         logger.warning(f"[policy_rss] fetch_cninfo failed: {e}")

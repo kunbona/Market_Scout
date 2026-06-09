@@ -7,10 +7,11 @@
   串行追加：mra-scout（依赖 sector.json）
 
 第二阶段：首席裁决
-  mra-chief → 读全部结果 → 自主多空裁决 → 调用 write_result 落库
+  mra-chief-morning（盘前）或 mra-chief-evening（盘后）→ 读全部结果 → 裁决 → write_result 落库
 
 前端轮询 /api/agent/status 感知进度，/api/agent/latest 获取最终结果。
 """
+import json
 import logging
 import os
 import signal
@@ -24,6 +25,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _PROJ_ROOT = Path(__file__).resolve().parent.parent
+_TMP_ROOT = _PROJ_ROOT / "tmp"
 
 _agent_state = {
     "running": False,
@@ -36,6 +38,22 @@ _agent_state = {
 }
 _state_lock = threading.Lock()
 _stop_requested = False
+
+# 基本面分析独立状态（与日常 pipeline 完全隔离）
+_fundamental_state = {
+    "running": False,
+    "last_run": None,
+    "last_error": None,
+}
+_fundamental_lock = threading.Lock()
+
+# run_type → chief skill。auction/closing fallback to evening（无专属 skill）
+_CHIEF_SKILL_MAP = {
+    "morning": "mra-chief-morning",
+    "evening": "mra-chief-evening",
+    "auction": "mra-chief-evening",
+    "closing": "mra-chief-evening",
+}
 
 
 def get_agent_state() -> dict:
@@ -52,7 +70,7 @@ def stop_agent_analysis() -> None:
     global _stop_requested
     with _state_lock:
         _stop_requested = True
-        pids = set(_agent_state.get("pids", set()))
+        pids = set(_agent_state["pids"])
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -67,8 +85,7 @@ def _find_claude() -> str:
     found = shutil.which("claude")
     if found:
         return found
-    fallback = Path.home() / ".nvm/versions/node/v20.20.2/bin/claude"
-    return str(fallback)
+    return str(Path.home() / ".nvm/versions/node/v20.20.2/bin/claude")
 
 
 def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) -> bool:
@@ -76,15 +93,15 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
     同步运行一个 claude skill，返回是否成功。
     调用者负责在后台线程里执行，不要在主线程调用。
     """
-    claude_bin = _find_claude()
     env = os.environ.copy()
     env["MRA_RUN_ID"] = run_id
     env["MRA_RUN_TYPE"] = run_type
+    env["MRA_TMP_DIR"] = str(_TMP_ROOT / f"mra-{run_id}")
 
     proc = None
     try:
         proc = subprocess.Popen(
-            [claude_bin, "-p", f"/{skill_name}",
+            [_find_claude(), "-p", f"/{skill_name}",
              "--verbose",
              "--output-format", "stream-json",
              "--dangerously-skip-permissions"],
@@ -93,7 +110,7 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
             stderr=subprocess.PIPE,
             env=env,
         )
-        # Bug2 修复：Popen 返回后立刻加锁，若 stop 已被请求则直接 kill 新进程
+        # Popen 返回后立刻加锁，若 stop 已被请求则直接 kill 新进程（Bug2 fix）
         with _state_lock:
             if _stop_requested:
                 proc.kill()
@@ -102,22 +119,20 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
             _agent_state["pids"].add(proc.pid)
 
         _, stderr = proc.communicate(timeout=timeout)
-        rc = proc.returncode
 
-        # 检查 stop flag，若已请求停止则直接中断管道
         with _state_lock:
             if _stop_requested:
                 logger.info("[orchestrator] stop requested, aborting after %s", skill_name)
                 return False
 
-        if rc != 0:
+        if proc.returncode != 0:
             err = (stderr or b"").decode(errors="replace")[:300]
-            logger.warning("[orchestrator] %s failed rc=%d: %s", skill_name, rc, err)
+            logger.warning("[orchestrator] %s failed rc=%d: %s", skill_name, proc.returncode, err)
             return False
         return True
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.communicate()   # Bug3 修复：drain pipe，防止下一个 Popen 阻塞
+        proc.communicate()   # drain pipe，防止下一个 Popen 阻塞（Bug3 fix）
         logger.error("[orchestrator] %s timed out after %ds", skill_name, timeout)
         return False
     except Exception as exc:
@@ -131,25 +146,23 @@ def _run_skill(skill_name: str, run_id: str, run_type: str, timeout: int = 600) 
 
 def _write_data_health(run_id: str) -> None:
     """
-    在管道启动时生成 data_health.json 并写入 run 目录，供所有 skill 共享。
-    即使失败也不阻断管道（静默忽略异常）。
+    生成 data_health.json 写入 run 目录，供所有 skill 共享。
+    即使失败也不阻断管道。
     """
-    import subprocess as _sp
-    tmp_dir = Path(f"/tmp/mra-{run_id}")
-    out_path = tmp_dir / "data_health.json"
+    out_path = _TMP_ROOT / f"mra-{run_id}" / "data_health.json"
     try:
-        result = _sp.run(
+        result = subprocess.run(
             ["python", "agent/query.py", "data_health"],
             cwd=str(_PROJ_ROOT),
             capture_output=True,
-            text=True,
             timeout=30,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            out_path.write_text(result.stdout.strip(), encoding="utf-8")
+        stdout = result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
+        if result.returncode == 0 and stdout.strip():
+            out_path.write_text(stdout.strip(), encoding="utf-8")
             logger.info("[orchestrator] data_health written to %s", out_path)
         else:
-            err = result.stderr[:200] if result.stderr else "no output"
+            err = result.stderr.decode("utf-8", errors="replace")[:200] if result.stderr else "no output"
             logger.warning("[orchestrator] data_health query failed: %s", err)
     except Exception as exc:
         logger.warning("[orchestrator] data_health generation failed (non-fatal): %s", exc)
@@ -166,10 +179,7 @@ def _check_data_gate(run_id: str, run_type: str) -> bool:
     非交易时段（pre_open/call_auction/weekend/holiday）不触发以上检查，直接放行。
     data_health.json 不存在或解析失败时保守放行。
     """
-    import json
-    from pathlib import Path
-
-    health_path = Path(f"/tmp/mra-{run_id}/data_health.json")
+    health_path = _TMP_ROOT / f"mra-{run_id}" / "data_health.json"
     if not health_path.exists():
         return True
 
@@ -189,7 +199,6 @@ def _check_data_gate(run_id: str, run_type: str) -> bool:
 def _write_abort_summary(run_type: str, reason: str) -> None:
     """写入一条 abort 记录到 agent_summary 表。"""
     try:
-        import json
         from db.storage import insert_agent_summary
         data = {
             "run_type": run_type,
@@ -205,24 +214,32 @@ def _write_abort_summary(run_type: str, reason: str) -> None:
         logger.warning("[orchestrator] abort summary write failed: %s", exc)
 
 
+def _set_phase(phase: str, detail: str) -> None:
+    with _state_lock:
+        _agent_state["phase"] = phase
+        _agent_state["phase_detail"] = detail
+
+
+def _finish_pipeline(ok: bool, error_msg: str) -> None:
+    with _state_lock:
+        if ok:
+            _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
+            _agent_state["last_error"] = None
+        else:
+            _agent_state["last_error"] = error_msg
+
+
 def _run_pipeline(run_type: str, run_id: str) -> None:
     """
-    三阶段完整管道（morning / evening）或轻量盘中管道（intraday）。
+    完整管道（morning / evening）或轻量盘中管道（intraday）。
 
-    Step 0（同步）：生成 data_health.json 写入 /tmp/mra-{run_id}/，供所有 skill 读取。
-    intraday：只跑 emotion + news，跳过辩论，mra-intraday 直接汇总。
-    其他：4位分析师并行 → 侦察师 → 多空辩论 → 首席裁决。
+    intraday：只跑 emotion + news，mra-intraday 直接汇总。
+    其他：4位分析师并行 → 侦察师 → 首席裁决。
     """
-    is_intraday = (run_type == "intraday")
-
-    # Step 0：Pre-flight data health check（同步，30秒内完成，非阻塞管道）
-    with _state_lock:
-        _agent_state["phase"] = "preflight"
-        _agent_state["phase_detail"] = "数据健康检查中"
+    _set_phase("preflight", "数据健康检查中")
     _write_data_health(run_id)
 
     try:
-        # 数据 Gate：不满足最低条件直接 abort
         if not _check_data_gate(run_id, run_type):
             logger.info("[orchestrator] data gate blocked run_type=%s, aborting", run_type)
             with _state_lock:
@@ -231,7 +248,7 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
                 _agent_state["last_error"] = "数据条件不满足，跳过本次分析"
             return
 
-        if is_intraday:
+        if run_type == "intraday":
             _run_intraday(run_type, run_id)
         else:
             _run_full(run_type, run_id)
@@ -244,88 +261,113 @@ def _run_pipeline(run_type: str, run_id: str) -> None:
             _agent_state["pids"] = set()
             _stop_requested = False
 
-        tmp_dir = Path(f"/tmp/mra-{run_id}")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(str(_TMP_ROOT / f"mra-{run_id}"), ignore_errors=True)
 
 
 def _run_intraday(run_type: str, run_id: str) -> None:
     """轻量盘中管道：2个分析师并行 → intraday 汇总。"""
-    with _state_lock:
-        _agent_state["phase"] = "analysts"
-        _agent_state["phase_detail"] = "盘中快速分析（情绪/新闻）"
+    _set_phase("analysts", "盘中快速分析（情绪/新闻）")
+    _run_parallel(["mra-emotion", "mra-news"], run_id, run_type, timeout=600)
 
-    analysts = ["mra-emotion", "mra-news"]
-    _run_parallel(analysts, run_id, run_type, timeout=600)
-
-    with _state_lock:
-        _agent_state["phase"] = "chief"
-        _agent_state["phase_detail"] = "生成盘中盘感摘要"
-
+    _set_phase("chief", "生成盘中盘感摘要")
     ok = _run_skill("mra-intraday", run_id, run_type, timeout=600)
-
-    with _state_lock:
-        if ok:
-            _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
-            _agent_state["last_error"] = None
-        else:
-            _agent_state["last_error"] = "盘中汇总失败"
+    _finish_pipeline(ok, "盘中汇总失败")
 
 
 def _run_full(run_type: str, run_id: str) -> None:
-    """完整三阶段管道：4位分析师并行 → 侦察 → 多空辩论 → 首席裁决。"""
-    with _state_lock:
-        _agent_state["phase"] = "analysts"
-        _agent_state["phase_detail"] = "4位分析师并行分析中"
+    """完整管道：4位分析师并行 → 侦察 → 首席裁决。"""
+    assert run_type != "intraday", f"[orchestrator] intraday should use _run_intraday (run_type={run_type!r})"
 
-    analysts = ["mra-emotion", "mra-sector", "mra-news", "mra-risk"]
-    failed = _run_parallel(analysts, run_id, run_type, timeout=600)
+    _set_phase("analysts", "4位分析师并行分析中")
+    failed = _run_parallel(["mra-emotion", "mra-sector", "mra-news"], run_id, run_type, timeout=600)
+    failed += _run_parallel(["mra-risk"], run_id, run_type, timeout=1200)
     if failed:
         logger.warning("[orchestrator] 分析师失败: %s，继续后续阶段", failed)
 
-    # 侦察师（串行，依赖 sector.json）
-    with _state_lock:
-        _agent_state["phase"] = "analysts"
-        _agent_state["phase_detail"] = "侦察师分析子链轮动机会"
-    _run_skill("mra-scout", run_id, run_type, timeout=300)
+    # 侦察师串行运行，依赖 sector.json
+    _set_phase("analysts", "侦察师分析子链轮动机会")
+    _run_skill("mra-scout", run_id, run_type, timeout=600)
 
-    with _state_lock:
-        _agent_state["phase"] = "chief"
-        _agent_state["phase_detail"] = "首席裁决，生成最终报告"
+    chief_skill = _CHIEF_SKILL_MAP.get(run_type, "mra-chief-evening")
+    if run_type not in _CHIEF_SKILL_MAP or run_type not in ("morning", "evening"):
+        logger.warning("[orchestrator] run_type=%s has no dedicated chief skill, using %s", run_type, chief_skill)
 
-    ok = _run_skill("mra-chief", run_id, run_type, timeout=900)
-
-    with _state_lock:
-        if ok:
-            _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
-            _agent_state["last_error"] = None
-        else:
-            _agent_state["last_error"] = "首席裁决阶段失败"
+    _set_phase("chief", "首席裁决，生成最终报告")
+    ok = _run_skill(chief_skill, run_id, run_type, timeout=900)
+    _finish_pipeline(ok, "首席裁决阶段失败")
 
 
 def _run_parallel(skills: list, run_id: str, run_type: str, timeout: int) -> list:
     """并行运行多个 skill，返回失败的 skill 名称列表。"""
-    results = [None] * len(skills)
+    outcomes: dict[str, bool] = {}
 
-    def _run_one(i, skill):
-        results[i] = _run_skill(skill, run_id, run_type, timeout=timeout)
+    def _run_one(skill):
+        outcomes[skill] = _run_skill(skill, run_id, run_type, timeout=timeout)
 
-    threads = [
-        threading.Thread(target=_run_one, args=(i, s), daemon=True)
-        for i, s in enumerate(skills)
-    ]
+    threads = [threading.Thread(target=_run_one, args=(s,), daemon=True) for s in skills]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    return [skills[i] for i, ok in enumerate(results) if not ok]
+    return [s for s in skills if not outcomes.get(s)]
+
+
+def get_fundamental_state() -> dict:
+    with _fundamental_lock:
+        return dict(_fundamental_state)
+
+
+def _run_fundamental_pipeline(run_id: str) -> None:
+    """基本面分析流水线：单个 skill，独立运行，结果持久化到 DB。"""
+    try:
+        with _fundamental_lock:
+            _fundamental_state["running"] = True
+            _fundamental_state["last_error"] = None
+
+        # preflight data health，让 skill 也能读到数据状态
+        _write_data_health(run_id)
+
+        ok = _run_skill("mra-fundamental", run_id, "fundamental", timeout=1200)
+
+        with _fundamental_lock:
+            _fundamental_state["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _fundamental_state["last_error"] = None if ok else "基本面分析 skill 执行失败"
+    except Exception as exc:
+        logger.exception("[orchestrator] fundamental pipeline exception: %s", exc)
+        with _fundamental_lock:
+            _fundamental_state["last_error"] = str(exc)
+    finally:
+        with _fundamental_lock:
+            _fundamental_state["running"] = False
+        shutil.rmtree(str(_TMP_ROOT / f"mra-{run_id}"), ignore_errors=True)
+
+
+def run_fundamental_analysis() -> dict:
+    """
+    手动触发基本面分析（非阻塞），立即返回状态。
+    与日常 pipeline 完全独立，不互相阻塞。
+    """
+    with _fundamental_lock:
+        if _fundamental_state["running"]:
+            return {"status": "already_running"}
+        _fundamental_state["running"] = True
+
+    run_id = f"fundamental-{uuid.uuid4().hex[:8]}"
+    Path(str(_TMP_ROOT / f"mra-{run_id}")).mkdir(parents=True, exist_ok=True)
+
+    threading.Thread(
+        target=_run_fundamental_pipeline,
+        args=(run_id,),
+        daemon=True,
+        name=f"mra-fundamental-{run_id}",
+    ).start()
+
+    return {"status": "started", "run_id": run_id}
 
 
 def run_agent_analysis(run_type: str) -> dict:
-    """
-    启动三阶段 multi-agent 管道（非阻塞），立即返回 {"status": "started", ...}。
-    """
+    """启动 multi-agent 管道（非阻塞），立即返回 {"status": "started", ...}。"""
     with _state_lock:
         if _agent_state["running"]:
             return {
@@ -340,15 +382,13 @@ def run_agent_analysis(run_type: str) -> dict:
         _agent_state["pids"] = set()
 
     run_id = uuid.uuid4().hex[:8]
-    # 预建临时目录
-    Path(f"/tmp/mra-{run_id}").mkdir(parents=True, exist_ok=True)
+    Path(str(_TMP_ROOT / f"mra-{run_id}")).mkdir(parents=True, exist_ok=True)
 
-    t = threading.Thread(
+    threading.Thread(
         target=_run_pipeline,
         args=(run_type, run_id),
         daemon=True,
         name=f"mra-pipeline-{run_type}-{run_id}",
-    )
-    t.start()
+    ).start()
 
     return {"status": "started", "run_type": run_type, "run_id": run_id}

@@ -16,8 +16,19 @@ Commands:
   news                    最近N小时财经新闻  --hours N（默认2）
   policy_news             近3日政策新闻
   f10                     涨停股F10基本面   --codes 300XXX,600XXX
+  name                    查股票名称（从本地量价CSV）--codes 002491,688146,300197
   sector_flow             行业资金流最新快照
   context                 完整上下文（所有数据，供完整报告使用）
+  market_pulse            最近1小时实时涨跌趋势（30秒一条，附炸板率和改善/恶化方向）
+  northbound              北向资金最新净买入（沪深港通各渠道）
+  industry_ranking        行业板块实时涨跌排行 Top20
+  concept_flow            概念资金流 Top20
+  advance_decline         全市涨跌家数 + 成交额（优先日线，缺则用实时快照）
+  strong_pool             今日强势股池
+  big_deal                大单异动最新50条
+  market_breadth          实时全市涨跌家数+成交额（xtquant，1分钟粒度）
+  fundamental_research    research_board 已完成项目的结构化摘要（供 mra-fundamental 使用）
+  fundamental_coverage    最新基本面覆盖图的压缩文本（供 mra-chief 使用）
 """
 import argparse
 import json
@@ -406,6 +417,23 @@ def cmd_data_health(args):
         ),
     }
 
+    # ── QMT 数据源状态
+    import os as _os
+    qmt_enabled = _os.environ.get("QMT_ENABLED", "false").lower() in ("true", "1", "yes")
+    qmt_connected = False
+    if qmt_enabled:
+        try:
+            from fetcher.xtquant_breadth import connect as _qmt_connect
+            qmt_connected = _qmt_connect()
+        except Exception:
+            pass
+    if qmt_enabled and not qmt_connected:
+        data_alerts.append({
+            "level": "warning",
+            "code": "QMT_DISCONNECTED",
+            "message": "QMT 已启用但 miniQMT 连接失败，market_breadth 数据暂不可用，请确认 QMT 客户端已启动。",
+        })
+
     # static_emotion_date：skill 用此字段判断静态数据是否与今日匹配
     # 若 static_emotion_date < today 且处于交易时段 → 触发路径 D（实时重建）
     _out({
@@ -417,10 +445,20 @@ def cmd_data_health(args):
         "static_emotion_date": emotion_date,   # 静态 market_emotion 实际对应的交易日
         "data_alerts": data_alerts,            # 前端直接展示，level=error 时用户可见
         "abort_reason": abort_reason,          # 非空时 orchestrator 应跳过分析
-        "realtime_data_status": status["realtime"],
+        "realtime_data_status": {
+            **status["realtime"],
+            "xtquant": {"enabled": qmt_enabled, "connected": qmt_connected},
+        },
         "static_data_status": status["static"],
         "conflicts": conflicts,
-        "fallback_hints": fallback_hints,
+        "fallback_hints": {
+            **fallback_hints,
+            "market_breadth_source": (
+                "xtquant（全市逐票精确值）" if qmt_connected
+                else ("不可用（QMT 未启用）" if not qmt_enabled
+                      else "不可用（QMT 已启用但未连接）")
+            ),
+        },
         "instruction": SESSION_INSTRUCTIONS.get(session, ""),
     })
 
@@ -720,6 +758,77 @@ def cmd_f10(args):
     _out(results)
 
 
+def cmd_name(args):
+    """从本地量价 CSV 查股票名称。--codes 逗号分隔代码列表。
+    优先查 zt_pool/volume_breakout 当日数据，找不到再读 CSV 最后一行。
+    """
+    from db.storage import get_zt_pool, get_volume_breakout
+    from quant.loader import DATA_ROOT
+
+    codes_str = getattr(args, "codes", "") or ""
+    if not codes_str:
+        _out({"error": "请通过 --codes 002491,688146 指定股票代码"})
+        return
+
+    codes = [c.strip() for c in codes_str.split(",") if c.strip()]
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 先从当日 zt_pool / volume_breakout 建立 code→name 映射（最快，不读文件）
+    name_map: dict[str, str] = {}
+    try:
+        for row in (get_zt_pool(today) or []):
+            code = row.get("stock_code", "")
+            name = row.get("stock_name", "")
+            if code and name:
+                name_map[code] = name
+    except Exception:
+        pass
+    try:
+        for row in (get_volume_breakout(today) or []):
+            code = row.get("stock_code", "")
+            name = row.get("stock_name", "")
+            if code and name:
+                name_map[code] = name
+    except Exception:
+        pass
+
+    results = []
+    for raw_code in codes[:50]:
+        if raw_code in name_map:
+            results.append({"code": raw_code, "name": name_map[raw_code], "source": "db"})
+            continue
+
+        # 回落到本地 CSV
+        name = ""
+        if DATA_ROOT:
+            # 尝试几种常见前缀格式
+            for candidate in [raw_code, f"sh{raw_code}", f"sz{raw_code}", f"bj{raw_code}"]:
+                csv_path = DATA_ROOT / "stock-trading-data-pro" / f"{candidate}.csv"
+                if csv_path.exists():
+                    try:
+                        import csv as _csv
+                        with open(csv_path, encoding="gbk") as f:
+                            lines = f.readlines()
+                        # 第2行是表头，最后一行是最新数据
+                        if len(lines) >= 3:
+                            last = lines[-1].strip()
+                            if last:
+                                cols = next(_csv.reader([last]))
+                                name = cols[1] if len(cols) > 1 else ""
+                    except Exception:
+                        pass
+                    if name:
+                        break
+
+        if name:
+            results.append({"code": raw_code, "name": name, "source": "csv"})
+        else:
+            results.append({"code": raw_code, "name": "", "source": "not_found",
+                            "note": "本地数据未找到，禁止从记忆猜测名称"})
+
+    _out(results)
+
+
 def cmd_sector_flow(args):
     from db.storage import get_sector_flow_latest
     data = get_sector_flow_latest(source_type="industry")
@@ -764,6 +873,293 @@ def cmd_lockup(args):
         _out(data[:50])
 
 
+def cmd_market_pulse(args):
+    """最近1小时实时涨跌趋势。附当前炸板率和趋势方向（改善中/恶化中/平稳）。"""
+    from db.storage import get_market_pulse_latest
+
+    rows = get_market_pulse_latest(n=120)
+    if not rows:
+        _out({"note": "market_pulse 数据为空，可能是非交易日或数据未采集", "data": []})
+        return
+
+    # 按时间升序排列（DB 返回的是 DESC，翻转便于计算趋势）
+    rows = list(reversed(rows))
+
+    # ── 炸板率：取最新一条，用 zb_count / zt_count
+    latest = rows[-1]
+    zt = latest.get("real_zt") or latest.get("zt_count") or 0
+    zb = latest.get("zb_count") or 0
+    zb_rate = round(zb / zt, 4) if zt > 0 else None
+
+    # ── 趋势方向：最近10条 advance 均值 vs 前10条均值
+    trend = "平稳"
+    if len(rows) >= 20:
+        recent10 = [r.get("advance") or 0 for r in rows[-10:]]
+        prev10   = [r.get("advance") or 0 for r in rows[-20:-10]]
+        recent_avg = sum(recent10) / len(recent10)
+        prev_avg   = sum(prev10) / len(prev10)
+        if prev_avg > 0:
+            diff_pct = (recent_avg - prev_avg) / prev_avg
+            if diff_pct > 0.02:
+                trend = "改善中"
+            elif diff_pct < -0.02:
+                trend = "恶化中"
+
+    # 输出字段白名单（保持轻量）
+    output_fields = ("fetch_time", "real_zt", "real_dt", "advance", "decline", "activity", "zt_dt_ratio")
+    data = [
+        {k: r.get(k) for k in output_fields}
+        for r in rows
+    ]
+
+    _out({
+        "zb_rate": zb_rate,
+        "trend": trend,
+        "sample_count": len(data),
+        "data": data,
+    })
+
+
+def cmd_northbound(args):
+    """北向资金最新净买入（沪深港通各渠道）。"""
+    from db.storage import get_northbound_flow_latest
+
+    data = get_northbound_flow_latest()
+    if not data:
+        _out({"note": "北向资金数据为空，可能是非交易日或数据未采集", "data": []})
+        return
+    _out(data)
+
+
+def cmd_industry_ranking(args):
+    """行业板块实时涨跌排行 Top20，按 change_pct 降序。"""
+    from db.storage import get_industry_ranking_latest
+
+    data = get_industry_ranking_latest()
+    if not data:
+        _out({"note": "行业板块排行数据为空", "data": []})
+        return
+
+    # 已按 change_pct 降序从 DB 返回，直接取前20
+    output_fields = ("sector_name", "change_pct", "up_count", "down_count",
+                     "lead_stock", "lead_pct", "fetch_time")
+    top20 = [
+        {k: r.get(k) for k in output_fields}
+        for r in data[:20]
+    ]
+    _out(top20)
+
+
+def cmd_concept_flow(args):
+    """概念资金流 Top20，按 net_amount 降序。"""
+    from db.storage import get_concept_flow_latest
+
+    data = get_concept_flow_latest(top_n=20)
+    if not data:
+        _out({"note": "概念资金流数据为空", "data": []})
+        return
+    _out(data)
+
+
+def cmd_advance_decline(args):
+    """
+    全市涨跌家数 + 成交额。
+    优先返回日线数据（含 amount_ratio）；日线无数据时降级使用 market_pulse 实时快照。
+    """
+    from db.storage import get_advance_decline, get_market_pulse_latest
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    daily = get_advance_decline(today)
+
+    if daily:
+        daily["data_source"] = "daily"
+        _out(daily)
+        return
+
+    # 日线数据不可用，降级到 market_pulse 最新一条
+    pulse_rows = get_market_pulse_latest(n=1)
+    if not pulse_rows:
+        _out({
+            "error": "INSUFFICIENT_DATA",
+            "reason": "日线 advance_decline 和 market_pulse 均无今日数据",
+        })
+        return
+
+    p = pulse_rows[0]
+    _out({
+        "trade_date": today,
+        "advance":    p.get("advance"),
+        "decline":    p.get("decline"),
+        "fetch_time": p.get("fetch_time"),
+        "data_source": "realtime_pulse_estimate",
+        "note": "日线数据未就绪，使用实时快照估算，精度低于日线，结论中需标注",
+    })
+
+
+def cmd_strong_pool(args):
+    """今日强势股池（按 change_pct 降序）。"""
+    from db.storage import get_strong_pool
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = get_strong_pool(today)
+    if not data:
+        _out({"note": "今日强势股池为空，可能是非交易日或数据未计算", "data": []})
+        return
+
+    output_fields = ("stock_code", "stock_name", "sector", "change_pct", "trade_date")
+    result = [
+        {k: r.get(k) for k in output_fields}
+        for r in data
+    ]
+    _out(result)
+
+
+def cmd_big_deal(args):
+    """大单异动最新50条，按成交时间降序。"""
+    from db.storage import get_big_deal_latest
+
+    data = get_big_deal_latest(limit=50)
+    if not data:
+        _out({"note": "大单异动数据为空", "data": []})
+        return
+
+    result = []
+    for r in data:
+        result.append({
+            "deal_time":   r.get("deal_time"),
+            "stock_code":  r.get("stock_code"),
+            "stock_name":  r.get("stock_name"),
+            "direction":   r.get("deal_type"),   # DB 字段 deal_type 映射为 direction
+            "amount":      r.get("amount"),
+            "price":       r.get("price"),
+        })
+    _out(result)
+
+
+def cmd_market_breadth(args):
+    """
+    实时全市涨跌家数 + 成交额（1分钟粒度，来源：xtquant 全市逐票精确值）。
+    返回最近120条，按 fetch_time 升序（最旧在前）便于趋势判断。
+    额外计算 trend：最近10条 up_count 均值 vs 前10条均值，判断改善/恶化/平稳。
+    """
+    from db.storage import get_market_breadth_latest
+
+    rows = get_market_breadth_latest(n=120)
+    if not rows:
+        _out({"note": "market_breadth 数据为空，xtquant 不可用或 QMT 客户端未启动", "data": []})
+        return
+
+    # 判断当前实际数据来源（取最新一条的 source 字段）
+    latest_source = rows[-1].get("source", "unknown") if rows else "unknown"
+    is_xtquant = latest_source == "xtquant"
+
+    # 趋势计算：用 TOTAL 行，无则用 SH 行
+    trend_rows = [r for r in rows if r.get("market") == "TOTAL"]
+    if not trend_rows:
+        trend_rows = [r for r in rows if r.get("market") == "SH"]
+
+    trend = "平稳"
+    if len(trend_rows) >= 20:
+        recent10 = [r.get("up_count") or 0 for r in trend_rows[-10:]]
+        prev10   = [r.get("up_count") or 0 for r in trend_rows[-20:-10]]
+        recent_avg = sum(recent10) / len(recent10)
+        prev_avg   = sum(prev10) / len(prev10)
+        if prev_avg > 0:
+            diff_pct = (recent_avg - prev_avg) / prev_avg
+            if diff_pct > 0.02:
+                trend = "改善中"
+            elif diff_pct < -0.02:
+                trend = "恶化中"
+
+    # 最新快照：TOTAL 行为全市合计，SH/SZ 为分市场
+    latest_total = next((r for r in reversed(rows) if r.get("market") == "TOTAL"), None)
+    latest_sh    = next((r for r in reversed(rows) if r.get("market") == "SH"), None)
+    latest_sz    = next((r for r in reversed(rows) if r.get("market") == "SZ"), None)
+
+    output_fields = ("fetch_time", "market", "source", "up_count", "down_count",
+                     "flat_count", "ad_ratio", "index_amount", "index_price", "total_amount")
+    data = [
+        {k: r.get(k) for k in output_fields}
+        for r in rows
+    ]
+
+    _out({
+        "data_source": latest_source,
+        "data_source_note": (
+            "全市逐票精确值（xtquant），total_amount 为 SH+SZ 合计成交额" if is_xtquant
+            else "数据来源未知，total_amount 可能为 null"
+        ),
+        "trend": trend,
+        "sample_count": len(data),
+        "latest_total": {k: latest_total.get(k) for k in output_fields} if latest_total else None,
+        "latest_sh":    {k: latest_sh.get(k)    for k in output_fields} if latest_sh    else None,
+        "latest_sz":    {k: latest_sz.get(k)    for k in output_fields} if latest_sz    else None,
+        "data": data,
+    })
+
+
+def cmd_fundamental_research(args):
+    """
+    读取 research_board 所有已完成项目的结构化摘要，供 mra-fundamental 使用。
+    返回：[{project_id, project_name, text_summary, generated_at, report_count}, ...]
+    """
+    try:
+        from research_board.rb_storage import list_projects, get_rb_result
+        import json as _json
+        projects = list_projects()
+        result = []
+        for p in projects:
+            if p.get("status") != "done":
+                continue
+            rb_result = get_rb_result(p["id"])
+            if not rb_result:
+                continue
+            payload_raw = rb_result.get("summary_json", "{}")
+            try:
+                payload = _json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+            except Exception:
+                payload = {}
+            text_summary = payload.get("text_summary", "")
+            result.append({
+                "project_id": p["id"],
+                "project_name": p.get("name", ""),
+                "text_summary": text_summary,
+                "generated_at": payload.get("generated_at", ""),
+                "report_count": payload.get("report_count", 0),
+                "dimensions": payload.get("dimensions", []),
+            })
+        if not result:
+            _out({"note": "research_board 暂无已完成的项目，请先在投研看板完成至少一个分析项目", "data": []})
+            return
+        _out({"count": len(result), "data": result})
+    except ImportError:
+        _out({"error": "research_board 模块不可用", "data": []})
+    except Exception as e:
+        _out({"error": str(e), "data": []})
+
+
+def cmd_fundamental_coverage(args):
+    """
+    返回最新基本面覆盖图的压缩文本（供 mra-chief 使用）。
+    若无有效覆盖图或已过期，返回 available=false。
+    """
+    from db.storage import get_fundamental_coverage_latest, get_fundamental_coverage_hint
+    row = get_fundamental_coverage_latest()
+    if not row:
+        _out({
+            "available": False,
+            "reason": "无有效基本面覆盖图，请在 Agent 页面手动触发基本面分析",
+        })
+        return
+    hint = get_fundamental_coverage_hint()
+    _out({
+        "available": True,
+        "generated_at": row.get("generated_at"),
+        "expires_at": row.get("expires_at"),
+        "hint": hint,
+    })
+
+
 def cmd_context(args):
     """完整上下文，一次性返回所有分析所需数据。"""
     from db.storage import get_agent_context
@@ -803,9 +1199,20 @@ COMMANDS = {
     "news":              cmd_news,
     "policy_news":       cmd_policy_news,
     "f10":               cmd_f10,
+    "name":              cmd_name,
     "sector_flow":       cmd_sector_flow,
     "lockup":            cmd_lockup,
     "context":           cmd_context,
+    "market_pulse":      cmd_market_pulse,
+    "northbound":        cmd_northbound,
+    "industry_ranking":  cmd_industry_ranking,
+    "concept_flow":      cmd_concept_flow,
+    "advance_decline":   cmd_advance_decline,
+    "strong_pool":       cmd_strong_pool,
+    "big_deal":          cmd_big_deal,
+    "market_breadth":          cmd_market_breadth,
+    "fundamental_research":    cmd_fundamental_research,
+    "fundamental_coverage":    cmd_fundamental_coverage,
 }
 
 

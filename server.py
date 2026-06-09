@@ -6,8 +6,29 @@ Market Radar — Flask 服务
 
 import sys
 import os
+import logging
 import warnings
 from datetime import datetime
+
+# 强制 line-buffering，确保 PIPELINE 日志在重定向时也能实时刷出
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+# 自定义 PIPELINE 级别（25），介于 INFO(20) 和 WARNING(30) 之间
+# Claude/Kimi 对话内容走这个级别，根 logger 设 WARNING 压掉噪音后仍可见
+PIPELINE_LEVEL = 25
+logging.addLevelName(PIPELINE_LEVEL, "PIPELINE")
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
+# Flask 启动/请求日志保留 WARNING，apscheduler 完全静默
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # akshare 内部 pandas 兼容问题，与本项目代码无关，静默掉
 warnings.filterwarnings("ignore", message="A value is trying to be set on a copy of a slice")
@@ -504,12 +525,13 @@ def api_ai_summary():
 
 @app.route("/api/agent/latest")
 def api_agent_latest():
-    """返回最新完整报告的结构化 JSON（data_snapshot_json 反序列化后返回）。"""
+    """返回最新报告元数据（含 has_html、id，供前端决定用 iframe 还是 JSON 渲染）。"""
     try:
         import json
         row = get_agent_summary_latest()
         if not row:
             return _ok(None)
+        has_html = bool(row.get("report_html"))
         snapshot = row.get("data_snapshot_json")
         if snapshot:
             try:
@@ -520,14 +542,32 @@ def api_agent_latest():
             data = {"content": row.get("content"), "summary_time": row.get("summary_time")}
         data["summary_time"] = row.get("summary_time")
         data["run_type"] = row.get("run_type", "")
+        data["id"] = row.get("id")
+        data["has_html"] = has_html
         return _ok(data)
     except Exception as exc:
         return _err(exc)
 
 
+@app.route("/api/agent/report/<int:row_id>")
+def api_agent_report_html(row_id: int):
+    """直接返回 HTML 报告，供 <iframe src="..."> 使用。"""
+    try:
+        from flask import Response
+        row = get_agent_summary_by_id(row_id)
+        if not row:
+            return Response("<h1>404 Not Found</h1>", status=404, mimetype="text/html")
+        html = row.get("report_html") or ""
+        if not html:
+            return Response("<p>此记录无 HTML 报告</p>", status=404, mimetype="text/html")
+        return Response(html, status=200, mimetype="text/html; charset=utf-8")
+    except Exception as exc:
+        return Response(f"<p>错误：{exc}</p>", status=500, mimetype="text/html")
+
+
 @app.route("/api/agent/history")
 def api_agent_history():
-    """返回最近 N 条报告摘要（run_type、run_time、summary_text）。"""
+    """返回最近 N 条报告摘要（run_type、run_time、summary_text、has_html）。"""
     try:
         import json
         limit = int(request.args.get("limit", 20))
@@ -551,6 +591,7 @@ def api_agent_history():
                 "run_type": row.get("run_type", ""),
                 "run_time": run_time or row.get("summary_time"),
                 "summary_text": summary_text or row.get("content", ""),
+                "has_html": bool(row.get("has_html")),
             })
         return _ok(results)
     except Exception as exc:
@@ -559,12 +600,13 @@ def api_agent_history():
 
 @app.route("/api/agent/history/<int:row_id>")
 def api_agent_history_detail(row_id: int):
-    """返回单条报告的完整结构化数据。"""
+    """返回单条报告的完整结构化数据（含 has_html 标记）。"""
     try:
         import json
         row = get_agent_summary_by_id(row_id)
         if not row:
             return _err("not found", 404)
+        has_html = bool(row.get("report_html"))
         snap = row.get("data_snapshot_json")
         if snap:
             try:
@@ -575,6 +617,8 @@ def api_agent_history_detail(row_id: int):
             data = {"content": row.get("content")}
         data["summary_time"] = row.get("summary_time")
         data["run_type"] = row.get("run_type", "")
+        data["id"] = row.get("id")
+        data["has_html"] = has_html
         return _ok(data)
     except Exception as exc:
         return _err(exc)
@@ -723,6 +767,132 @@ def api_trade_calendar_today():
         return _err(exc)
 
 
+@app.route("/api/agent/fundamental/trigger", methods=["POST"])
+def api_fundamental_trigger():
+    """手动触发基本面分析（独立于日常 pipeline）。"""
+    try:
+        from agent.orchestrator import run_fundamental_analysis
+        result = run_fundamental_analysis()
+        return _ok(result)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/fundamental/status")
+def api_fundamental_status():
+    """返回基本面分析运行状态。"""
+    try:
+        from agent.orchestrator import get_fundamental_state
+        return _ok(get_fundamental_state())
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/fundamental/latest")
+def api_fundamental_latest():
+    """返回最新一条未过期的基本面覆盖图。"""
+    try:
+        from db.storage import get_fundamental_coverage_latest
+        import json as _json
+        row = get_fundamental_coverage_latest()
+        if not row:
+            return _ok({"available": False})
+        # 解析 coverage_json 减少前端处理量
+        try:
+            coverage = _json.loads(row.get("coverage_json") or "{}")
+        except Exception:
+            coverage = {}
+        return _ok({
+            "available": True,
+            "id": row["id"],
+            "generated_at": row["generated_at"],
+            "expires_at": row["expires_at"],
+            "has_html": bool(row.get("report_html")),
+            "coverage": coverage,
+        })
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/fundamental/report")
+def api_fundamental_report():
+    """返回最新基本面覆盖图的 HTML 报告，供 iframe 渲染。"""
+    try:
+        from db.storage import get_fundamental_coverage_latest
+        row = get_fundamental_coverage_latest()
+        if not row or not row.get("report_html"):
+            return _err("暂无基本面覆盖图 HTML 报告", 404)
+        from flask import Response
+        return Response(row["report_html"], mimetype="text/html")
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/time-slot")
+def api_agent_time_slot():
+    """
+    返回当前应显示的 AI 分析时段按钮高亮状态，以及下次切换时间。
+
+    逻辑：
+    - 交易日 00:00–09:15 → morning
+    - 交易日 09:15–15:30 → intraday
+    - 交易日 15:30–24:00 → evening
+    - 非交易日（周末/节假日）→ evening，直到下一个交易日 00:00 切换为 morning
+    """
+    try:
+        from datetime import datetime, timedelta, time as dtime
+        from agent.query import _get_trade_calendar
+
+        now = datetime.now()
+        today = now.date()
+        total_min = now.hour * 60 + now.minute
+
+        try:
+            cal = _get_trade_calendar()
+            trade_dates = sorted(cal["trade_date"].values)
+            is_trade_today = today in trade_dates
+        except Exception:
+            is_trade_today = today.weekday() < 5
+            trade_dates = []
+
+        def _next_trade_date_after(d):
+            """返回 d 之后第一个交易日（不含 d）。"""
+            for td in trade_dates:
+                if td > d:
+                    return td
+            # fallback：跳过周末往后找
+            nxt = d + timedelta(days=1)
+            while nxt.weekday() >= 5:
+                nxt += timedelta(days=1)
+            return nxt
+
+        if is_trade_today:
+            if total_min < 9 * 60 + 15:
+                slot = "morning"
+                # 下次切换：今天 09:15
+                next_change = datetime.combine(today, dtime(9, 15))
+            elif total_min < 15 * 60 + 30:
+                slot = "intraday"
+                next_change = datetime.combine(today, dtime(15, 30))
+            else:
+                slot = "evening"
+                nxt = _next_trade_date_after(today)
+                next_change = datetime.combine(nxt, dtime(0, 0))
+        else:
+            slot = "evening"
+            nxt = _next_trade_date_after(today)
+            next_change = datetime.combine(nxt, dtime(0, 0))
+
+        return _ok({
+            "slot": slot,
+            "is_trade_today": is_trade_today,
+            "next_change_at": next_change.isoformat(),
+            "server_time": now.isoformat(),
+        })
+    except Exception as exc:
+        return _err(exc)
+
+
 @app.route("/api/data-health")
 def api_data_health():
     """
@@ -738,8 +908,11 @@ def api_data_health():
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
-            return _ok(_json.loads(result.stdout.strip()))
-        return _err(f"data_health 查询失败: {result.stderr[:200]}")
+            data = _json.loads(result.stdout.strip())
+        else:
+            return _err(f"data_health 查询失败: {result.stderr[:200]}")
+
+        return _ok(data)
     except Exception as exc:
         return _err(exc)
 
@@ -843,6 +1016,18 @@ def api_compute_status():
 # Runtime config (DATA_ROOT / RSSHub)
 # ---------------------------------------------------------------------------
 
+def _get_fundamental_coverage_status():
+    """返回 (is_fresh: bool, expires_at: str|None)，失败时静默返回 (False, None)。"""
+    try:
+        from db.storage import get_fundamental_coverage_latest
+        row = get_fundamental_coverage_latest()
+        if row:
+            return True, row.get("expires_at")
+        return False, None
+    except Exception:
+        return False, None
+
+
 @app.route("/api/config", methods=["GET"])
 def api_config_get():
     """返回当前运行时配置值。"""
@@ -853,6 +1038,18 @@ def api_config_get():
     quant_workers = os.environ.get("QUANT_WORKERS", "")
     agent_enabled = os.environ.get("AGENT_ENABLED", "true")
     compute_enabled = os.environ.get("COMPUTE_ENABLED", "true")
+    qmt_enabled = os.environ.get("QMT_ENABLED", "false")
+    qmt_path = os.environ.get("QMT_PATH", "")
+    # 实时探测 xtquant 是否可达（不阻塞，connect() 内部有超时保护）
+    qmt_connected = False
+    qmt_version = None
+    if qmt_enabled.lower() in ("true", "1", "yes"):
+        try:
+            from fetcher.xtquant_breadth import connect as _qmt_connect, get_version as _qmt_ver
+            qmt_connected = _qmt_connect()
+            qmt_version = _qmt_ver()
+        except Exception:
+            pass
     return _ok({
         "data_root": data_root,
         "rsshub_url": rsshub_global,
@@ -860,6 +1057,10 @@ def api_config_get():
         "quant_workers": quant_workers,
         "agent_enabled": agent_enabled,
         "compute_enabled": compute_enabled,
+        "qmt_enabled": qmt_enabled,
+        "qmt_path": qmt_path,
+        "qmt_connected": qmt_connected,
+        "qmt_version": qmt_version,
     })
 
 
@@ -946,6 +1147,30 @@ def api_config_set():
         env_updates["COMPUTE_ENABLED"] = val
         changed.append(f"COMPUTE_ENABLED → {val}（重启后生效）")
 
+    if "qmt_enabled" in body:
+        raw = body["qmt_enabled"]
+        if isinstance(raw, bool):
+            val = "true" if raw else "false"
+        else:
+            val = "true" if str(raw).strip().lower() in ("true", "1", "yes") else "false"
+        os.environ["QMT_ENABLED"] = val
+        # 同步到 xtquant_breadth 模块（如果已加载）
+        import sys
+        mod = sys.modules.get("fetcher.xtquant_breadth")
+        if mod:
+            pass  # xtquant_breadth 每次调用时读 os.environ，无需额外同步
+        env_updates["QMT_ENABLED"] = val
+        changed.append(f"QMT_ENABLED → {val}（立即生效）")
+
+    if "qmt_path" in body:
+        new_path = body["qmt_path"].strip()
+        os.environ["QMT_PATH"] = new_path
+        env_updates["QMT_PATH"] = new_path
+        if new_path:
+            changed.append(f"QMT_PATH → {new_path}")
+        else:
+            changed.append("QMT_PATH 已清空")
+
     if env_updates:
         try:
             _save_env_local(env_updates)
@@ -993,6 +1218,43 @@ def api_test_rsshub():
         return _ok({"ok": False, "reason": "连接超时（>4s）"})
     except Exception as e:
         return _ok({"ok": False, "reason": str(e)})
+
+
+@app.route("/api/config/test-qmt")
+def api_test_qmt():
+    """检测 miniQMT 是否可达，返回连接状态和 xtquant 版本。"""
+    from pathlib import Path
+
+    # 检查 xtquant 是否安装
+    try:
+        from fetcher.xtquant_breadth import connect as _qmt_connect, get_version as _qmt_ver
+    except Exception as e:
+        return _ok({"ok": False, "reason": f"xtquant 模块加载失败: {e}", "version": None})
+
+    version = _qmt_ver()
+    if version is None:
+        return _ok({"ok": False, "reason": "xtquant 未安装（pip install xtquant）", "version": None})
+
+    # 检查 QMT 路径（可选验证）
+    qmt_path = request.args.get("path", "").strip() or os.environ.get("QMT_PATH", "")
+    if qmt_path:
+        p = Path(qmt_path)
+        if not p.exists():
+            return _ok({"ok": False, "reason": f"QMT 路径不存在: {qmt_path}", "version": version})
+
+    # 尝试连接
+    # 临时强制 QMT_ENABLED=true 以便 connect() 不因开关而短路
+    _orig = os.environ.get("QMT_ENABLED", "false")
+    os.environ["QMT_ENABLED"] = "true"
+    try:
+        connected = _qmt_connect()
+    finally:
+        os.environ["QMT_ENABLED"] = _orig
+
+    if connected:
+        return _ok({"ok": True, "reason": f"miniQMT 连接成功（xtquant {version}）", "version": version})
+    else:
+        return _ok({"ok": False, "reason": "miniQMT 连接失败，请确认客户端已启动并登录", "version": version})
 
 
 @app.route("/api/big-deal")
@@ -1272,6 +1534,7 @@ if __name__ == "__main__":
     start_scheduler()
     start_flask(_port)
     print(f"[server] 仪表盘已启动 → http://0.0.0.0:{_port}")
+
 
     def _shutdown(signum, frame):
         print("\n[server] 收到退出信号，正在终止子进程...")

@@ -4,12 +4,14 @@ flask-cors>=4.0.0
 waitress>=3.0.0          # 生产 WSGI 服务器
 
 # ── 数据抓取 ───────────────────────────────────────────────────────────────────
-akshare>=1.16.14
+akshare>=1.18.57         # A 股数据（涨停池/行业/北向/研报/财新等），需 >=1.18.57 修复 push2delay
 requests>=2.31.0
-curl_cffi>=0.6.0         # 东方财富 PDF 下载（Chrome 指纹模拟，绕过反爬）
+urllib3>=2.0.0           # requests 依赖，需显式列出以使用 Retry adapter
 beautifulsoup4>=4.12.0
-feedparser>=6.0.11       # RSS 解析
-pdfplumber>=0.10.0       # PDF 全文提取（研报）
+feedparser>=6.0.11       # RSS 解析（政策 RSS / RSSHub）
+python-dateutil>=2.9.0   # policy_rss 时间解析
+curl_cffi>=0.6.0         # 东方财富研报 PDF 下载（Chrome TLS 指纹模拟）
+pdfplumber>=0.10.0       # PDF 全文提取（投研看板研报）
 
 # ── 调度 & 时间 ────────────────────────────────────────────────────────────────
 apscheduler>=3.10.4
@@ -18,6 +20,7 @@ pytz>=2024.1
 # ── 数据处理 ───────────────────────────────────────────────────────────────────
 pandas>=2.0.0
 
-# ── 本地量价（可选，缺少时情绪分析区显示空） ─────────────────────────────────
-mootdx>=0.11.0
-
+# ── 投研看板（Research Board）─────────────────────────────────────────────────
+anthropic>=0.40.0        # Claude SDK（投研看板截图评审）
+                         # 运行时依赖（pip 安装外，需单独安装）：
+                         #   claude CLI：npm install -g @anthropic-ai/claude-code

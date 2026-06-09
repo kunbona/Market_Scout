@@ -1,150 +1,129 @@
 @echo off
-chcp 65001 >nul
 setlocal EnableDelayedExpansion
 
-:: ============================================================
-::  Market Radar — Windows 启动脚本
-::  用途：在 WSL2 中启动 RSSHub（Docker），同时在 Windows 侧
-::        启动 Flask 后端（Python）。
-::
-::  前提条件：
-::    1. 已安装 WSL2（Ubuntu 或其他发行版）
-::    2. WSL2 内已安装 Docker Engine，或已安装 Docker Desktop
-::       并在设置中启用了 WSL2 后端
-::    3. Windows 侧已安装 Python 3.10+，且 pip install 已完成
-::    4. 已执行过 "cd dashboard && npm install && npm run build"
-::
-::  用法：双击运行，或在 cmd / PowerShell 中执行：
-::    start.bat
-:: ============================================================
-
 echo ==============================
-echo  Market Radar Windows 启动脚本
+echo  Market Radar  start.bat
 echo ==============================
 echo.
 
-:: ── 读取 .env.local ─────────────────────────────────────────
+:: read .env.local
 set FLASK_PORT=20026
 set RSSHUB_PORT=1200
 set QUANT_DATA_ROOT=
 set QUANT_WORKERS=
 
 if exist "%~dp0.env.local" (
-    for /f "usebackq tokens=1,* delims==" %%A in ("%~dp0.env.local") do (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%~dp0.env.local") do (
         set "_key=%%A"
         set "_val=%%B"
-        :: 跳过注释行和空行
-        if not "!_key:~0,1!"=="#" (
-            if defined _key (
-                if "!_key!"=="FLASK_PORT"      set FLASK_PORT=!_val!
-                if "!_key!"=="RSSHUB_PORT"     set RSSHUB_PORT=!_val!
-                if "!_key!"=="QUANT_DATA_ROOT" set QUANT_DATA_ROOT=!_val!
-                if "!_key!"=="QUANT_WORKERS"   set QUANT_WORKERS=!_val!
-            )
-        )
+        if "!_key!"=="FLASK_PORT"      set FLASK_PORT=!_val!
+        if "!_key!"=="RSSHUB_PORT"     set RSSHUB_PORT=!_val!
+        if "!_key!"=="QUANT_DATA_ROOT" set QUANT_DATA_ROOT=!_val!
+        if "!_key!"=="QUANT_WORKERS"   set QUANT_WORKERS=!_val!
     )
-    echo [OK] 已读取 .env.local
+    echo [OK] .env.local loaded
 ) else (
-    echo [!] 未找到 .env.local，使用默认配置
-    echo     参考 .env.example 创建 .env.local 以自定义路径和端口
+    echo [!] .env.local not found, using defaults
+    echo     Copy .env.example to .env.local to customize settings
 )
 echo.
 
-:: ── 检查 WSL2 是否可用 ───────────────────────────────────────
+:: check WSL2
 wsl --status >nul 2>&1
 if errorlevel 1 (
-    echo [!] 未检测到 WSL2，跳过 RSSHub 启动
-    echo     RSS 相关数据源将自动降级，不影响其他功能
+    echo [!] WSL2 not found, skipping RSSHub startup
     echo.
     goto :start_flask
 )
 
-:: ── 检查 WSL2 内 Docker 是否可用 ────────────────────────────
+:: check Docker in WSL2
 wsl docker info >nul 2>&1
 if errorlevel 1 (
-    echo [!] WSL2 内未检测到 Docker，跳过 RSSHub 启动
-    echo     请在 WSL2 中安装 Docker Engine，或启动 Docker Desktop
+    echo [!] Docker not found in WSL2, skipping RSSHub startup
     echo.
     goto :start_flask
 )
 
-:: ── 启动 RSSHub（若容器不存在则创建，若已停止则启动）────────
-echo [*] 正在检查 RSSHub 容器状态...
+:: start RSSHub
+echo [*] Checking RSSHub container...
 wsl docker inspect rsshub >nul 2>&1
 if errorlevel 1 (
-    echo [*] RSSHub 容器不存在，正在创建并启动...
+    echo [*] Creating RSSHub container...
     wsl docker run -d --name rsshub --restart unless-stopped ^
         -p %RSSHUB_PORT%:%RSSHUB_PORT% ^
         -e NODE_ENV=production ^
         -e CACHE_TYPE=memory ^
         diygod/rsshub
     if errorlevel 1 (
-        echo [!] RSSHub 启动失败，RSS 数据源将降级
-        echo.
+        echo [!] RSSHub failed to start
         goto :start_flask
     )
-    echo [OK] RSSHub 容器已创建并启动
+    echo [OK] RSSHub container created
 ) else (
-    :: 检查容器是否在运行
     for /f %%S in ('wsl docker inspect --format "{{.State.Running}}" rsshub 2^>nul') do set RSSHUB_RUNNING=%%S
     if "!RSSHUB_RUNNING!"=="true" (
-        echo [OK] RSSHub 已在运行
+        echo [OK] RSSHub already running
     ) else (
-        echo [*] 正在启动已有的 RSSHub 容器...
+        echo [*] Starting RSSHub container...
         wsl docker start rsshub
-        if errorlevel 1 (
-            echo [!] RSSHub 启动失败，RSS 数据源将降级
-            goto :start_flask
-        )
-        echo [OK] RSSHub 已启动
+        echo [OK] RSSHub started
     )
 )
 
-:: 等待 RSSHub 就绪（最多 15 秒）
-echo [*] 等待 RSSHub 就绪...
+:: get WSL IP for direct access (bypass WSL localhost relay)
+for /f %%I in ('wsl hostname -I 2^>nul') do set WSL_IP=%%I
+if defined WSL_IP (
+    set RSSHUB_BASE_URL=http://!WSL_IP!:%RSSHUB_PORT%
+    echo [*] WSL IP: !WSL_IP!
+) else (
+    set RSSHUB_BASE_URL=http://localhost:%RSSHUB_PORT%
+)
+
+:: wait for RSSHub
+echo [*] Waiting for RSSHub...
 set RSSHUB_READY=0
 for /l %%i in (1,1,15) do (
     if !RSSHUB_READY!==0 (
-        wsl curl -sf http://localhost:%RSSHUB_PORT%/ >nul 2>&1
-        if not errorlevel 1 (
-            set RSSHUB_READY=1
-        ) else (
-            timeout /t 1 /nobreak >nul
-        )
+        powershell -Command "try { Invoke-WebRequest !RSSHUB_BASE_URL!/ -UseBasicParsing -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+        if not errorlevel 1 set RSSHUB_READY=1
+        if !RSSHUB_READY!==0 timeout /t 1 /nobreak >nul
     )
 )
 if "!RSSHUB_READY!"=="1" (
-    echo [OK] RSSHub 可用：http://localhost:%RSSHUB_PORT%
+    echo [OK] RSSHub ready: !RSSHUB_BASE_URL!
 ) else (
-    echo [!] RSSHub 15 秒内未响应，继续启动（RSS 数据源可能暂时不可用）
+    echo [!] RSSHub not ready after 15s, continuing anyway
 )
 echo.
 
 :start_flask
-:: ── 检查 Python ──────────────────────────────────────────────
+:: check Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未找到 Python，请先安装 Python 3.10+ 并加入 PATH
+    echo [ERROR] Python not found. Install Python 3.10+ and add to PATH.
     pause
     exit /b 1
 )
 
-:: ── 检查前端构建产物 ─────────────────────────────────────────
+:: check frontend build
 if not exist "%~dp0dashboard\dist\index.html" (
-    echo [!] 未找到前端构建产物 dashboard/dist/index.html
-    echo     请先执行：cd dashboard ^&^& npm install ^&^& npm run build
+    echo [!] Frontend build not found
+    echo     Run: cd dashboard ^&^& npm install ^&^& npm run build
     echo.
 )
 
-:: ── 设置环境变量供 Python 读取 ────────────────────────────────
-if defined QUANT_WORKERS (
-    set QUANT_WORKERS=%QUANT_WORKERS%
-)
+:: bypass proxy for domestic requests
+set NO_PROXY=localhost,127.*,*.eastmoney.com,*.akshare.xyz,push2.eastmoney.com,push2his.eastmoney.com,datacenter-web.eastmoney.com
 
-:: ── 启动 Flask ───────────────────────────────────────────────
-echo [*] 正在启动 Market Radar...
-echo     端口: http://localhost:%FLASK_PORT%
-echo     按 Ctrl+C 停止服务
+:: QMT hint
+echo [*] QMT: if QMT_ENABLED=true, ensure miniQMT client is running.
+echo     Market breadth data will be skipped if QMT is unavailable.
+echo.
+
+:: start Flask
+echo [*] Starting Market Radar...
+echo     URL: http://localhost:%FLASK_PORT%
+echo     Press Ctrl+C to stop
 echo.
 
 cd /d "%~dp0"

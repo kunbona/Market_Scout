@@ -1,16 +1,13 @@
 import logging
-import requests
 from datetime import datetime
 import pytz
 from db.storage import insert_research_report
+from fetcher.http_util import fetch_with_retry
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://reportapi.eastmoney.com/report/list"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://data.eastmoney.com/report/stock.jshtml",
-}
+_REFERER = "https://data.eastmoney.com/report/stock.jshtml"
 
 # qType: 0=个股 1=行业 2=宏观 3=策略
 QTYPES = [0, 1, 2, 3]
@@ -70,8 +67,8 @@ def fetch(days_back: int = 0) -> None:
                     "code": "*",
                     "rcode": "",
                 }
-                resp = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=15)
-                resp.raise_for_status()
+                resp = fetch_with_retry(BASE_URL, domain="reportapi.eastmoney.com",
+                                        referer=_REFERER, params=params, timeout=15)
                 data = resp.json()
 
                 # API 返回的 data 字段直接是 list（非 dict.list）

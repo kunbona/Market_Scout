@@ -3,17 +3,12 @@ import logging
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 
-import requests
-
 from db.storage import insert_cls_news
+from fetcher.http_util import fetch_with_retry
 
 logger = logging.getLogger(__name__)
 
 _CST = timezone(timedelta(hours=8))
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Referer": "https://www.cls.cn/",
-}
 _API = "https://www.cls.cn/v1/roll/get_roll_list"
 
 
@@ -39,7 +34,8 @@ def fetch() -> None:
         }
         params["sign"] = _sign(params)
 
-        r = requests.get(_API, params=params, headers=_HEADERS, timeout=10)
+        r = fetch_with_retry(_API, domain="cls.cn", referer="https://www.cls.cn/",
+                             params=params, timeout=10)
         items = r.json()["data"]["roll_data"]
 
         for item in items:

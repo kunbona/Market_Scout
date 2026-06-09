@@ -39,13 +39,20 @@ const TABS = [
   ...POLICY_SOURCES.map(s => ({ id: s, label: s })),
 ];
 
+function fmtDate(s: string): string {
+  if (!s) return '';
+  // "2026-05-30 08:20:00" → "05-30 08:20"
+  const m = s.match(/\d{4}-(\d{2}-\d{2}) (\d{2}:\d{2})/);
+  return m ? `${m[1]} ${m[2]}` : s.slice(0, 16);
+}
+
 function mapItem(item: RawPolicyItem): PolicyItem {
   return {
     id: String(item.id),
     title: item.title,
     content: '',
     department: item.source,
-    date: item.pub_time,
+    date: fmtDate(item.pub_time),
     category: item.source,
     link: item.link || undefined,
   };

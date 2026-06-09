@@ -86,8 +86,8 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
     { id: 'news',        icon: FileText,   label: '财经快讯' },
     { id: 'policy',      icon: BarChart3,  label: '政策动态' },
     { id: 'research',    icon: FileText,   label: '研究报告' },
-    { id: 'ai-analysis',    icon: Sparkles,    label: 'AI智能分析' },
-{ id: 'settings',       icon: Settings,    label: '设置' },
+    { id: 'ai-analysis', icon: Sparkles, label: 'AI智能分析' },
+    { id: 'settings',    icon: Settings, label: '设置' },
   ];
 
   const isRunning = fetchState.status === 'running';

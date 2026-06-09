@@ -113,10 +113,8 @@ def compute_sector_zt_density(trade_date: str) -> None:
     for industry in total_per_ind.index:
         total = int(total_per_ind[industry])
         zt_cnt = int(zt_per_ind[industry])
-        max_lb = 0
-        if industry in max_lb_per_ind.index:
-            raw_max = max_lb_per_ind[industry]
-            max_lb = int(raw_max) if (not pd.isna(raw_max) and raw_max <= 30) else 0
+        raw_max = max_lb_per_ind[industry]
+        max_lb = int(raw_max) if (not pd.isna(raw_max) and raw_max <= 30) else 0
         density = zt_cnt / total if total > 0 else 0.0
 
         insert_sector_zt_density(trade_date, industry, zt_cnt, density, max_lb)
@@ -445,22 +443,15 @@ def compute_lianzban_stats(trade_date: str) -> None:
 
                 today_lb_map = dict(zip(df_today["code"], df_today["lianzban_cnt"]))
 
-                for n, attr_idx in [(1, 0), (2, 1), (3, 2)]:
-                    prev_n_codes = set(df_prev[df_prev["lianzban_cnt"] == n]["code"].tolist())
-                    if prev_n_codes:
-                        advanced = sum(
-                            1 for c in prev_n_codes
-                            if today_lb_map.get(c, 0) == n + 1
-                        )
-                        val = advanced / len(prev_n_codes)
-                    else:
-                        val = 0.0
-                    if attr_idx == 0:
-                        advance_1to2 = val
-                    elif attr_idx == 1:
-                        advance_2to3 = val
-                    else:
-                        advance_3to4 = val
+                def _advance_rate(n: int) -> float:
+                    codes = set(df_prev[df_prev["lianzban_cnt"] == n]["code"])
+                    if not codes:
+                        return 0.0
+                    return sum(1 for c in codes if today_lb_map.get(c, 0) == n + 1) / len(codes)
+
+                advance_1to2 = _advance_rate(1)
+                advance_2to3 = _advance_rate(2)
+                advance_3to4 = _advance_rate(3)
 
         upsert_lianzban_stats(
             trade_date, tier_1, tier_2, tier_3, tier_4plus,
@@ -525,17 +516,15 @@ def compute_concept_zt_density(trade_date: str) -> None:
                 for c in concepts:
                     concept_zt_count[c] = concept_zt_count.get(c, 0) + 1
                 read_count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[daily_compute] concept_zt_density 单股处理失败 code=%s: %s", code, e)
 
-        written = 0
         for concept, cnt in concept_zt_count.items():
             insert_concept_zt_density(trade_date, concept, cnt)
-            written += 1
 
         logger.info(
             "[daily_compute] concept_zt_density %s: 读取%d只涨停股，写入%d个概念",
-            trade_date, read_count, written,
+            trade_date, read_count, len(concept_zt_count),
         )
     except Exception as e:
         logger.error("[daily_compute] concept_zt_density 失败: %s", e)
@@ -833,7 +822,8 @@ def compute_advance_decline(trade_date: str) -> None:
                 daily_total = df_range.groupby("trade_date")["amount"].sum()
                 # 排除当日，取前20个交易日的均值作为基准
                 prev_totals = daily_total[daily_total.index < trade_date]
-                amount_ma20 = float(prev_totals.iloc[-20:].mean()) / 1e8 if not prev_totals.empty else float(daily_total.mean()) / 1e8
+                base = prev_totals.iloc[-20:] if not prev_totals.empty else daily_total
+                amount_ma20 = float(base.mean()) / 1e8
                 if amount_ma20 > 0:
                     amount_ratio = total_amount / amount_ma20
         except Exception as e:

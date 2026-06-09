@@ -1,4 +1,6 @@
 import logging
+import random
+import time
 from datetime import datetime
 import akshare as ak
 from db.storage import insert_hot_rank_up, insert_northbound_flow, insert_xq_hot, insert_big_deal
@@ -6,10 +8,23 @@ from db.storage import insert_hot_rank_up, insert_northbound_flow, insert_xq_hot
 logger = logging.getLogger(__name__)
 
 
+def _em_retry(fn, retries: int = 3, base_delay: float = 2.0):
+    for i in range(retries):
+        try:
+            if i > 0:
+                time.sleep(base_delay + random.uniform(1.0, 3.0))
+            return fn()
+        except Exception as e:
+            if i == retries - 1:
+                raise
+            logger.debug("[market_sentiment] retry %d/%d: %s", i + 1, retries, e)
+    return None
+
+
 def fetch_hot_rank_up() -> None:
     try:
         fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        df = ak.stock_hot_up_em()
+        df = _em_retry(lambda: ak.stock_hot_up_em())
         if df is None or df.empty:
             return
         col_chg  = next((c for c in df.columns if "变动" in c or "较昨" in c), None)
@@ -30,7 +45,7 @@ def fetch_hot_rank_up() -> None:
                                _s(col_code), _s(col_name), _f(col_price), _f(col_pct))
         logger.info("[market_sentiment] hot_rank_up 写入 %d 条", len(df))
     except Exception as e:
-        logger.warning("[market_sentiment] fetch_hot_rank_up failed: %s", e)
+        logger.debug("[market_sentiment] fetch_hot_rank_up failed: %s", e)
 
 
 def fetch_northbound_flow() -> None:

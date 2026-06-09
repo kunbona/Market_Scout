@@ -20,7 +20,11 @@ function SettingsPage({ settings, onUpdate }: {
   settings: AppSettings;
   onUpdate: (patch: Partial<AppSettings>) => void;
 }) {
-  const [serverConfig, setServerConfig] = useState<{ data_root: string; rsshub_url: string; flask_port: string; quant_workers: string; agent_enabled: string; compute_enabled: string } | null>(null);
+  const [serverConfig, setServerConfig] = useState<{
+    data_root: string; rsshub_url: string; flask_port: string; quant_workers: string;
+    agent_enabled: string; compute_enabled: string;
+    qmt_enabled: string; qmt_path: string; qmt_connected: boolean; qmt_version: string | null;
+  } | null>(null);
   const [agentEnabledMsg, setAgentEnabledMsg] = useState('');
   const [computeEnabledMsg, setComputeEnabledMsg] = useState('');
   const [dataRootInput, setDataRootInput] = useState('');
@@ -29,6 +33,10 @@ function SettingsPage({ settings, onUpdate }: {
   const [quantWorkersInput, setQuantWorkersInput] = useState('');
   const [rsshubTesting, setRsshubTesting] = useState(false);
   const [rsshubTestMsg, setRsshubTestMsg] = useState('');
+  const [qmtPathInput, setQmtPathInput] = useState('');
+  const [qmtTesting, setQmtTesting] = useState(false);
+  const [qmtTestMsg, setQmtTestMsg] = useState('');
+  const [qmtEnabledMsg, setQmtEnabledMsg] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
 
@@ -43,6 +51,7 @@ function SettingsPage({ settings, onUpdate }: {
           setRsshubInput(j.data.rsshub_url);
           setFlaskPortInput(j.data.flask_port ?? '');
           setQuantWorkersInput(j.data.quant_workers ?? '');
+          setQmtPathInput(j.data.qmt_path ?? '');
         }
       })
       .catch(() => {});
@@ -65,6 +74,23 @@ function SettingsPage({ settings, onUpdate }: {
     }
   };
 
+  const handleTestQmt = async () => {
+    setQmtTesting(true);
+    setQmtTestMsg('');
+    try {
+      const pathParam = qmtPathInput ? `?path=${encodeURIComponent(qmtPathInput)}` : '';
+      const res = await fetch(`/api/config/test-qmt${pathParam}`);
+      const json = await res.json();
+      if (json.success) {
+        setQmtTestMsg(json.data.ok ? `✓ ${json.data.reason}` : `✗ ${json.data.reason}`);
+      }
+    } catch {
+      setQmtTestMsg('✗ 请求失败');
+    } finally {
+      setQmtTesting(false);
+    }
+  };
+
   const handleSaveAll = async () => {
     setSaving(true);
     setSaveMsg('');
@@ -77,6 +103,7 @@ function SettingsPage({ settings, onUpdate }: {
           rsshub_url: rsshubInput,
           flask_port: flaskPortInput,
           quant_workers: quantWorkersInput,
+          qmt_path: qmtPathInput,
         }),
       });
       const json = await res.json();
@@ -89,6 +116,7 @@ function SettingsPage({ settings, onUpdate }: {
           rsshub_url: rsshubInput,
           flask_port: flaskPortInput,
           quant_workers: quantWorkersInput,
+          qmt_path: qmtPathInput,
         } : prev);
         onUpdate({ dataRoot: dataRootInput, rsshubUrl: rsshubInput });
       } else {
@@ -104,7 +132,7 @@ function SettingsPage({ settings, onUpdate }: {
   return (
     <>
       <TabHeader title="系统设置" />
-      <div className="space-y-6 max-w-2xl">
+      <div className="space-y-6 max-w-4xl">
 
         {/* 所有设置合并为一张卡片 */}
         <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
@@ -248,6 +276,139 @@ function SettingsPage({ settings, onUpdate }: {
                 )}
               </div>
             </div>
+          </div>
+
+          <hr className="border-gray-100 my-5" />
+
+          {/* ── QMT 数据源 ── */}
+          <p className="text-xs font-medium text-gray-500 mb-3">QMT 数据源（可选）</p>
+          <div className="space-y-4">
+            {/* QMT 启用开关 */}
+            <div>
+              {/* 第一行：标题 + 开关 */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-700">启用 miniQMT 数据源</p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    启用后市场宽度数据从 miniQMT 获取（全市逐票精确值）；不可用时跳过采集
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 ml-6 shrink-0">
+                  {qmtEnabledMsg && (
+                    <span className={`text-xs ${qmtEnabledMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
+                      {qmtEnabledMsg}
+                    </span>
+                  )}
+                  <button
+                    role="switch"
+                    aria-checked={serverConfig?.qmt_enabled === 'true'}
+                    onClick={async () => {
+                      if (!serverConfig) return;
+                      const newVal = serverConfig.qmt_enabled !== 'true';
+                      setServerConfig(prev => prev ? { ...prev, qmt_enabled: String(newVal) } : prev);
+                      setQmtEnabledMsg('');
+                      try {
+                        const res = await fetch('/api/config', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ qmt_enabled: newVal }),
+                        });
+                        const json = await res.json();
+                        if (json.success) {
+                          setQmtEnabledMsg('✓ 已保存');
+                        } else {
+                          setQmtEnabledMsg(`✗ ${json.error}`);
+                          setServerConfig(prev => prev ? { ...prev, qmt_enabled: String(!newVal) } : prev);
+                        }
+                      } catch {
+                        setQmtEnabledMsg('✗ 保存失败');
+                        setServerConfig(prev => prev ? { ...prev, qmt_enabled: String(!newVal) } : prev);
+                      }
+                      setTimeout(() => setQmtEnabledMsg(''), 3000);
+                    }}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus:outline-none ${
+                      serverConfig?.qmt_enabled === 'true' ? 'bg-indigo-500' : 'bg-gray-200'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 mt-0.5 rounded-full bg-white shadow transform transition-transform duration-200 ${
+                        serverConfig?.qmt_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+              {/* 第二行：连接状态徽章 */}
+              <div className="mt-2">
+                {serverConfig && serverConfig.qmt_enabled === 'true' && (
+                  <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${
+                    serverConfig.qmt_connected
+                      ? 'bg-green-50 text-green-700 border border-green-200'
+                      : 'bg-amber-50 text-amber-700 border border-amber-200'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${serverConfig.qmt_connected ? 'bg-green-500' : 'bg-amber-400'}`} />
+                    {serverConfig.qmt_connected
+                      ? `已连接${serverConfig.qmt_version ? ` · ${serverConfig.qmt_version}` : ''}`
+                      : 'miniQMT 未运行，市场宽度采集已跳过'}
+                  </span>
+                )}
+                {serverConfig && serverConfig.qmt_enabled !== 'true' && (
+                  <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium bg-gray-50 text-gray-400 border border-gray-200">
+                    <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
+                    已禁用，市场宽度数据不采集
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* QMT 安装路径 */}
+            <div>
+              <label className="block text-sm text-gray-700 mb-1.5">
+                miniQMT 安装根目录
+                <span className="ml-1.5 text-xs font-mono text-gray-400">QMT_PATH</span>
+                {serverConfig?.qmt_path && (
+                  <span className="ml-2 text-xs text-gray-400 font-normal">当前：{serverConfig.qmt_path}</span>
+                )}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={qmtPathInput}
+                  onChange={e => { setQmtPathInput(e.target.value); setQmtTestMsg(''); }}
+                  placeholder="D:\Software\东北证券NET专业版"
+                  className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 font-mono text-gray-700"
+                />
+                <button
+                  onClick={handleTestQmt}
+                  disabled={qmtTesting}
+                  className="px-3 py-2 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-colors disabled:opacity-50 whitespace-nowrap"
+                >
+                  {qmtTesting ? '检测中...' : '检测连接'}
+                </button>
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-xs text-gray-400">
+                  miniQMT 客户端的安装根目录；需先在客户端中登录，xtquant 才能连接
+                </p>
+                {qmtTestMsg && (
+                  <span className={`text-xs ${qmtTestMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
+                    {qmtTestMsg}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* 提示：xtquant 未安装时的引导 */}
+            {serverConfig?.qmt_enabled === 'true' && !serverConfig?.qmt_connected && (
+              <div className="bg-amber-50 border border-amber-100 rounded-lg px-4 py-3">
+                <p className="text-xs text-amber-700 font-medium mb-1">miniQMT 未连接</p>
+                <p className="text-xs text-amber-600 leading-relaxed">
+                  请确认：① miniQMT 客户端已启动并登录；② 已安装 xtquant（
+                  <code className="font-mono bg-amber-100 px-1 rounded">pip install xtquant</code>
+                  ）。不满足时市场宽度采集跳过，其他功能不受影响。
+                </p>
+              </div>
+            )}
           </div>
 
           <hr className="border-gray-100 my-5" />

@@ -11,6 +11,7 @@ interface AnalysisViewerProps {
   htmlContent?: string;
   frameHeight?: number | '100%';
   title?: string;
+  projectId?: number;
 }
 
 const RESIZE_SCRIPT = `
@@ -72,7 +73,7 @@ function wrapPlainText(html: string): string {
   if (hasHtmlTags) {
     return `<!DOCTYPE html>
 <html lang="zh"><head><meta charset="UTF-8">
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"><\/script>
+<script src="/echarts.min.js"><\/script>
 <style>${THEME_WRAPPER_CSS}</style></head>
 <body>${html}</body></html>`;
   }
@@ -88,51 +89,55 @@ const OVERRIDE_CSS = `
 <style>
 html, body { height: auto !important; overflow-y: visible !important; }
 *:not(canvas):not(svg) { max-height: none !important; }
-*:not(canvas):not(svg)[style*="position:sticky"],
-*:not(canvas):not(svg)[style*="position: sticky"],
-*:not(canvas):not(svg)[style*="position:fixed"],
-*:not(canvas):not(svg)[style*="position: fixed"] { display: none !important; }
-</style>
+</style>`;
+
+const REMOVE_OVERLAYS_SCRIPT = `
 <script>
-(function(){
-  function removeFixedOverlays(){
-    document.querySelectorAll('*').forEach(function(el){
-      if(el.tagName==='CANVAS'||el.tagName==='SVG') return;
-      var cs=window.getComputedStyle(el);
-      var pos=cs.position;
-      if(pos!=='fixed'&&pos!=='sticky') return;
-      var bg=cs.background||'';
-      if(bg.indexOf('gradient')>=0){ el.style.display='none'; return; }
-      var zi=parseInt(cs.zIndex)||0;
-      var id=(el.id||'').toLowerCase();
-      var cls=(el.className||'').toLowerCase();
-      if(zi>50 && id.indexOf('chart')<0 && cls.indexOf('chart')<0){
-        el.style.display='none';
+(function () {
+  function removeFixedOverlays() {
+    document.querySelectorAll('*').forEach(function(el) {
+      var s = window.getComputedStyle(el);
+      if ((s.position === 'fixed' || s.position === 'sticky') && parseInt(s.zIndex) > 50) {
+        var id = (el.id || '').toLowerCase();
+        var cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+        if (!id.includes('chart') && !cls.includes('chart') && !cls.includes('echarts')) {
+          el.style.position = 'static';
+        }
       }
     });
   }
-  if(document.readyState==='loading'){
-    document.addEventListener('DOMContentLoaded',removeFixedOverlays);
-  } else { removeFixedOverlays(); }
+  window.addEventListener('load', function() { setTimeout(removeFixedOverlays, 300); });
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'tab-shown') { setTimeout(removeFixedOverlays, 100); }
+  });
 })();
 <\/script>`;
 
 function injectScript(html: string): string {
-  const normalized = wrapPlainText(html);
+  const origin = window.location.origin;
+  // srcDoc iframe 的 origin 是 null，相对路径无法解析：
+  // 1. 把 /echarts.min.js 改为绝对 URL
+  // 2. 把 CDN URL 也改为本地，避免 sandbox 阻止外部资源加载
+  const normalized = wrapPlainText(html)
+    .replace(/src="\/echarts\.min\.js"/g, `src="${origin}/echarts.min.js"`)
+    .replace(
+      /src="https:\/\/cdn\.jsdelivr\.net\/npm\/echarts@[^"]+"/g,
+      `src="${origin}/echarts.min.js"`
+    );
   const withCss = normalized.includes('</head>')
     ? normalized.replace('</head>', OVERRIDE_CSS + '</head>')
     : normalized;
-  if (withCss.includes('</body>')) return withCss.replace('</body>', RESIZE_SCRIPT + '</body>');
-  return withCss + RESIZE_SCRIPT;
+  if (withCss.includes('</body>')) return withCss.replace('</body>', RESIZE_SCRIPT + REMOVE_OVERLAYS_SCRIPT + '</body>');
+  return withCss + RESIZE_SCRIPT + REMOVE_OVERLAYS_SCRIPT;
 }
 
 function IframePanel({
-  html,
+  src,
   title,
   height,
   active,
 }: {
-  html: string;
+  src: string;
   title: string;
   height: number | '100%';
   active: boolean;
@@ -144,7 +149,7 @@ function IframePanel({
   useEffect(() => {
     setLoaded(false);
     setLoading(true);
-  }, [html]);
+  }, [src]);
 
   useEffect(() => {
     if (active && loaded && iframeRef.current?.contentWindow) {
@@ -172,8 +177,7 @@ function IframePanel({
       )}
       <iframe
         ref={iframeRef}
-        srcDoc={injectScript(html)}
-        sandbox="allow-scripts"
+        src={src}
         title={title}
         onLoad={handleLoad}
         style={{
@@ -194,6 +198,7 @@ export function AnalysisViewer({
   htmlContent,
   frameHeight = 600,
   title = '分析结果',
+  projectId,
 }: AnalysisViewerProps) {
   const normalised: AnalysisTab[] = tabs && tabs.length > 0
     ? tabs
@@ -245,28 +250,27 @@ export function AnalysisViewer({
       )}
 
       <div
-        className={fullHeight ? 'flex-1 min-h-0 flex flex-col' : undefined}
+        className={fullHeight ? 'flex-1 min-h-0' : undefined}
         style={fullHeight ? { position: 'relative' } : undefined}
       >
         {normalised.map((tab, i) => (
           <div
             key={i}
             style={{
-              display: i === activeIdx ? (fullHeight ? 'flex' : 'block') : 'none',
-              flexDirection: fullHeight ? 'column' : undefined,
+              display: i === activeIdx ? 'block' : 'none',
               height: fullHeight ? '100%' : undefined,
-              flex: fullHeight ? '1 1 0' : undefined,
-              minHeight: fullHeight ? 0 : undefined,
             }}
           >
-            <div style={{ flex: fullHeight ? '1 1 0' : undefined, minHeight: fullHeight ? 0 : undefined, height: fullHeight ? undefined : (frameHeight as number) }}>
-              <IframePanel
-                html={tab.html}
-                title={tab.name}
-                height={fullHeight ? '100%' : (frameHeight as number)}
-                active={i === activeIdx}
-              />
-            </div>
+            <IframePanel
+              src={
+                projectId
+                  ? `/api/rb/projects/${projectId}/tabs/${encodeURIComponent(tab.name)}/html`
+                  : `data:text/html;charset=utf-8,${encodeURIComponent(injectScript(tab.html))}`
+              }
+              title={tab.name}
+              height={fullHeight ? '100%' : (frameHeight as number)}
+              active={i === activeIdx}
+            />
           </div>
         ))}
       </div>

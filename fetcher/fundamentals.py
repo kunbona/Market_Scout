@@ -1,20 +1,16 @@
 """
-mootdx 基本面数据抓取。
-finance()  — 37 个财务字段（EPS / ROE / 净利润 / 总股本等）
-F10()      — 公司概况 / 财务分析 / 股东研究 等 9 类文本型数据
+基本面数据抓取（腾讯行情 + akshare）
+
+fetch_fundamentals_finance() — 实时估值字段（PE/PB/市值/换手率等）via 腾讯 qt.gtimg.cn
+fetch_fundamentals_f10()     — 公司基本信息 via akshare stock_individual_info_em
 
 数据面向 Agent 消费，按股票代码写入 fundamentals_finance / fundamentals_f10 表。
-抓取对象：涨停池 + 强势股中今日出现的股票（避免全市场扫描）。
+抓取对象：涨停池 + 强势池中今日出现的股票（避免全市场扫描）。
 """
 import logging
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
-
-
-def _get_client():
-    from mootdx.quotes import Quotes
-    return Quotes.factory(market="std")
 
 
 def _today_codes() -> list[str]:
@@ -40,52 +36,64 @@ def _today_codes() -> list[str]:
 
 
 def fetch_fundamentals_finance() -> None:
-    """拉取今日活跃股的 mootdx finance() 财务字段。"""
+    """
+    通过腾讯 qt.gtimg.cn 批量拉取今日活跃股的实时估值行情。
+    字段：name, price, change_pct, pe_ttm, pb, market_cap, float_cap, turnover, volume_ratio 等。
+    """
     from db.storage import insert_fundamentals_finance
+    from fetcher.tencent import fetch_quotes
+
     codes = _today_codes()
     if not codes:
         return
-    try:
-        client = _get_client()
-    except Exception as e:
-        logger.warning("[fundamentals] mootdx client init failed: %s", e)
-        return
 
     fetch_date = datetime.now().strftime("%Y-%m-%d")
-    for code in codes:
+    quotes = fetch_quotes(codes)
+
+    if not quotes:
+        logger.warning("[fundamentals] 腾讯行情返回为空，跳过写入")
+        return
+
+    written = 0
+    for code, data in quotes.items():
         try:
-            df = client.finance(symbol=code)
-            if df is None or (hasattr(df, "empty") and df.empty):
-                continue
-            # finance() 返回单行 DataFrame 或 dict
-            row = df.iloc[0].to_dict() if hasattr(df, "iloc") else df
-            insert_fundamentals_finance(fetch_date, code, row)
+            insert_fundamentals_finance(fetch_date, code, data)
+            written += 1
         except Exception as e:
-            logger.debug("[fundamentals] finance %s failed: %s", code, e)
+            logger.debug("[fundamentals] insert %s failed: %s", code, e)
+
+    logger.info("[fundamentals] finance 写入 %d/%d 条", written, len(codes))
 
 
 def fetch_fundamentals_f10() -> None:
-    """拉取今日活跃股的 mootdx F10() 公司概况。"""
+    """
+    通过 akshare stock_individual_info_em 拉取公司基本信息，写入 fundamentals_f10 表。
+    category 固定为 '公司概况'。
+    """
+    import json
+    import akshare as ak
     from db.storage import insert_fundamentals_f10
+
     codes = _today_codes()
     if not codes:
         return
-    try:
-        client = _get_client()
-    except Exception as e:
-        logger.warning("[fundamentals] mootdx client init failed: %s", e)
-        return
 
     fetch_date = datetime.now().strftime("%Y-%m-%d")
-    categories = ["公司概况", "财务分析", "股东研究"]
+    written = 0
     for code in codes:
-        for cat in categories:
-            try:
-                data = client.F10(symbol=code, name=cat)
-                if not data:
-                    continue
-                import json
-                content = json.dumps(data, ensure_ascii=False, default=str)
-                insert_fundamentals_f10(fetch_date, code, cat, content)
-            except Exception as e:
-                logger.debug("[fundamentals] F10 %s/%s failed: %s", code, cat, e)
+        try:
+            df = ak.stock_individual_info_em(symbol=code)
+            if df is None or (hasattr(df, "empty") and df.empty):
+                continue
+            # 转为 {item: value} 字典
+            if "item" in df.columns and "value" in df.columns:
+                info = dict(zip(df["item"], df["value"]))
+            else:
+                info = df.to_dict(orient="records")
+            content = json.dumps(info, ensure_ascii=False, default=str)
+            insert_fundamentals_f10(fetch_date, code, "公司概况", content)
+            written += 1
+        except Exception as e:
+            logger.debug("[fundamentals] F10 %s failed: %s", code, e)
+
+    logger.info("[fundamentals] f10 写入 %d/%d 条", written, len(codes))

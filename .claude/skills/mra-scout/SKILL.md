@@ -21,8 +21,8 @@ description: 轮动侦察师 — 用拥挤度分位数和联合动量因子识�
 ## Step 0：读前置数据
 
 ```bash
-cat /tmp/mra-${MRA_RUN_ID}/sector.json
-cat /tmp/mra-${MRA_RUN_ID}/data_health.json
+cat ${MRA_TMP_DIR}/sector.json
+cat ${MRA_TMP_DIR}/data_health.json
 ```
 
 sector.json 不存在或 top_sectors 为空时，直接退出：
@@ -119,7 +119,7 @@ python agent/query.py sector_flow_accel
 
 ## Step 5：候选票选取（严格执行）
 
-**所有候选代码必须来自 zt_pool 或 volume_breakout 的查询结果，禁止从记忆生成任何股票代码。**
+**所有候选股票必须来自 zt_pool 或 volume_breakout 的查询结果，code 和 name 都直接从查询行取，禁止从记忆补充或猜测任何代码或名称。**
 
 优先级：
 1. volume_breakout 里与目标子链匹配、**今日首次放量**、尚未涨停的股票（放量未涨停 > 涨停）
@@ -144,7 +144,7 @@ python agent/query.py sector_flow_accel
       "logic": "上下游关系：整机→配套传感器（具体，不是'相关'）",
       "signal_basis": "volume_breakout今日3只同行业票放量1.5–2倍，成交占比连续3日提升",
       "three_conditions_met": "拥挤度差✓ | 量价启动✓ | 资金趋势✓",
-      "candidate_tickers": ["来自volume_breakout或zt_pool的真实代码"],
+      "candidate_tickers": [{"code": "来自查询结果的代码", "name": "来自同一行的股票名"}],
       "confidence": "高|中|低",
       "reasoning": "子链传导逻辑、时机判断、失败场景说明"
     }
@@ -157,7 +157,7 @@ python agent/query.py sector_flow_accel
       "catalyst_status": "有独立催化剂|情绪外溢|未知",
       "catalyst_detail": "联网搜到的催化剂内容，没搜到说没搜到",
       "next_trigger": "什么信号会让这个方向启动（具体条件）",
-      "candidate_tickers": []
+      "candidate_tickers": [{"code": "...", "name": "..."}]
     }
   ],
   "no_opportunity": false,

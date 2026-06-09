@@ -17,7 +17,7 @@ description: 市场温度分析师 — 基于ISI多因子体系和华安证券�
 ## Step 0：先读数据健康报告
 
 ```bash
-cat /tmp/mra-${MRA_RUN_ID}/data_health.json
+cat ${MRA_TMP_DIR}/data_health.json
 ```
 
 根据 `is_trade_day` 和数据新鲜度决定路径：
@@ -186,7 +186,8 @@ RUN_ID 从环境变量 `MRA_RUN_ID` 读取，不存在时用 `default`。
 ```python
 import os, json
 run_id = os.environ.get('MRA_RUN_ID', 'default')
-os.makedirs(f'/tmp/mra-{run_id}', exist_ok=True)
-with open(f'/tmp/mra-{run_id}/emotion.json', 'w', encoding='utf-8') as f:
+tmp_dir = os.environ.get('MRA_TMP_DIR', f'/tmp/mra-{run_id}')
+os.makedirs(tmp_dir, exist_ok=True)
+with open(f'{tmp_dir}/emotion.json', 'w', encoding='utf-8') as f:
     json.dump(result, f, ensure_ascii=False, indent=2)
 ```
