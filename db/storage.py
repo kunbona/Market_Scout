@@ -735,66 +735,6 @@ def insert_agent_summary(content, data_snapshot_json, run_type: str = "", report
         return cur.lastrowid
 
 
-def insert_fundamental_coverage(generated_at: str, expires_at: str,
-                                project_ids: str, coverage_json: str,
-                                report_html: str = "") -> int:
-    with _conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO fundamental_coverage "
-            "(generated_at, expires_at, project_ids, coverage_json, report_html) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (generated_at, expires_at, project_ids, coverage_json, report_html),
-        )
-        return cur.lastrowid
-
-
-def get_fundamental_coverage_latest() -> dict | None:
-    """返回最新一条未过期的基本面覆盖图，无则返回 None。"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with _conn() as conn:
-        cur = conn.execute(
-            "SELECT * FROM fundamental_coverage WHERE expires_at > ? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (now,),
-        )
-        rows = _rows_to_dicts(cur)
-        return rows[0] if rows else None
-
-
-def is_fundamental_coverage_fresh() -> bool:
-    return get_fundamental_coverage_latest() is not None
-
-
-def get_fundamental_coverage_hint() -> str | None:
-    """
-    返回给 mra-chief 使用的压缩版基本面上下文（≤600字）。
-    无有效覆盖图时返回 None。
-    """
-    row = get_fundamental_coverage_latest()
-    if not row:
-        return None
-    try:
-        import json as _json
-        coverage = _json.loads(row.get("coverage_json") or "{}")
-        lines = [f"【基本面覆盖图】生成于 {row['generated_at']}，有效至 {row['expires_at']}"]
-        for item in coverage.get("hot_sectors", []):
-            sector = item.get("sector", "")
-            cov = item.get("coverage", "none")
-            summary = item.get("support_summary") or ""
-            project = item.get("project_name", "")
-            if cov == "direct":
-                lines.append(f"• {sector}：有研究覆盖（{project}）— {summary[:80]}")
-            elif cov == "related":
-                lines.append(f"• {sector}：间接相关（{project}）— {summary[:60]}")
-            else:
-                lines.append(f"• {sector}：无研究覆盖，情绪驱动为主")
-        note = coverage.get("overall_note", "")
-        if note:
-            lines.append(f"综合判断：{note[:100]}")
-        return "\n".join(lines)[:600]
-    except Exception:
-        return None
-
 
 def insert_research_report(title, stock_code, stock_name, org_name, researcher, publish_date, rating, aim_price, report_url, qtype=0) -> None:
     with _conn() as conn:
@@ -1063,19 +1003,6 @@ def get_agent_context() -> dict:
         )
         recent_research = _rows_to_dicts(cur)
 
-        # fundamentals_f10：当日涨停股的基本面（供股票Agent判断主营业务相关性）
-        zt_codes = [r["stock_code"] for r in zt_today if r.get("stock_code")]
-        f10_today = []
-        if zt_codes:
-            placeholders = ",".join("?" * len(zt_codes))
-            cur = conn.execute(
-                f"SELECT stock_code, category, content FROM fundamentals_f10 "
-                f"WHERE fetch_date = ? AND stock_code IN ({placeholders}) AND category = '公司概况' "
-                f"ORDER BY stock_code",
-                [today] + zt_codes,
-            )
-            f10_today = _rows_to_dicts(cur)
-
     return {
         "recent_cls_news": recent_cls,
         "policy_news_today": policy_titles,
@@ -1088,7 +1015,6 @@ def get_agent_context() -> dict:
         "lianzban_chain_today": lianzban_chain_today,
         "lhb_today": lhb_today,
         "recent_research": recent_research,
-        "f10_today": f10_today,
     }
 
 
@@ -1141,9 +1067,6 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM margin WHERE trade_date < ?", (cutoff_30d_date,))
         conn.execute("DELETE FROM block_trade WHERE trade_date < ?", (cutoff_30d_date,))
         conn.execute("DELETE FROM holder_count WHERE end_date < ?", (cutoff_30d_date,))
-        # fundamentals: 保留最近 7 天（每日按活跃股更新）
-        conn.execute("DELETE FROM fundamentals_finance WHERE fetch_date < ?", (cutoff_7d_date,))
-        conn.execute("DELETE FROM fundamentals_f10 WHERE fetch_date < ?", (cutoff_7d_date,))
         # lockup_expiry / dividend: 保留 90 天；industry_ranking: 保留 30 天；ths_hot_stocks: 保留 7 天
         conn.execute("DELETE FROM lockup_expiry WHERE free_date < ?", (cutoff_90d,))
         conn.execute("DELETE FROM dividend WHERE ex_dividend_date < ?", (cutoff_90d,))
@@ -1750,58 +1673,6 @@ def get_holder_count_latest(top_n: int = 50) -> list[dict]:
             (row[0], top_n),
         )
         return _rows_to_dicts(cur)
-
-
-# ── fundamentals_finance ──────────────────────────────────────────────────────
-
-def insert_fundamentals_finance(fetch_date, stock_code, data_dict) -> None:
-    import json
-    with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO fundamentals_finance (fetch_date,stock_code,data_json) VALUES (?,?,?)",
-            (fetch_date, stock_code, json.dumps(data_dict, ensure_ascii=False, default=str)),
-        )
-
-
-def get_fundamentals_finance(fetch_date: str = None) -> list[dict]:
-    import json
-    with _conn() as conn:
-        if not fetch_date:
-            row = conn.execute("SELECT fetch_date FROM fundamentals_finance ORDER BY fetch_date DESC LIMIT 1").fetchone()
-            if not row:
-                return []
-            fetch_date = row[0]
-        cur = conn.execute(
-            "SELECT stock_code, data_json FROM fundamentals_finance WHERE fetch_date = ?", (fetch_date,)
-        )
-        return [{"stock_code": r[0], **json.loads(r[1])} for r in cur.fetchall()]
-
-
-# ── fundamentals_f10 ──────────────────────────────────────────────────────────
-
-def insert_fundamentals_f10(fetch_date, stock_code, category, content) -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO fundamentals_f10 (fetch_date,stock_code,category,content) VALUES (?,?,?,?)",
-            (fetch_date, stock_code, category, content),
-        )
-
-
-def get_fundamentals_f10(stock_code: str, fetch_date: str = None) -> list[dict]:
-    with _conn() as conn:
-        if not fetch_date:
-            row = conn.execute(
-                "SELECT fetch_date FROM fundamentals_f10 WHERE stock_code=? ORDER BY fetch_date DESC LIMIT 1",
-                (stock_code,),
-            ).fetchone()
-            if not row:
-                return []
-            fetch_date = row[0]
-        cur = conn.execute(
-            "SELECT category, content FROM fundamentals_f10 WHERE fetch_date=? AND stock_code=?",
-            (fetch_date, stock_code),
-        )
-        return [{"category": r[0], "content": r[1]} for r in cur.fetchall()]
 
 
 # ── lockup_expiry ─────────────────────────────────────────────────────────────

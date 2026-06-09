@@ -15,7 +15,7 @@ Commands:
   volume_breakout         成交额异动（5d/20d > 2x）
   news                    最近N小时财经新闻  --hours N（默认2）
   policy_news             近3日政策新闻
-  f10                     涨停股F10基本面   --codes 300XXX,600XXX
+
   name                    查股票名称（从本地量价CSV）--codes 002491,688146,300197
   sector_flow             行业资金流最新快照
   context                 完整上下文（所有数据，供完整报告使用）
@@ -726,35 +726,6 @@ def cmd_policy_news(args):
     })
 
 
-def cmd_f10(args):
-    from db.storage import get_fundamentals_f10
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    codes_str = getattr(args, "codes", "") or ""
-    if not codes_str:
-        _out({"error": "请通过 --codes 300XXX,600XXX 指定股票代码"})
-        return
-
-    codes = [c.strip() for c in codes_str.split(",") if c.strip()]
-    results = []
-    for code in codes[:20]:  # 最多20只
-        rows = get_fundamentals_f10(today, code)
-        if rows:
-            # 只取公司概况
-            overview = next((r for r in rows if r.get("category") == "公司概况"), None)
-            if overview:
-                results.append({
-                    "stock_code": code,
-                    "category": "公司概况",
-                    "content": (overview.get("content") or "")[:500]
-                })
-            else:
-                results.append({"stock_code": code, "note": "无公司概况数据"})
-        else:
-            results.append({"stock_code": code, "note": "无F10数据（该股可能未进入今日涨停/强势池）"})
-
-    _out(results)
-
 
 def cmd_name(args):
     """从本地量价 CSV 查股票名称。--codes 逗号分隔代码列表。
@@ -1118,7 +1089,7 @@ def cmd_context(args):
         "volume_breakout": ctx.get("volume_breakout_today", []),
         "lhb": ctx.get("lhb_today", []),
         "filtered_news": filtered_news[:20],
-        "f10": ctx.get("f10_today", []),
+
     })
 
 
@@ -1134,7 +1105,7 @@ COMMANDS = {
     "volume_breakout":   cmd_volume_breakout,
     "news":              cmd_news,
     "policy_news":       cmd_policy_news,
-    "f10":               cmd_f10,
+
     "name":              cmd_name,
     "sector_flow":       cmd_sector_flow,
     "lockup":            cmd_lockup,

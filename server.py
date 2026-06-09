@@ -1340,7 +1340,7 @@ def _run_fetch_all():
         from fetcher.eastmoney import (fetch_margin, fetch_block_trade, fetch_holder_count,
                                        fetch_lockup_expiry, fetch_dividend_history,
                                        fetch_industry_ranking, fetch_ths_hot_stocks)
-        from fetcher.fundamentals import fetch_fundamentals_finance, fetch_fundamentals_f10
+
     except Exception as e:
         with _fetch_lock:
             _fetch_state.update({"status": "done", "results": [{"name": "导入失败", "ok": False, "error": str(e)}], "ts": _dt.now().strftime("%H:%M:%S")})
@@ -1373,8 +1373,7 @@ def _run_fetch_all():
         ("融资融券",          fetch_margin),
         ("大宗交易",          fetch_block_trade),
         ("股东人数",          fetch_holder_count),
-        ("基本面财务",        fetch_fundamentals_finance),
-        ("基本面F10",         fetch_fundamentals_f10),
+
         ("行业排行",          fetch_industry_ranking),
         ("同花顺主题热股",    fetch_ths_hot_stocks),
         ("解禁减持",          fetch_lockup_expiry),

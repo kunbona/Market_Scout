@@ -39,14 +39,6 @@ _agent_state = {
 _state_lock = threading.Lock()
 _stop_requested = False
 
-# 基本面分析独立状态（与日常 pipeline 完全隔离）
-_fundamental_state = {
-    "running": False,
-    "last_run": None,
-    "last_error": None,
-}
-_fundamental_lock = threading.Lock()
-
 # run_type → chief skill。auction/closing fallback to evening（无专属 skill）
 _CHIEF_SKILL_MAP = {
     "morning": "mra-chief-morning",
@@ -311,59 +303,6 @@ def _run_parallel(skills: list, run_id: str, run_type: str, timeout: int) -> lis
         t.join()
 
     return [s for s in skills if not outcomes.get(s)]
-
-
-def get_fundamental_state() -> dict:
-    with _fundamental_lock:
-        return dict(_fundamental_state)
-
-
-def _run_fundamental_pipeline(run_id: str) -> None:
-    """基本面分析流水线：单个 skill，独立运行，结果持久化到 DB。"""
-    try:
-        with _fundamental_lock:
-            _fundamental_state["running"] = True
-            _fundamental_state["last_error"] = None
-
-        # preflight data health，让 skill 也能读到数据状态
-        _write_data_health(run_id)
-
-        ok = _run_skill("mra-fundamental", run_id, "fundamental", timeout=1200)
-
-        with _fundamental_lock:
-            _fundamental_state["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            _fundamental_state["last_error"] = None if ok else "基本面分析 skill 执行失败"
-    except Exception as exc:
-        logger.exception("[orchestrator] fundamental pipeline exception: %s", exc)
-        with _fundamental_lock:
-            _fundamental_state["last_error"] = str(exc)
-    finally:
-        with _fundamental_lock:
-            _fundamental_state["running"] = False
-        shutil.rmtree(str(_TMP_ROOT / f"mra-{run_id}"), ignore_errors=True)
-
-
-def run_fundamental_analysis() -> dict:
-    """
-    手动触发基本面分析（非阻塞），立即返回状态。
-    与日常 pipeline 完全独立，不互相阻塞。
-    """
-    with _fundamental_lock:
-        if _fundamental_state["running"]:
-            return {"status": "already_running"}
-        _fundamental_state["running"] = True
-
-    run_id = f"fundamental-{uuid.uuid4().hex[:8]}"
-    Path(str(_TMP_ROOT / f"mra-{run_id}")).mkdir(parents=True, exist_ok=True)
-
-    threading.Thread(
-        target=_run_fundamental_pipeline,
-        args=(run_id,),
-        daemon=True,
-        name=f"mra-fundamental-{run_id}",
-    ).start()
-
-    return {"status": "started", "run_id": run_id}
 
 
 def run_agent_analysis(run_type: str) -> dict:

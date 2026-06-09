@@ -30,7 +30,7 @@ from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, f
 from fetcher.eastmoney import (fetch_margin, fetch_block_trade, fetch_holder_count,
                                fetch_lockup_expiry, fetch_dividend_history,
                                fetch_industry_ranking, fetch_ths_hot_stocks)
-from fetcher.fundamentals import fetch_fundamentals_finance, fetch_fundamentals_f10
+
 from quant.daily_compute import run_daily_compute
 from fetcher.backfill import run_backfill
 
@@ -79,11 +79,6 @@ def _guarded(name: str, fn) -> None:
         _auto_run(name, fn)
 
 
-def _guarded_fundamentals():
-    if _in_trade_hours():
-        _auto_run("基本面财务", fetch_fundamentals_finance)
-        _auto_run("基本面F10",  fetch_fundamentals_f10)
-
 
 def start_scheduler() -> None:
     scheduler = BackgroundScheduler(
@@ -131,7 +126,7 @@ def start_scheduler() -> None:
     scheduler.add_job(lambda: _guarded("大宗交易",     fetch_block_trade),      "interval", minutes=30)
     # 股东人数变化频率低，每天收盘后一次即可
     scheduler.add_job(lambda: _auto_run("股东人数",    fetch_holder_count),     "cron", hour=17, minute=45)
-    scheduler.add_job(_guarded_fundamentals, "interval", minutes=60)
+
     scheduler.add_job(lambda: _guarded("行业排行",     fetch_industry_ranking), "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("同花顺主题热股", fetch_ths_hot_stocks), "interval", minutes=30)
     # 解禁/减持和分红历史变动慢，每天早上更新一次
@@ -193,8 +188,7 @@ def start_scheduler() -> None:
                 ("融资融券",       fetch_margin),
                 ("大宗交易",       fetch_block_trade),
                 ("股东人数",       fetch_holder_count),
-                ("基本面财务",     fetch_fundamentals_finance),
-                ("基本面F10",      fetch_fundamentals_f10),
+
                 ("行业排行",       fetch_industry_ranking),
                 ("同花顺主题热股", fetch_ths_hot_stocks),
             ]
