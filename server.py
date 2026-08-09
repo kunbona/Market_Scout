@@ -1755,6 +1755,19 @@ def api_review_data():
         return _err(exc)
 
 
+@app.route("/api/review/v2/run", methods=["POST"])
+def api_review_v2_run():
+    """手动触发 9 维度复盘 (review_v2: 编排 14 daily_compute + sector 板块效应)。"""
+    try:
+        from agent.review_v2 import run as run_review_v2
+        body = request.get_json(silent=True) or {}
+        trade_date = (body.get("trade_date") or "").strip() or None
+        result = run_review_v2(trade_date)
+        return _ok(result)
+    except Exception as exc:
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------------
 # Runtime config (DATA_ROOT / RSSHub)
 # ---------------------------------------------------------------------------

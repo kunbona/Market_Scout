@@ -196,6 +196,17 @@ def start_scheduler() -> None:
                 scheduler.add_job(lambda: _run_strategist("intraday"), "cron", hour=13, minute=40)
                 scheduler.add_job(lambda: _run_strategist("evening"),  "cron", hour=21, minute=10)
 
+        # ── 复盘 (review_v2), 盘后 16:00 跑 (15:00 收盘 + 1h 清算) ──
+        # 9 维度编排, 无 LLM, 1-2 分钟, 落 review_daily
+        from agent.review_v2 import run as run_review_v2
+        _review_enabled = os.environ.get("REVIEW_ENABLED", "true").lower() == "true"
+        if _review_enabled:
+            def _run_review() -> None:
+                if not _is_trade_day():
+                    return
+                _auto_run("Review-9维", lambda: run_review_v2())
+            scheduler.add_job(_run_review, "cron", hour=16, minute=0)
+
     scheduler.start()
     atexit.register(scheduler.shutdown)
 

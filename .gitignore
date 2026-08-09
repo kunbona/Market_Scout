@@ -112,3 +112,4 @@ daemon/
 
 # 历史归档（旧版顶底算法副本, 等 v2 稳定后直接 mv 到 .legacy）
 stock-top-and-bottom-analysis/
+db/stock_names_cache.json
