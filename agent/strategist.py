@@ -1,6 +1,7 @@
 """
 战略推理师 (Strategist)
 - 读最近一次 info_brief 输出 (主旋律 + 跨路关联 + 关注点)
+- 双保险: 同时也调 4-way loader 拿原始数据, 让 LLM 交叉验证
 - 调 mra-strategist skill, 用麦肯锡框架做 1-4 周推理预测
 - 落库 + 推
 """
@@ -17,14 +18,70 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from db.storage import get_agent_summary_by_id, get_agent_summary_history, insert_agent_summary
+from agent.info_brief_classify import load_flash, load_policy, load_notice, load_research
 
 CLAUDE_BIN = "/Users/kun/.nvm/versions/node/v24.15.0/bin/claude"
 RUN_TYPE = "strategist"
 DISPLAY_NAME = "战略推理"
 
+# 4 路时间窗 (跟 info_brief_v2 一致, 保持交叉验证同源同窗)
+HOURS_BY_TYPE = {"morning": 15, "intraday": 3, "evening": 24}
+DAYS_BY_TYPE = {"morning": 3, "intraday": 1, "evening": 3}
+
 # 战略推理只在信息量大的时段跑 (morning/intraday 数据少, 跳过)
 # 仅 evening 必跑, 其他时段依赖用户手动触发
 EVENING_ONLY = True
+
+
+def load_4way_for_validation(run_type="evening"):
+    """双保险: 独立加载 4 路原始数据, 用于交叉验证 info_brief 的结论。
+
+    与 info_brief_v2.build_4way_summary 输出同结构, 给 LLM 一份"事实底稿"。
+    """
+    from collections import defaultdict
+
+    hours = HOURS_BY_TYPE.get(run_type, 24)
+    days = DAYS_BY_TYPE.get(run_type, 3)
+    flash = load_flash(hours)
+    policy = load_policy(days)
+    notice = load_notice(days)
+    research = load_research(days)
+
+    def top_by(items, key, n=5):
+        groups = defaultdict(list)
+        for it in items:
+            groups[it.get(key, "其他")].append(it)
+        out = []
+        for k, group in sorted(groups.items(), key=lambda x: -len(x[1]))[:n]:
+            group_sorted = sorted(group, key=lambda x: (x.get("days_old", 99), x.get("pub_time", "")))
+            out.append({
+                "key": k,
+                "count": len(group),
+                "samples": [it["title"][:80] for it in group_sorted[:3]],
+            })
+        return out
+
+    return {
+        "as_of": datetime.now().strftime("%Y-%m-%d"),
+        "window": {"hours_flash": hours, "days_others": days, "run_type": run_type},
+        "flash": {
+            "total": len(flash),
+            "top_tags": top_by(flash, "tag", 8),
+        },
+        "policy": {
+            "total": len(policy),
+            "top_cats": top_by(policy, "cat", 6),
+        },
+        "notice": {
+            "total_raw": len(notice),
+            "total_real": len([it for it in notice if it.get("is_real")]),
+            "top_cats": top_by([it for it in notice if it.get("is_real")], "cat", 8),
+        },
+        "research": {
+            "total": len(research),
+            "top_cats": top_by(research, "cat", 6),
+        },
+    }
 
 
 def parse_latest_info_brief():
@@ -94,8 +151,13 @@ def content_to_structured(content):
     return main_theme, cross_links, watch_points
 
 
-def run_ai_strategist(structured, info_brief_meta, run_id):
-    """调 mra-strategist skill, 写到 tmp_dir/strategist_output.md 和 .txt。"""
+def run_ai_strategist(structured, info_brief_meta, four_way, run_id):
+    """调 mra-strategist skill, 写到 tmp_dir/strategist_output.md 和 .txt。
+
+    双保险输入:
+    - structured: info_brief 的 3 段 (主旋律/跨路/关注点) — LLM 提炼
+    - four_way: 4 路原始 top categories — 事实底稿, 用于交叉验证
+    """
     tmp_dir = Path(f"/tmp/mra-{run_id}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     input_path = tmp_dir / "strategist_input.json"
@@ -103,14 +165,21 @@ def run_ai_strategist(structured, info_brief_meta, run_id):
         "as_of": info_brief_meta["as_of"],
         "info_brief_row_id": info_brief_meta["row_id"],
         "info_brief_run_type": info_brief_meta["info_brief_run_type"],
-        "main_theme": structured["main_theme"],
-        "cross_links": structured["cross_links"],
-        "watch_points": structured["watch_points"],
+        # info_brief 提炼的 3 段 (LLM 已加工)
+        "info_brief_extracted": {
+            "main_theme": structured["main_theme"],
+            "cross_links": structured["cross_links"],
+            "watch_points": structured["watch_points"],
+        },
+        # 4 路原始数据 (事实底稿, 用于交叉验证)
+        "four_way_raw": four_way,
     }
     input_path.write_text(json.dumps(strategist_input, ensure_ascii=False, indent=2), encoding="utf-8")
     prompt = (
-        f"先 cat {input_path} 看 info_brief 的 4 路分析结果 (主旋律/跨路/关注点), "
+        f"先 cat {input_path} 看 strategist_input.json, "
+        f"里面有两份数据: info_brief_extracted (LLM 提炼的 3 段) + four_way_raw (4 路原始 top categories 事实底稿), "
         f"然后调用 /mra-strategist 做麦肯锡框架推理预测, "
+        f"必须用 four_way_raw 交叉验证 info_brief_extracted 的结论, "
         f"写到 {tmp_dir}/strategist_output.md 和 {tmp_dir}/strategist_output.txt。"
     )
     if not Path(CLAUDE_BIN).exists():
@@ -136,12 +205,12 @@ def run_ai_strategist(structured, info_brief_meta, run_id):
 
 
 def parse_strategist_md(text):
-    """解析 8 段 markdown → dict, 供 HTML 渲染用。
+    """解析 9 段 markdown → dict, 供 HTML 渲染用。
 
     兼容裸标题 (AI 实际输出常省略 ## 前缀)。
     """
     sections = {
-        "core": "", "pest": "", "five_forces": "", "logic_tree": "",
+        "core": "", "validation": "", "pest": "", "five_forces": "", "logic_tree": "",
         "induction": "", "decision_matrix": "", "synthesis": "", "checkpoints": "",
     }
     current = None
@@ -159,6 +228,8 @@ def parse_strategist_md(text):
         section_match = None
         if "核心判断" in stripped and len(stripped) < 20:
             section_match = "core"
+        elif ("数据校验" in stripped or "交叉验证" in stripped or "双保险" in stripped) and len(stripped) < 25:
+            section_match = "validation"
         elif "PEST" in stripped and len(stripped) < 20:
             section_match = "pest"
         elif "五力" in stripped and len(stripped) < 20:
@@ -182,9 +253,10 @@ def parse_strategist_md(text):
     return sections
 
 
-def render_html(sections, info_brief_meta):
-    """战略推理 → HTML (浅色主调, 8 段结构清晰展示)。"""
+def render_html(sections, info_brief_meta, four_way=None):
+    """战略推理 → HTML (浅色主调, 9 段结构 + 4 路原始数据底稿卡)。"""
     core = sections["core"].strip()
+    validation = sections.get("validation", "").strip()
     pest = sections["pest"].strip()
     five_forces = sections["five_forces"].strip()
     logic_tree = sections["logic_tree"].strip()
@@ -235,12 +307,22 @@ def render_html(sections, info_brief_meta):
     .header { background: linear-gradient(135deg, #1e293b 0%, #475569 100%); color: white; padding: 20px 24px; border-radius: 12px; margin-bottom: 16px; }
     .header h1 { margin: 0; font-size: 20px; }
     .header .sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+    .header .sub2 { font-size: 11px; opacity: 0.7; margin-top: 4px; }
     .core { background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); padding: 18px 22px; border-radius: 12px; border: 1px solid #f59e0b; margin-bottom: 16px; }
     .core-label { font-size: 12px; font-weight: 700; color: #92400e; margin-bottom: 6px; letter-spacing: 0.5px; }
     .core-text { font-size: 15px; line-height: 1.7; color: #1f2937; font-weight: 500; }
+    .four-way-card { background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); padding: 14px 18px; border-radius: 12px; border: 1px solid #6ee7b7; margin-bottom: 16px; }
+    .four-way-title { font-size: 12px; font-weight: 700; color: #065f46; margin-bottom: 8px; letter-spacing: 0.5px; }
+    .four-way-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .four-way-cell { background: rgba(255,255,255,0.6); padding: 8px 10px; border-radius: 8px; }
+    .four-way-cell .label { font-size: 11px; color: #047857; font-weight: 600; }
+    .four-way-cell .count { font-size: 20px; font-weight: 700; color: #064e3b; margin: 2px 0; }
+    .four-way-cell .top { font-size: 11px; color: #065f46; line-height: 1.4; }
     .section { background: #fff; padding: 16px 20px; border-radius: 12px; border: 1px solid #e5e7eb; margin-bottom: 12px; }
     .section h3 { margin: 0 0 12px 0; font-size: 15px; color: #1e293b; display: flex; align-items: center; gap: 6px; }
     .section .sec-icon { font-size: 16px; }
+    .section.validation { background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #7dd3fc; }
+    .section.validation h3 { color: #075985; }
     .tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; }
     .tbl th, .tbl td { border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; vertical-align: top; }
     .tbl th { background: #f3f4f6; font-weight: 600; color: #374151; }
@@ -256,7 +338,27 @@ def render_html(sections, info_brief_meta):
     h.append(css)
     h.append('</style></head><body>')
     h.append(f'<div class="header"><h1>🎯 战略推理 (Strategist)</h1>')
-    h.append(f'<div class="sub">基于 {info_brief_meta["as_of"]} 信息情报简报 (row #{info_brief_meta["row_id"]}, {info_brief_meta["info_brief_run_type"]}) · 麦肯锡 6 框架推理</div></div>')
+    h.append(f'<div class="sub">基于 {info_brief_meta["as_of"]} 信息情报简报 (row #{info_brief_meta["row_id"]}, {info_brief_meta["info_brief_run_type"]}) · 麦肯锡 6 框架推理</div>')
+    h.append(f'<div class="sub2">双保险模式: info_brief LLM 提炼 (3 段) + strategist 独立加载 4 路原始数据 (事实底稿) 交叉验证</div></div>')
+
+    if four_way:
+        h.append('<div class="four-way-card">')
+        h.append(f'<div class="four-way-title">▎4 路原始数据底稿 (独立加载, 用于交叉验证)</div>')
+        h.append('<div class="four-way-grid">')
+        for label, key, total_key in [
+            ("📡 财经快讯", "flash", "total"),
+            ("🏛️ 政策动态", "policy", "total"),
+            ("📋 公告 (实质)", "notice", "total_real"),
+            ("📑 研报观点", "research", "total"),
+        ]:
+            data = four_way.get(key, {})
+            total = data.get(total_key, 0)
+            top_list = data.get("top_tags" if key == "flash" else "top_cats", [])
+            top_text = ", ".join(f"{it['key']}({it['count']})" for it in top_list[:3]) or "—"
+            h.append(f'<div class="four-way-cell"><div class="label">{label}</div>'
+                     f'<div class="count">{total}</div>'
+                     f'<div class="top">{top_text}</div></div>')
+        h.append('</div></div>')
 
     if core:
         h.append('<div class="core">')
@@ -265,6 +367,7 @@ def render_html(sections, info_brief_meta):
         h.append('</div>')
 
     sections_def = [
+        ("🔍", "数据校验 (双保险)", validation, "validation"),
         ("📊", "PEST 分析", pest, "pest"),
         ("⚔️", "五力分析", five_forces, "five_forces"),
         ("🌳", "逻辑树", logic_tree, "logic_tree"),
@@ -276,7 +379,8 @@ def render_html(sections, info_brief_meta):
     for icon, title, content_md, key in sections_def:
         if not content_md:
             continue
-        h.append(f'<div class="section"><h3><span class="sec-icon">{icon}</span> {title}</h3>')
+        cls = "section validation" if key == "validation" else "section"
+        h.append(f'<div class="{cls}"><h3><span class="sec-icon">{icon}</span> {title}</h3>')
         h.append(md_to_html(content_md))
         h.append('</div>')
 
@@ -287,7 +391,7 @@ def render_html(sections, info_brief_meta):
 
 
 def run(run_type="evening"):
-    """主入口: 读 info_brief → 调 strategist → 落库。"""
+    """主入口: 读 info_brief → 加载 4-way 底稿 → 调 strategist (双保险) → 落库。"""
     print(f"[strategist] start run_type={run_type}", flush=True)
     brief_meta = parse_latest_info_brief()
     if not brief_meta:
@@ -298,13 +402,19 @@ def run(run_type="evening"):
     structured = {"main_theme": main, "cross_links": cross, "watch_points": watch}
     print(f"[strategist] from info_brief row={brief_meta['row_id']}: main={len(main)}, cross={len(cross)}, watch={len(watch)}", flush=True)
 
+    # 双保险: 加载 4 路原始数据做交叉验证
+    print(f"[strategist] loading 4-way raw data for cross-validation (run_type={run_type})...", flush=True)
+    four_way = load_4way_for_validation(run_type)
+    print(f"[strategist] 4-way: flash={four_way['flash']['total']}, policy={four_way['policy']['total']}, "
+          f"notice={four_way['notice']['total_real']}/{four_way['notice']['total_raw']}, research={four_way['research']['total']}", flush=True)
+
     run_id = os.environ.get("MRA_RUN_ID", "default")
-    print(f"[strategist] running AI strategist (claude skill)...", flush=True)
-    ai_text = run_ai_strategist(structured, brief_meta, run_id)
+    print(f"[strategist] running AI strategist (claude skill + cross-validation)...", flush=True)
+    ai_text = run_ai_strategist(structured, brief_meta, four_way, run_id)
     print(f"[strategist] AI done ({len(ai_text)} chars)", flush=True)
 
     sections = parse_strategist_md(ai_text)
-    html = render_html(sections, brief_meta)
+    html = render_html(sections, brief_meta, four_way)
     core_line = sections["core"].split("\n")[0].strip() if sections["core"] else "战略推理生成失败"
     summary_text = core_line[:200] if core_line else "战略推理生成失败"
 
@@ -315,6 +425,13 @@ def run(run_type="evening"):
         "based_on_info_brief_row": brief_meta["row_id"],
         "summary_text": summary_text,
         "core": sections["core"],
+        "validation": sections.get("validation", ""),
+        "four_way_summary": {
+            "flash_total": four_way["flash"]["total"],
+            "policy_total": four_way["policy"]["total"],
+            "notice_total_real": four_way["notice"]["total_real"],
+            "research_total": four_way["research"]["total"],
+        },
         "ai_text": ai_text,
     }
     tmp_dir = Path(f"/tmp/mra-{run_id}")
