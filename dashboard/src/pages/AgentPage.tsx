@@ -374,6 +374,53 @@ function InfoBriefPanel({
   );
 }
 
+// ─── Strategist Panel (麦肯锡框架推理) ─────────────────────────────
+
+function StrategistPanel({
+  running,
+  onTrigger,
+  hasInfoBrief,
+}: {
+  running: boolean;
+  onTrigger: (type: 'morning' | 'intraday' | 'evening') => void;
+  hasInfoBrief: boolean;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 mb-6 p-4 bg-gradient-to-r from-slate-50 to-amber-50 rounded-2xl border border-slate-200">
+      <div className="flex items-center gap-2 mr-2">
+        <div className={`w-2 h-2 rounded-full ${running ? 'bg-amber-500 animate-pulse' : 'bg-slate-700'}`} />
+        <span className="text-xs font-semibold text-slate-800">战略推理 (Strategist)</span>
+        <span className="text-xs text-slate-500">
+          {running ? '正在生成中,约需 1-2 分钟...' : hasInfoBrief ? '基于最近一次信息情报简报 + 麦肯锡 6 框架' : '需先跑信息情报简报'}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 ml-auto">
+        <button
+          onClick={() => onTrigger('morning')}
+          disabled={running || !hasInfoBrief}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? '⏳' : '☀️'} 盘前版
+        </button>
+        <button
+          onClick={() => onTrigger('intraday')}
+          disabled={running || !hasInfoBrief}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? '⏳' : '⏰'} 盘中版
+        </button>
+        <button
+          onClick={() => onTrigger('evening')}
+          disabled={running || !hasInfoBrief}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-white border border-slate-800 hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? '⏳ 生成中...' : '🌙 盘后版（推荐）'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Market Status Card ───────────────────────────────────────────────────────
 
 function MarketStatusCard({ ms }: { ms: MarketStatus }) {
@@ -826,7 +873,9 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
                                   ? 'bg-rose-50 text-rose-600'
                                   : item.run_type === 'info_brief'
                                     ? 'bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-700'
-                                    : 'bg-indigo-50 text-indigo-600'
+                                    : item.run_type === 'strategist'
+                                      ? 'bg-gradient-to-r from-slate-100 to-amber-100 text-slate-700'
+                                      : 'bg-indigo-50 text-indigo-600'
                       }`}>
                         {RUN_TYPE_LABEL[item.run_type] ?? item.run_type}
                       </span>
@@ -912,6 +961,7 @@ function AgentPageInner() {
   const [history, setHistory]   = useState<HistoryItem[]>([]);
   const [error, setError]       = useState<string | null>(null);
   const [infoBriefLoading, setInfoBriefLoading] = useState(false);
+  const [strategistLoading, setStrategistLoading] = useState(false);
 
   const pollRef         = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopConfirmRef  = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1030,6 +1080,37 @@ function AgentPageInner() {
     }
   };
 
+  const handleStrategist = async (run_type: 'morning' | 'intraday' | 'evening') => {
+    setError(null);
+    setStrategistLoading(true);
+    try {
+      const res = await fetch('/api/strategist/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_type }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        setError(json.error ?? '战略推理启动失败');
+        return;
+      }
+      // 战略推理依赖 info_brief, 后端可能返回 skipped, 检查
+      if (json.data?.skipped) {
+        setError(json.data?.reason ?? '战略推理被跳过 (无 info_brief 历史)');
+        return;
+      }
+      await loadLatest();
+      await loadHistory();
+    } catch {
+      setError('请求失败，请检查后端服务');
+    } finally {
+      setStrategistLoading(false);
+    }
+  };
+
+  // 检查最近是否有 info_brief 记录 (用 history 简单判断)
+  const hasInfoBrief = history.some(h => h.run_type === 'info_brief');
+
   const handleStop = async () => {
     if (stopConfirmRef.current) {
       clearInterval(stopConfirmRef.current);
@@ -1102,6 +1183,8 @@ function AgentPageInner() {
       <TriggerPanel running={isRunning} onTrigger={handleTrigger} />
 
       <InfoBriefPanel running={isRunning || infoBriefLoading} onTrigger={handleInfoBrief} />
+
+      <StrategistPanel running={isRunning || strategistLoading} onTrigger={handleStrategist} hasInfoBrief={hasInfoBrief} />
 
       {report ? (
         report.has_html && report.id

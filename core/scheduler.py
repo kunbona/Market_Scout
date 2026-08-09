@@ -156,6 +156,7 @@ def start_scheduler() -> None:
     if _agent_enabled:
         from agent.orchestrator import run_agent_analysis
         from agent.info_brief_v2 import run as run_info_brief
+        from agent.strategist import run as run_strategist
 
         def _run_agent(run_type: str) -> None:
             if not _is_trade_day():
@@ -166,6 +167,11 @@ def start_scheduler() -> None:
             if not _is_trade_day():
                 return
             _auto_run(f"InfoBrief-{run_type}", lambda: run_info_brief(run_type=run_type))
+
+        def _run_strategist(run_type: str) -> None:
+            if not _is_trade_day():
+                return
+            _auto_run(f"Strategist-{run_type}", lambda: run_strategist(run_type=run_type))
 
         # 盘前完整 / 盘中轻量x2 / 盘后完整（21:00龙虎榜已稳定）
         scheduler.add_job(lambda: _run_agent("morning"),  "cron", hour=6,  minute=0)
@@ -180,6 +186,15 @@ def start_scheduler() -> None:
             scheduler.add_job(lambda: _run_info_brief("intraday"), "cron", hour=10, minute=5)
             scheduler.add_job(lambda: _run_info_brief("intraday"), "cron", hour=13, minute=35)
             scheduler.add_job(lambda: _run_info_brief("evening"),  "cron", hour=21, minute=5)
+
+            # ── 战略推理 (strategist), 在 info_brief 之后 5 分钟跑 ──
+            # 基于最近一次 info_brief 输出做麦肯锡框架推理
+            _strategist_enabled = os.environ.get("STRATEGIST_ENABLED", "true").lower() == "true"
+            if _strategist_enabled:
+                scheduler.add_job(lambda: _run_strategist("morning"),  "cron", hour=6,  minute=10)
+                scheduler.add_job(lambda: _run_strategist("intraday"), "cron", hour=10, minute=10)
+                scheduler.add_job(lambda: _run_strategist("intraday"), "cron", hour=13, minute=40)
+                scheduler.add_job(lambda: _run_strategist("evening"),  "cron", hour=21, minute=10)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)

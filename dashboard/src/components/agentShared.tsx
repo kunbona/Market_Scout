@@ -26,6 +26,7 @@ const RUN_TYPE_LABEL: Record<string, string> = {
   notice:    '公告解读',
   watchlist: '股池分析',
   info_brief:'信息情报简报',
+  strategist: '战略推理',
 };
 
 export function formatRunTypeLabel(runType: string | null | undefined): string {

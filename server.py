@@ -1108,6 +1108,44 @@ def api_info_brief_history():
         return _err(exc)
 
 
+@app.route("/api/strategist/run", methods=["POST"])
+def api_strategist_run():
+    """手动触发战略推理 (基于最近一次 info_brief)。"""
+    try:
+        from agent.strategist import run as run_strategist
+        body = request.get_json(silent=True) or {}
+        run_type = body.get("run_type") or _infer_run_type()
+        if run_type not in ("morning", "intraday", "evening"):
+            run_type = "evening"
+        result = run_strategist(run_type=run_type)
+        return _ok(result)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/strategist/latest")
+def api_strategist_latest():
+    """最近一次战略推理。"""
+    try:
+        rows = get_agent_summary_history(limit=1, run_type="strategist")
+        if not rows:
+            return _ok({"row": None})
+        return _ok({"row": rows[0]})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/strategist/history")
+def api_strategist_history():
+    """战略推理历史列表。"""
+    try:
+        limit = int(request.args.get("limit", 20))
+        rows = get_agent_summary_history(limit=limit, run_type="strategist")
+        return _ok({"rows": rows})
+    except Exception as exc:
+        return _err(exc)
+
+
 def _infer_run_type() -> str:
     """根据当前时间推断 run_type。"""
     now = datetime.now()
