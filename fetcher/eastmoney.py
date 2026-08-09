@@ -8,6 +8,21 @@ import requests
 from db.storage import insert_sector_flow, insert_lhb_data
 from fetcher.http_util import get_session, jitter_sleep, make_headers, random_ua
 
+# 缓存的申万二级行业名称（模块加载时获取，静态分类无需每次刷新）
+_SW2_NAMES: set[str] | None = None
+
+def _get_sw2_names() -> set[str]:
+    global _SW2_NAMES
+    if _SW2_NAMES is not None:
+        return _SW2_NAMES
+    try:
+        import akshare as _ak
+        df = _ak.sw_index_second_info()
+        _SW2_NAMES = set(df["行业名称"].str.strip())
+    except Exception:
+        _SW2_NAMES = set()
+    return _SW2_NAMES
+
 logger = logging.getLogger(__name__)
 
 _EM_SESSION = get_session("eastmoney.com")
@@ -64,7 +79,8 @@ def _fetch_sector_flow_ths(fetch_time: str) -> bool:
             try:
                 sector_name = str(row[col_name])
                 change_pct  = float(str(row[col_change]).replace("%", "")) if col_change else 0.0
-                main_inflow = float(row[col_inflow]) if col_inflow else 0.0
+                # 同花顺"净额"单位是亿元，东财主源是元，统一换算为元再落库（×1e8）
+                main_inflow = float(row[col_inflow]) * 1e8 if col_inflow else 0.0
                 insert_sector_flow(fetch_time, sector_name, change_pct, main_inflow, 0.0, source_type="industry")
                 count += 1
             except Exception:
@@ -92,7 +108,22 @@ def fetch_sector_flow() -> None:
         if col_name is None:
             raise ValueError(f"未找到名称列: {list(df.columns)}")
 
-        for _, row in df.iterrows():
+        # 仅保留申万二级行业（用 akshare sw_index_second_info 分类名做精确匹配）
+        sw2_names = _get_sw2_names()
+        if sw2_names:
+            # 先匹配申万二级标准名（直接匹配）
+            is_sw2_mask = df[col_name].isin(sw2_names)
+            # 补充：东财数据中仅以Ⅲ级出现的申万二级（如银行类），映射 Ⅲ→Ⅱ
+            df_names = set(df[col_name])
+            _iii_fallback = {n for n in df_names if str(n).endswith("Ⅲ")
+                             and str(n)[:-1] + "Ⅱ" in sw2_names
+                             and str(n)[:-1] + "Ⅱ" not in df_names}
+            is_iii_mask = df[col_name].isin(_iii_fallback)
+            df_filtered = df[is_sw2_mask | is_iii_mask]
+        else:
+            df_filtered = df
+
+        for _, row in df_filtered.iterrows():
             try:
                 insert_sector_flow(fetch_time, str(row[col_name]),
                                    float(row[col_change]) if col_change else 0.0,

@@ -19,11 +19,18 @@ from fetcher.cls_news import fetch as fetch_cls
 from fetcher.policy_rss import fetch as fetch_policy, fetch_cninfo
 from fetcher.eastmoney import fetch_sector_flow, fetch_lhb
 from fetcher.lhb_local import fetch_lhb_local
-from fetcher.sector_heat import fetch_zt_pool, fetch_dt_pool, fetch_concept_heat, fetch_zbgc_pool, fetch_strong_pool
+from fetcher.sector_heat import (
+    fetch_zt_pool,
+    fetch_dt_pool,
+    fetch_dt_pool_v2,
+    fetch_dt_pool_v3,
+    fetch_concept_heat,
+    fetch_zbgc_pool,
+    fetch_strong_pool,
+)
 from fetcher.global_news import fetch_cls_red, fetch_em, fetch_ths, fetch_wscn, fetch_yicai, fetch_jin10, fetch_gelonghui
 from fetcher.research import fetch as fetch_research
 from db.storage import cleanup_old_data
-from fetcher.realtime_quote import fetch_realtime_snapshot
 from fetcher.market_breadth import fetch as fetch_market_breadth
 from fetcher.concept_flow import fetch_concept_flow
 from fetcher.market_sentiment import fetch_hot_rank_up, fetch_northbound_flow, fetch_xq_hot, fetch_big_deal
@@ -86,7 +93,7 @@ def start_scheduler() -> None:
         job_defaults={
             "misfire_grace_time": 60,   # 任务可延迟60秒执行，消除1秒卡顿引发的missed警告
             "coalesce": True,           # 积压的同一任务只执行一次，不补跑
-            "max_instances": 1,         # 同一任务不并发
+            "max_instances": 4,         # 不同任务可并发（之前=1 时 warm_industry_stats 永远等不到 instance）
         },
     )
 
@@ -106,11 +113,22 @@ def start_scheduler() -> None:
     scheduler.add_job(lambda: _auto_run("龙虎榜本地",  fetch_lhb_local),   "cron", hour=18, minute=30)
     scheduler.add_job(lambda: _guarded("涨停池",       fetch_zt_pool),     "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("跌停池",       fetch_dt_pool),     "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("实验跌停池",   fetch_dt_pool_v2),  "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("QMT跌停池",    fetch_dt_pool_v3),  "interval", minutes=1)
     scheduler.add_job(lambda: _guarded("概念热度",     fetch_concept_heat),"interval", minutes=5)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=0)
-    scheduler.add_job(lambda: _guarded("实时行情",     fetch_realtime_snapshot), "interval", seconds=30)
-    scheduler.add_job(lambda: _guarded("市场宽度",     fetch_market_breadth),    "interval", minutes=5)
+    scheduler.add_job(lambda: _guarded("市场宽度",     fetch_market_breadth),    "interval", seconds=30)
     scheduler.add_job(lambda: _guarded("概念资金流",   fetch_concept_flow),      "interval", minutes=15)
+
+    # QMT 行业统计 warm-up：5 分钟跑一次填 cache，避免前端首次请求全量算 5200+ 只股票
+    def _warm_industry_stats() -> None:
+        from server import _refresh_qmt_industry_stats_cache, _current_qmt_trade_date
+        try:
+            _refresh_qmt_industry_stats_cache(_current_qmt_trade_date())
+        except Exception as e:
+            print(f"[scheduler] warm_industry_stats failed: {e}")
+
+    scheduler.add_job(_warm_industry_stats, "interval", minutes=5)
     # ── 静态数据每日计算（两次：盘前 + 盘后）──────────────────────────────────
     _compute_enabled = os.environ.get("COMPUTE_ENABLED", "true").lower() == "true"
     if _compute_enabled:
@@ -137,17 +155,31 @@ def start_scheduler() -> None:
     _agent_enabled = os.environ.get("AGENT_ENABLED", "true").lower() == "true"
     if _agent_enabled:
         from agent.orchestrator import run_agent_analysis
+        from agent.info_brief_v2 import run as run_info_brief
 
         def _run_agent(run_type: str) -> None:
             if not _is_trade_day():
                 return
             _auto_run(f"Agent-{run_type}", lambda: run_agent_analysis(run_type))
 
+        def _run_info_brief(run_type: str) -> None:
+            if not _is_trade_day():
+                return
+            _auto_run(f"InfoBrief-{run_type}", lambda: run_info_brief(run_type=run_type))
+
         # 盘前完整 / 盘中轻量x2 / 盘后完整（21:00龙虎榜已稳定）
         scheduler.add_job(lambda: _run_agent("morning"),  "cron", hour=6,  minute=0)
         scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=10, minute=0)
         scheduler.add_job(lambda: _run_agent("intraday"), "cron", hour=13, minute=30)
         scheduler.add_job(lambda: _run_agent("evening"),  "cron", hour=21, minute=0)
+
+        # ── 信息情报简报 (info_brief), 在 chief 之后 5 分钟跑 ──
+        _info_brief_enabled = os.environ.get("INFO_BRIEF_ENABLED", "true").lower() == "true"
+        if _info_brief_enabled:
+            scheduler.add_job(lambda: _run_info_brief("morning"),  "cron", hour=6,  minute=5)
+            scheduler.add_job(lambda: _run_info_brief("intraday"), "cron", hour=10, minute=5)
+            scheduler.add_job(lambda: _run_info_brief("intraday"), "cron", hour=13, minute=35)
+            scheduler.add_job(lambda: _run_info_brief("evening"),  "cron", hour=21, minute=5)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)
@@ -176,6 +208,8 @@ def start_scheduler() -> None:
                 ("行业资金流",     fetch_sector_flow),
                 ("涨停池",         fetch_zt_pool),
                 ("跌停池",         fetch_dt_pool),
+                ("实验跌停池",     fetch_dt_pool_v2),
+                ("QMT跌停池",      fetch_dt_pool_v3),
                 ("概念热度",       fetch_concept_heat),
                 ("概念资金流",     fetch_concept_flow),
                 ("炸板池",         fetch_zbgc_pool),
@@ -183,7 +217,6 @@ def start_scheduler() -> None:
                 ("人气飙升",       fetch_hot_rank_up),
                 ("北向资金",       fetch_northbound_flow),
                 ("大单异动",       fetch_big_deal),
-                ("实时行情",       fetch_realtime_snapshot),
                 ("市场宽度",       fetch_market_breadth),
                 ("融资融券",       fetch_margin),
                 ("大宗交易",       fetch_block_trade),

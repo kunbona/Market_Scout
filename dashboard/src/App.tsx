@@ -8,6 +8,10 @@ import { PolicyPage } from './pages/PolicyPage';
 import { ResearchPage } from './pages/ResearchPage';
 import { MarketRealtimePage } from './pages/MarketRealtimePage';
 import { MarketSentimentPage } from './pages/MarketSentimentPage';
+import { QmtDataPage } from './pages/QmtDataPage';
+import { CyclePage } from './pages/CyclePage';
+import { ReviewPage } from './pages/ReviewPage';
+import { WatchlistPage } from './pages/WatchlistPage';
 import { AgentPage } from './pages/AgentPage';
 import { useSettings } from './lib/useSettings';
 
@@ -24,6 +28,7 @@ function SettingsPage({ settings, onUpdate }: {
     data_root: string; rsshub_url: string; flask_port: string; quant_workers: string;
     agent_enabled: string; compute_enabled: string;
     qmt_enabled: string; qmt_path: string; qmt_connected: boolean; qmt_version: string | null;
+    qmt_bridge_url: string; qmt_bridge_token: string;
   } | null>(null);
   const [agentEnabledMsg, setAgentEnabledMsg] = useState('');
   const [computeEnabledMsg, setComputeEnabledMsg] = useState('');
@@ -37,6 +42,10 @@ function SettingsPage({ settings, onUpdate }: {
   const [qmtTesting, setQmtTesting] = useState(false);
   const [qmtTestMsg, setQmtTestMsg] = useState('');
   const [qmtEnabledMsg, setQmtEnabledMsg] = useState('');
+  const [qmtBridgeUrlInput, setQmtBridgeUrlInput] = useState('');
+  const [qmtBridgeTokenInput, setQmtBridgeTokenInput] = useState('');
+  const [qmtBridgeTesting, setQmtBridgeTesting] = useState(false);
+  const [qmtBridgeTestMsg, setQmtBridgeTestMsg] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
 
@@ -52,6 +61,8 @@ function SettingsPage({ settings, onUpdate }: {
           setFlaskPortInput(j.data.flask_port ?? '');
           setQuantWorkersInput(j.data.quant_workers ?? '');
           setQmtPathInput(j.data.qmt_path ?? '');
+          setQmtBridgeUrlInput(j.data.qmt_bridge_url ?? '');
+          setQmtBridgeTokenInput(j.data.qmt_bridge_token ?? '');
         }
       })
       .catch(() => {});
@@ -91,6 +102,28 @@ function SettingsPage({ settings, onUpdate }: {
     }
   };
 
+  const handleTestQmtBridge = async () => {
+    setQmtBridgeTesting(true);
+    setQmtBridgeTestMsg('');
+    try {
+      const params = new URLSearchParams();
+      if (qmtBridgeUrlInput) params.set('url', qmtBridgeUrlInput);
+      if (qmtBridgeTokenInput) params.set('token', qmtBridgeTokenInput);
+      const qs = params.toString();
+      const res = await fetch(`/api/config/test-qmt-bridge${qs ? `?${qs}` : ''}`);
+      const json = await res.json();
+      if (json.success) {
+        setQmtBridgeTestMsg(json.data.ok ? `✓ ${json.data.reason}` : `✗ ${json.data.reason}`);
+      } else {
+        setQmtBridgeTestMsg(`✗ ${json.error}`);
+      }
+    } catch {
+      setQmtBridgeTestMsg('✗ 请求失败');
+    } finally {
+      setQmtBridgeTesting(false);
+    }
+  };
+
   const handleSaveAll = async () => {
     setSaving(true);
     setSaveMsg('');
@@ -104,6 +137,8 @@ function SettingsPage({ settings, onUpdate }: {
           flask_port: flaskPortInput,
           quant_workers: quantWorkersInput,
           qmt_path: qmtPathInput,
+          qmt_bridge_url: qmtBridgeUrlInput,
+          qmt_bridge_token: qmtBridgeTokenInput,
         }),
       });
       const json = await res.json();
@@ -117,6 +152,8 @@ function SettingsPage({ settings, onUpdate }: {
           flask_port: flaskPortInput,
           quant_workers: quantWorkersInput,
           qmt_path: qmtPathInput,
+          qmt_bridge_url: qmtBridgeUrlInput,
+          qmt_bridge_token: qmtBridgeTokenInput,
         } : prev);
         onUpdate({ dataRoot: dataRootInput, rsshubUrl: rsshubInput });
       } else {
@@ -398,6 +435,73 @@ function SettingsPage({ settings, onUpdate }: {
               </div>
             </div>
 
+            {/* QMT Bridge 远端 VM 配置（Mac 跨机部署时使用） */}
+            <div className="bg-indigo-50/40 border border-indigo-100 rounded-lg p-4 -mx-1">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-medium text-indigo-700">QMT Bridge 远端模式</span>
+                <span className="text-xs text-indigo-500">（Mac 端通过 HTTP 调 VM 上的 xtquant）</span>
+              </div>
+
+              {/* URL */}
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">
+                  Bridge URL
+                  <span className="ml-1.5 text-xs font-mono text-gray-400">QMT_BRIDGE_URL</span>
+                  {serverConfig?.qmt_bridge_url && (
+                    <span className="ml-2 text-xs text-gray-400 font-normal">当前：{serverConfig.qmt_bridge_url}</span>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  value={qmtBridgeUrlInput}
+                  onChange={e => { setQmtBridgeUrlInput(e.target.value); setQmtBridgeTestMsg(''); }}
+                  placeholder="http://192.168.1.100:5001"
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 font-mono text-gray-700"
+                />
+              </div>
+
+              {/* Token */}
+              <div className="mt-3">
+                <label className="block text-xs text-gray-600 mb-1">
+                  Bridge Token
+                  <span className="ml-1.5 text-xs font-mono text-gray-400">QMT_BRIDGE_TOKEN</span>
+                  {serverConfig?.qmt_bridge_token && (
+                    <span className="ml-2 text-xs text-gray-400 font-normal">
+                      当前：{serverConfig.qmt_bridge_token.length > 12
+                        ? `••••${serverConfig.qmt_bridge_token.slice(-4)}`
+                        : '已设置'}
+                    </span>
+                  )}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={qmtBridgeTokenInput}
+                    onChange={e => { setQmtBridgeTokenInput(e.target.value); setQmtBridgeTestMsg(''); }}
+                    placeholder="跟 VM 端 start_bridge.bat 里的 QMT_BRIDGE_TOKEN 一致"
+                    className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 font-mono text-gray-700"
+                  />
+                  <button
+                    onClick={handleTestQmtBridge}
+                    disabled={qmtBridgeTesting}
+                    className="px-3 py-2 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-colors disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {qmtBridgeTesting ? '检测中...' : '检测连接'}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <p className="text-xs text-gray-400">
+                    留空 = 回退到本地 xtquant（QMT_PATH）。详见 <code className="font-mono">tools/qmt-bridge/README.md</code>
+                  </p>
+                  {qmtBridgeTestMsg && (
+                    <span className={`text-xs ml-2 shrink-0 ${qmtBridgeTestMsg.startsWith('✓') ? 'text-green-600' : 'text-red-500'}`}>
+                      {qmtBridgeTestMsg}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* 提示：xtquant 未安装时的引导 */}
             {serverConfig?.qmt_enabled === 'true' && !serverConfig?.qmt_connected && (
               <div className="bg-amber-50 border border-amber-100 rounded-lg px-4 py-3">
@@ -593,7 +697,7 @@ function SettingsPage({ settings, onUpdate }: {
   );
 }
 
-type TabId = 'news' | 'policy' | 'market' | 'research' | 'ai-analysis' | 'settings';
+type TabId = 'news' | 'policy' | 'market' | 'qmt' | 'cycle' | 'review' | 'watchlist' | 'research' | 'ai-analysis' | 'settings';
 
 interface DataAlert {
   level: 'error' | 'warning';
@@ -652,6 +756,14 @@ export default function App() {
             )}
           </>
         );
+      case 'qmt':
+        return <QmtDataPage />;
+      case 'cycle':
+        return <CyclePage />;
+      case 'review':
+        return <ReviewPage />;
+      case 'watchlist':
+        return <WatchlistPage />;
       case 'research':
         return <ResearchPage />;
       case 'ai-analysis':

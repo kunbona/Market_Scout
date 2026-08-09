@@ -17,13 +17,13 @@ Commands:
   policy_news             近3日政策新闻
 
   name                    查股票名称（从本地量价CSV）--codes 002491,688146,300197
+  watchlist               关注股池列表（code+name+note）
   sector_flow             行业资金流最新快照
   context                 完整上下文（所有数据，供完整报告使用）
-  market_pulse            最近1小时实时涨跌趋势（30秒一条，附炸板率和改善/恶化方向）
   northbound              北向资金最新净买入（沪深港通各渠道）
   industry_ranking        行业板块实时涨跌排行 Top20
   concept_flow            概念资金流 Top20
-  advance_decline         全市涨跌家数 + 成交额（优先日线，缺则用实时快照）
+  advance_decline         全市涨跌家数 + 成交额（来自 advance_decline 日线表）
   strong_pool             今日强势股池
   big_deal                大单异动最新50条
   market_breadth          实时全市涨跌家数+成交额（xtquant，1分钟粒度）
@@ -303,7 +303,6 @@ def cmd_data_health(args):
             pass  # 日历查询失败，不阻断
 
     # ── 检查二：盘中实时数据是否严重滞后（接口挂掉）
-    realtime_stale_abort = False
     if is_trading_time:
         def _stale_minutes(ts_str):
             """返回 ts_str 距现在多少分钟，ts_str 格式 YYYY-MM-DD HH:MM:SS 或 ISO"""
@@ -321,31 +320,7 @@ def cmd_data_health(args):
             except Exception:
                 return None
 
-        # market_pulse (realtime_snapshot)：30秒更新，超5分钟告警
-        pulse_ts = _latest_ts("market_pulse", "fetch_time") if False else sector_flow_ts  # 下面重新查
-        # 直接从 DB 查 market_pulse 最新时间
-        import sqlite3 as _sql
-        from db.storage import DB_PATH as _DB
-        with _sql.connect(_DB) as _conn:
-            _row = _conn.execute("SELECT MAX(fetch_time) FROM market_pulse").fetchone()
-            pulse_ts = _row[0] if _row else None
-
-        pulse_lag = _stale_minutes(pulse_ts)
         flow_lag = _stale_minutes(sector_flow_ts)
-
-        if pulse_lag is not None and pulse_lag > 5:
-            data_alerts.append({
-                "level": "error",
-                "code": "REALTIME_SNAPSHOT_STALE",
-                "message": (
-                    f"实时行情快照已 {pulse_lag:.0f} 分钟未更新（最后更新：{pulse_ts}），"
-                    f"正常应每30秒刷新一次，可能是数据接口临时故障，盘中分析数据暂不可靠。"
-                ),
-                "last_update": pulse_ts,
-                "lag_minutes": round(pulse_lag, 1),
-                "threshold_minutes": 5,
-            })
-            realtime_stale_abort = True
 
         if flow_lag is not None and flow_lag > 45:
             data_alerts.append({
@@ -365,8 +340,6 @@ def cmd_data_health(args):
     abort_reason = None
     if static_stale_abort:
         abort_reason = next(a["message"] for a in data_alerts if a["code"] == "STATIC_DATA_STALE")
-    elif realtime_stale_abort:
-        abort_reason = next(a["message"] for a in data_alerts if a["code"] == "REALTIME_SNAPSHOT_STALE")
 
     SESSION_INSTRUCTIONS = {
         "pre_market": (
@@ -475,102 +448,6 @@ def cmd_market_emotion(args):
     emotion["zb_count"] = emotion.pop("zb_total", None)
     emotion["yesterday_premium"] = emotion.pop("zt_yesterday_premium", None)
     _out(emotion)
-
-
-def cmd_yesterday_premium(args):
-    """
-    实时推算隔日溢价率（ZTBX）。
-
-    取昨日（最近一个有数据的交易日）涨停股名单，用 market_pulse 中最新实时价格
-    计算均值收益率。盘中结果为未收盘近似值，标注 intraday_estimate=true。
-    收盘后结果为收盘价，标注 intraday_estimate=false。
-
-    用途：当 static_emotion_date < today（路径 D）时，替代静态 yesterday_premium。
-    """
-    import sqlite3 as _sql
-    from db.storage import DB_PATH, get_zt_pool
-
-    now = datetime.now()
-    today = now.strftime("%Y-%m-%d")
-    is_market_closed = now.hour >= 15
-
-    with _sql.connect(DB_PATH) as conn:
-        # 找最近有涨停数据的交易日（通常是昨日，节后可能隔多天）
-        row = conn.execute(
-            "SELECT MAX(trade_date) FROM zt_pool"
-        ).fetchone()
-        prev_trade_date = row[0] if row and row[0] else None
-
-    if not prev_trade_date or prev_trade_date == today:
-        _out({
-            "error": "NO_PREV_ZT_DATA",
-            "reason": "未找到前一交易日涨停池数据，无法推算隔日溢价",
-        })
-        return
-
-    # 拿前一交易日全部涨停股的收盘价（prev_close）
-    prev_zt = get_zt_pool(prev_trade_date)
-    if not prev_zt:
-        _out({
-            "error": "NO_PREV_ZT_DATA",
-            "reason": f"前一交易日（{prev_trade_date}）涨停池为空",
-        })
-        return
-
-    prev_codes = [r.get("stock_code") for r in prev_zt if r.get("stock_code")]
-
-    with _sql.connect(DB_PATH) as conn:
-        # 用 market_pulse 最新快照中这些股票的价格
-        placeholders = ",".join("?" * len(prev_codes))
-        rows = conn.execute(
-            f"""
-            SELECT mp.stock_code, mp.price, mp.prev_close
-            FROM market_pulse mp
-            INNER JOIN (
-                SELECT stock_code, MAX(fetch_time) AS latest
-                FROM market_pulse
-                WHERE trade_date = ?
-                GROUP BY stock_code
-            ) latest_snap ON mp.stock_code = latest_snap.stock_code
-                          AND mp.fetch_time = latest_snap.latest
-            WHERE mp.stock_code IN ({placeholders})
-              AND mp.prev_close IS NOT NULL
-              AND mp.prev_close > 0
-            """,
-            [today] + prev_codes,
-        ).fetchall()
-
-    if not rows:
-        _out({
-            "error": "NO_PULSE_DATA",
-            "reason": f"market_pulse 中未找到前一交易日涨停股（{prev_trade_date}）的今日价格数据",
-            "prev_trade_date": prev_trade_date,
-            "prev_zt_count": len(prev_codes),
-        })
-        return
-
-    returns = [(price - prev_close) / prev_close for _, price, prev_close in rows if prev_close > 0]
-    if not returns:
-        _out({"error": "CALC_FAILED", "reason": "收益率计算失败，价格数据异常"})
-        return
-
-    ztbx = sum(returns) / len(returns)
-    positive = sum(1 for r in returns if r > 0)
-
-    _out({
-        "ztbx": round(ztbx * 100, 2),          # 百分比，如 2.3 表示 +2.3%
-        "ztbx_pct": f"{ztbx * 100:+.2f}%",
-        "sample_count": len(returns),           # 实际有价格的样本数
-        "prev_zt_count": len(prev_codes),       # 前日涨停总数
-        "positive_ratio": round(positive / len(returns), 3),  # 正收益占比
-        "prev_trade_date": prev_trade_date,
-        "price_time": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "intraday_estimate": not is_market_closed,
-        "note": (
-            "盘中近似值，使用实时价格（未收盘），收盘后将更准确" if not is_market_closed
-            else "收盘后计算，使用收盘价，结果准确"
-        ),
-    })
 
 
 def cmd_zt_pool(args):
@@ -716,7 +593,7 @@ def cmd_policy_news(args):
     recent = [n for n in all_policy if (n.get("pub_time") or "") >= three_days_ago]
 
     classified = batch_classify(recent)
-    filtered = [n for n in classified if n.get("urgency", 1) >= 2]
+    filtered = [n for n in classified if n.get("_classification", {}).get("urgency", 1) >= 2]
 
     _out({
         "since": three_days_ago,
@@ -726,20 +603,69 @@ def cmd_policy_news(args):
     })
 
 
+def cmd_research(args):
+    """近3日券商研报：标题、机构、评级、目标价，按类型分组。"""
+    from db.storage import get_research_reports
 
-def cmd_name(args):
-    """从本地量价 CSV 查股票名称。--codes 逗号分隔代码列表。
-    优先查 zt_pool/volume_breakout 当日数据，找不到再读 CSV 最后一行。
+    three_days_ago = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    reports = get_research_reports(limit=120)
+    recent = [r for r in reports if (r.get("publish_date") or "") >= three_days_ago]
+
+    qtype_name = {0: "个股", 1: "行业", 2: "宏观", 3: "策略"}
+    items = [{
+        "type": qtype_name.get(r.get("qtype"), "其他"),
+        "title": r.get("title"),
+        "stock_name": r.get("stock_name"),
+        "org": r.get("org_name"),
+        "researcher": r.get("researcher"),
+        "rating": r.get("rating"),
+        "aim_price": r.get("aim_price"),
+        "publish_date": r.get("publish_date"),
+    } for r in recent]
+
+    by_type: dict = {}
+    for it in items:
+        by_type[it["type"]] = by_type.get(it["type"], 0) + 1
+
+    _out({
+        "since": three_days_ago,
+        "total": len(items),
+        "by_type": by_type,
+        "reports": items[:60],
+    })
+
+
+def cmd_notice(args):
+    """近3日巨潮公告：标题、链接、时间。公告只有标题元数据，无正文。"""
+    from db.storage import get_policy_news
+
+    three_days_ago = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    all_news = get_policy_news(limit=500)
+    notices = [
+        {
+            "title": n.get("title"),
+            "pub_time": n.get("pub_time"),
+            "link": n.get("link"),
+        }
+        for n in all_news
+        if n.get("source") == "巨潮公告" and (n.get("pub_time") or "") >= three_days_ago
+    ]
+
+    _out({
+        "since": three_days_ago,
+        "total": len(notices),
+        "notices": notices[:150],
+    })
+
+
+def lookup_stock_names(codes: list) -> list:
+    """从本地数据查股票名称。优先当日 zt_pool/volume_breakout，再回落本地量价 CSV。
+    返回 [{"code", "name", "source"}]，查不到 name 为空（禁止从记忆猜测）。
     """
     from db.storage import get_zt_pool, get_volume_breakout
     from quant.loader import DATA_ROOT
 
-    codes_str = getattr(args, "codes", "") or ""
-    if not codes_str:
-        _out({"error": "请通过 --codes 002491,688146 指定股票代码"})
-        return
-
-    codes = [c.strip() for c in codes_str.split(",") if c.strip()]
+    codes = [str(c).strip() for c in codes if str(c).strip()]
     today = datetime.now().strftime("%Y-%m-%d")
 
     # 先从当日 zt_pool / volume_breakout 建立 code→name 映射（最快，不读文件）
@@ -795,7 +721,32 @@ def cmd_name(args):
             results.append({"code": raw_code, "name": "", "source": "not_found",
                             "note": "本地数据未找到，禁止从记忆猜测名称"})
 
-    _out(results)
+    return results
+
+
+def cmd_name(args):
+    """从本地量价 CSV 查股票名称。--codes 逗号分隔代码列表。
+    优先查 zt_pool/volume_breakout 当日数据，找不到再读 CSV 最后一行。
+    """
+    codes_str = getattr(args, "codes", "") or ""
+    if not codes_str:
+        _out({"error": "请通过 --codes 002491,688146 指定股票代码"})
+        return
+    _out(lookup_stock_names(codes_str.split(",")))
+
+
+def cmd_watchlist(args):
+    """输出关注股池（pool+code+name+note）。--pool 指定只输出某个池，缺省输出全部。"""
+    from db.storage import get_watchlist
+    pool = (getattr(args, "pool", "") or "").strip() or None
+    items = get_watchlist(pool)
+    _out({
+        "pool": pool or "全部",
+        "count": len(items),
+        "max_analyze": 20,
+        "truncated": len(items) > 20,
+        "items": items,
+    })
 
 
 def cmd_sector_flow(args):
@@ -842,53 +793,6 @@ def cmd_lockup(args):
         _out(data[:50])
 
 
-def cmd_market_pulse(args):
-    """最近1小时实时涨跌趋势。附当前炸板率和趋势方向（改善中/恶化中/平稳）。"""
-    from db.storage import get_market_pulse_latest
-
-    rows = get_market_pulse_latest(n=120)
-    if not rows:
-        _out({"note": "market_pulse 数据为空，可能是非交易日或数据未采集", "data": []})
-        return
-
-    # 按时间升序排列（DB 返回的是 DESC，翻转便于计算趋势）
-    rows = list(reversed(rows))
-
-    # ── 炸板率：取最新一条，用 zb_count / zt_count
-    latest = rows[-1]
-    zt = latest.get("real_zt") or latest.get("zt_count") or 0
-    zb = latest.get("zb_count") or 0
-    zb_rate = round(zb / zt, 4) if zt > 0 else None
-
-    # ── 趋势方向：最近10条 advance 均值 vs 前10条均值
-    trend = "平稳"
-    if len(rows) >= 20:
-        recent10 = [r.get("advance") or 0 for r in rows[-10:]]
-        prev10   = [r.get("advance") or 0 for r in rows[-20:-10]]
-        recent_avg = sum(recent10) / len(recent10)
-        prev_avg   = sum(prev10) / len(prev10)
-        if prev_avg > 0:
-            diff_pct = (recent_avg - prev_avg) / prev_avg
-            if diff_pct > 0.02:
-                trend = "改善中"
-            elif diff_pct < -0.02:
-                trend = "恶化中"
-
-    # 输出字段白名单（保持轻量）
-    output_fields = ("fetch_time", "real_zt", "real_dt", "advance", "decline", "activity", "zt_dt_ratio")
-    data = [
-        {k: r.get(k) for k in output_fields}
-        for r in rows
-    ]
-
-    _out({
-        "zb_rate": zb_rate,
-        "trend": trend,
-        "sample_count": len(data),
-        "data": data,
-    })
-
-
 def cmd_northbound(args):
     """北向资金最新净买入（沪深港通各渠道）。"""
     from db.storage import get_northbound_flow_latest
@@ -932,10 +836,9 @@ def cmd_concept_flow(args):
 
 def cmd_advance_decline(args):
     """
-    全市涨跌家数 + 成交额。
-    优先返回日线数据（含 amount_ratio）；日线无数据时降级使用 market_pulse 实时快照。
+    全市涨跌家数 + 成交额（来自 advance_decline 日线表）。
     """
-    from db.storage import get_advance_decline, get_market_pulse_latest
+    from db.storage import get_advance_decline
 
     today = datetime.now().strftime("%Y-%m-%d")
     daily = get_advance_decline(today)
@@ -945,23 +848,9 @@ def cmd_advance_decline(args):
         _out(daily)
         return
 
-    # 日线数据不可用，降级到 market_pulse 最新一条
-    pulse_rows = get_market_pulse_latest(n=1)
-    if not pulse_rows:
-        _out({
-            "error": "INSUFFICIENT_DATA",
-            "reason": "日线 advance_decline 和 market_pulse 均无今日数据",
-        })
-        return
-
-    p = pulse_rows[0]
     _out({
-        "trade_date": today,
-        "advance":    p.get("advance"),
-        "decline":    p.get("decline"),
-        "fetch_time": p.get("fetch_time"),
-        "data_source": "realtime_pulse_estimate",
-        "note": "日线数据未就绪，使用实时快照估算，精度低于日线，结论中需标注",
+        "error": "INSUFFICIENT_DATA",
+        "reason": "今日 advance_decline 日线数据未就绪（daily_compute 尚未运行或非交易日）",
     })
 
 
@@ -1096,7 +985,6 @@ def cmd_context(args):
 COMMANDS = {
     "data_health":         cmd_data_health,
     "market_emotion":      cmd_market_emotion,
-    "yesterday_premium":   cmd_yesterday_premium,
     "zt_pool":             cmd_zt_pool,
     "sector_zt_density": cmd_sector_zt_density,
     "sector_flow_accel": cmd_sector_flow_accel,
@@ -1105,12 +993,14 @@ COMMANDS = {
     "volume_breakout":   cmd_volume_breakout,
     "news":              cmd_news,
     "policy_news":       cmd_policy_news,
+    "research":          cmd_research,
+    "notice":            cmd_notice,
 
     "name":              cmd_name,
+    "watchlist":         cmd_watchlist,
     "sector_flow":       cmd_sector_flow,
     "lockup":            cmd_lockup,
     "context":           cmd_context,
-    "market_pulse":      cmd_market_pulse,
     "northbound":        cmd_northbound,
     "industry_ranking":  cmd_industry_ranking,
     "concept_flow":      cmd_concept_flow,
@@ -1126,6 +1016,7 @@ def main():
     parser.add_argument("command", choices=list(COMMANDS.keys()), help="查询类型")
     parser.add_argument("--hours", type=int, default=2, help="新闻查询小时数（news 命令使用）")
     parser.add_argument("--codes", type=str, default="", help="股票代码列表，逗号分隔（f10/lockup 命令使用）")
+    parser.add_argument("--pool", type=str, default="", help="股池名称（watchlist 命令使用，缺省全部池）")
     args = parser.parse_args()
 
     try:

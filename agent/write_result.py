@@ -9,6 +9,7 @@
 """
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 def main():
     parser = argparse.ArgumentParser(description="写入 Agent 分析结果")
     parser.add_argument("--run-type", required=True,
-                        choices=["morning", "auction", "intraday", "closing", "evening"],
+                        choices=["morning", "auction", "intraday", "closing", "evening", "policy", "research", "notice", "watchlist"],
                         help="分析类型")
     parser.add_argument("--result", type=str, default="",
                         help="JSON 结果字符串")
@@ -86,6 +87,15 @@ def main():
             "summary": summary_text[:100],
             "written_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }, ensure_ascii=False))
+
+        # ── 把 row_id 落到临时文件, 让 orchestrator 准确锁定本次 run 的行, 避免错推上次的报告 ──
+        # orchestrator 清理时会读这个文件, 找到了才推, 找不到（chief 失败）就不推
+        tmp_dir = os.environ.get("MRA_TMP_DIR", "").strip()
+        if tmp_dir:
+            try:
+                Path(tmp_dir, "last_row_id").write_text(str(row_id), encoding="utf-8")
+            except Exception as e:
+                print(f"WARNING: 写 last_row_id 失败（不影响落库）: {e}", file=sys.stderr)
     except Exception as e:
         print(f"ERROR: 写入数据库失败: {e}", file=sys.stderr)
         sys.exit(1)

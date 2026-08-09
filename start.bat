@@ -11,6 +11,10 @@ set FLASK_PORT=20026
 set RSSHUB_PORT=1200
 set QUANT_DATA_ROOT=
 set QUANT_WORKERS=
+set CONDA_ENV_NAME=
+set CONDA_BAT=
+set PYTHON_EXECUTABLE=
+set PYTHON_EXE=python
 
 if exist "%~dp0.env.local" (
     for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%~dp0.env.local") do (
@@ -20,6 +24,9 @@ if exist "%~dp0.env.local" (
         if "!_key!"=="RSSHUB_PORT"     set RSSHUB_PORT=!_val!
         if "!_key!"=="QUANT_DATA_ROOT" set QUANT_DATA_ROOT=!_val!
         if "!_key!"=="QUANT_WORKERS"   set QUANT_WORKERS=!_val!
+        if "!_key!"=="CONDA_ENV_NAME"  set CONDA_ENV_NAME=!_val!
+        if "!_key!"=="CONDA_BAT"       set CONDA_BAT=!_val!
+        if "!_key!"=="PYTHON_EXECUTABLE" set PYTHON_EXECUTABLE=!_val!
     )
     echo [OK] .env.local loaded
 ) else (
@@ -97,8 +104,31 @@ if "!RSSHUB_READY!"=="1" (
 echo.
 
 :start_flask
+if defined PYTHON_EXECUTABLE (
+    set "PYTHON_EXE=!PYTHON_EXECUTABLE!"
+    echo [OK] Using configured Python executable: !PYTHON_EXE!
+) else (
+    if defined CONDA_ENV_NAME (
+        call :resolve_conda_bat
+        if not defined CONDA_BAT_FOUND (
+            echo [ERROR] Unable to locate conda.bat. Set CONDA_BAT in .env.local.
+            pause
+            exit /b 1
+        )
+        echo [*] Activating conda env: !CONDA_ENV_NAME!
+        call "!CONDA_BAT_FOUND!" activate "!CONDA_ENV_NAME!"
+        if errorlevel 1 (
+            echo [ERROR] Failed to activate conda env: !CONDA_ENV_NAME!
+            pause
+            exit /b 1
+        )
+        echo [OK] Conda env activated: !CONDA_ENV_NAME!
+        echo.
+    )
+)
+
 :: check Python
-python --version >nul 2>&1
+call "!PYTHON_EXE!" --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python not found. Install Python 3.10+ and add to PATH.
     pause
@@ -127,6 +157,23 @@ echo     Press Ctrl+C to stop
 echo.
 
 cd /d "%~dp0"
-python server.py
+call "!PYTHON_EXE!" server.py
 
 pause
+goto :eof
+
+:resolve_conda_bat
+set CONDA_BAT_FOUND=
+if defined CONDA_BAT if exist "!CONDA_BAT!" set "CONDA_BAT_FOUND=!CONDA_BAT!"
+if defined CONDA_BAT_FOUND goto :eof
+
+for /f "delims=" %%I in ('where conda.bat 2^>nul') do (
+    set "CONDA_BAT_FOUND=%%I"
+    goto :eof
+)
+
+if exist "%USERPROFILE%\miniconda3\condabin\conda.bat" set "CONDA_BAT_FOUND=%USERPROFILE%\miniconda3\condabin\conda.bat"
+if defined CONDA_BAT_FOUND goto :eof
+
+if exist "%USERPROFILE%\anaconda3\condabin\conda.bat" set "CONDA_BAT_FOUND=%USERPROFILE%\anaconda3\condabin\conda.bat"
+goto :eof

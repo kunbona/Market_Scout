@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -30,17 +32,6 @@ def _migrate(conn):
     ]:
         if col not in zt_cols:
             conn.execute(f"ALTER TABLE zt_pool ADD COLUMN {col} {coldef}")
-    # market_pulse 新增乐咕字段
-    mp_cols = {row[1] for row in conn.execute("PRAGMA table_info(market_pulse)")}
-    for col, coldef in [
-        ("real_zt",  "INTEGER"),
-        ("real_dt",  "INTEGER"),
-        ("activity", "REAL"),
-        ("advance",  "INTEGER"),
-        ("decline",  "INTEGER"),
-    ]:
-        if col not in mp_cols:
-            conn.execute(f"ALTER TABLE market_pulse ADD COLUMN {col} {coldef}")
     # lhb_data 新增字段迁移
     lhb_cols = {row[1] for row in conn.execute("PRAGMA table_info(lhb_data)")}
     for col, coldef in [
@@ -178,6 +169,28 @@ CREATE TABLE IF NOT EXISTS dt_pool (
     UNIQUE(trade_date, stock_code)
 );
 
+CREATE TABLE IF NOT EXISTS dt_pool_v2 (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date    TEXT,
+    stock_code    TEXT,
+    stock_name    TEXT,
+    first_dt_time TEXT,
+    sector        TEXT,
+    UNIQUE(trade_date, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS dt_pool_v3 (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT,
+    stock_code TEXT,
+    stock_name TEXT,
+    last_price REAL,
+    last_close REAL,
+    down_limit REAL,
+    sector     TEXT,
+    UNIQUE(trade_date, stock_code)
+);
+
 CREATE TABLE IF NOT EXISTS quant_signals (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     signal_date  TEXT,
@@ -209,16 +222,6 @@ CREATE TABLE IF NOT EXISTS research_report (
     report_url   TEXT UNIQUE,
     qtype        INTEGER DEFAULT 0,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS market_pulse (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    fetch_time  TEXT,
-    zt_count    INTEGER,
-    dt_count    INTEGER,
-    zb_count    INTEGER,
-    zt_dt_ratio REAL,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS market_emotion (
@@ -586,7 +589,54 @@ CREATE TABLE IF NOT EXISTS fundamental_coverage (
     report_html    TEXT,
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS review_daily (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date  TEXT NOT NULL UNIQUE,
+    payload     TEXT,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pool       TEXT NOT NULL DEFAULT '默认',
+    code       TEXT NOT NULL,
+    name       TEXT,
+    note       TEXT DEFAULT '',
+    added_at   TEXT,
+    sort       INTEGER DEFAULT 0,
+    UNIQUE(pool, code)
+);
+
+CREATE TABLE IF NOT EXISTS watchlist_pools (
+    name       TEXT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
         """)
+        # watchlist 老表迁移：无 pool 列时重建为 (pool, code) 唯一的新表，原数据归入'默认'池
+        wl_cols = [r[1] for r in conn.execute("PRAGMA table_info(watchlist)").fetchall()]
+        if wl_cols and "pool" not in wl_cols:
+            conn.executescript("""
+CREATE TABLE watchlist_new (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pool       TEXT NOT NULL DEFAULT '默认',
+    code       TEXT NOT NULL,
+    name       TEXT,
+    note       TEXT DEFAULT '',
+    added_at   TEXT,
+    sort       INTEGER DEFAULT 0,
+    UNIQUE(pool, code)
+);
+INSERT INTO watchlist_new (pool, code, name, note, added_at, sort)
+    SELECT '默认', code, name, note, added_at, sort FROM watchlist;
+DROP TABLE watchlist;
+ALTER TABLE watchlist_new RENAME TO watchlist;
+            """)
+        # '默认'池必存在；watchlist 中出现的其他池名也补进 pools 表
+        conn.execute("INSERT OR IGNORE INTO watchlist_pools (name) VALUES ('默认')")
+        conn.execute(
+            "INSERT OR IGNORE INTO watchlist_pools (name) SELECT DISTINCT pool FROM watchlist"
+        )
         # 增量迁移：为旧版 DB 补充新增列（列已存在时忽略）
         _migrations = [
             "ALTER TABLE market_emotion ADD COLUMN real_zt INTEGER",
@@ -697,6 +747,11 @@ def insert_zt_pool(trade_date, stock_code, stock_name, zt_count, first_zt_time, 
         )
 
 
+def clear_zt_pool(trade_date: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM zt_pool WHERE trade_date = ?", (trade_date,))
+
+
 def insert_dt_pool(trade_date, stock_code, stock_name, first_dt_time, sector) -> None:
     with _conn() as conn:
         conn.execute(
@@ -707,12 +762,71 @@ def insert_dt_pool(trade_date, stock_code, stock_name, first_dt_time, sector) ->
         )
 
 
+def clear_dt_pool(trade_date: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM dt_pool WHERE trade_date = ?", (trade_date,))
+
+
+def insert_dt_pool_v2(trade_date, stock_code, stock_name, first_dt_time, sector) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO dt_pool_v2 "
+            "(trade_date, stock_code, stock_name, first_dt_time, sector) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (trade_date, stock_code, stock_name, first_dt_time, sector),
+        )
+
+
+def clear_dt_pool_v2(trade_date: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM dt_pool_v2 WHERE trade_date = ?", (trade_date,))
+
+
+def insert_dt_pool_v3(trade_date, stock_code, stock_name, last_price, last_close, down_limit, sector) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO dt_pool_v3 "
+            "(trade_date, stock_code, stock_name, last_price, last_close, down_limit, sector) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (trade_date, stock_code, stock_name, last_price, last_close, down_limit, sector),
+        )
+
+
+def clear_dt_pool_v3(trade_date: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM dt_pool_v3 WHERE trade_date = ?", (trade_date,))
+
+
+def replace_dt_pool_v3(trade_date: str, rows: list[dict]) -> None:
+    with _write_lock:
+        with _conn() as conn:
+            conn.execute("DELETE FROM dt_pool_v3 WHERE trade_date = ?", (trade_date,))
+            if not rows:
+                return
+            conn.executemany(
+                "INSERT OR REPLACE INTO dt_pool_v3 "
+                "(trade_date, stock_code, stock_name, last_price, last_close, down_limit, sector) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        trade_date,
+                        str(row.get("stock_code") or "").strip(),
+                        str(row.get("stock_name") or "").strip(),
+                        row.get("last_price"),
+                        row.get("last_close"),
+                        row.get("down_limit"),
+                        str(row.get("sector") or "").strip(),
+                    )
+                    for row in rows
+                ],
+            )
+
+
 def insert_quant_signal(signal_date, stock_code, signal_type, signal_value, extra_json="") -> None:
     with _conn() as conn:
         conn.execute(
             "INSERT INTO quant_signals (signal_date, stock_code, signal_type, signal_value, extra_json) "
             "VALUES (?, ?, ?, ?, ?)",
-            (signal_date, stock_code, signal_type, signal_value, extra_json),
         )
 
 
@@ -839,6 +953,24 @@ def get_dt_pool(trade_date=None) -> list[dict]:
         return _rows_to_dicts(cur)
 
 
+def get_dt_pool_v2(trade_date=None) -> list[dict]:
+    with _conn() as conn:
+        date = trade_date or _latest_trade_date(conn, "dt_pool_v2")
+        cur = conn.execute(
+            "SELECT * FROM dt_pool_v2 WHERE trade_date = ?", (date,)
+        )
+        return _rows_to_dicts(cur)
+
+
+def get_dt_pool_v3(trade_date=None) -> list[dict]:
+    with _conn() as conn:
+        date = trade_date or _latest_trade_date(conn, "dt_pool_v3")
+        cur = conn.execute(
+            "SELECT * FROM dt_pool_v3 WHERE trade_date = ?", (date,)
+        )
+        return _rows_to_dicts(cur)
+
+
 def get_quant_signals(signal_date=None) -> list[dict]:
     signal_date = signal_date or _today()
     with _conn() as conn:
@@ -865,25 +997,25 @@ def get_agent_summary_by_id(row_id: int) -> dict | None:
         return rows[0] if rows else None
 
 
-def get_agent_summary_history(limit: int = 20, today_only: bool = False) -> list[dict]:
+def get_agent_summary_history(limit: int = 20, today_only: bool = False, run_type: str = "") -> list[dict]:
     today = _today()
     with _conn() as conn:
+        where_parts = []
+        params = []
         if today_only:
-            cur = conn.execute(
-                "SELECT id, summary_time, run_type, content, "
-                "CASE WHEN report_html IS NOT NULL AND report_html != '' THEN 1 ELSE 0 END AS has_html "
-                "FROM agent_summary "
-                "WHERE summary_time >= ? ORDER BY created_at DESC LIMIT ?",
-                (today, limit),
-            )
-        else:
-            cur = conn.execute(
-                "SELECT id, summary_time, run_type, content, "
-                "CASE WHEN report_html IS NOT NULL AND report_html != '' THEN 1 ELSE 0 END AS has_html "
-                "FROM agent_summary "
-                "ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
+            where_parts.append("summary_time >= ?")
+            params.append(today)
+        if run_type:
+            where_parts.append("run_type = ?")
+            params.append(run_type)
+        where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
+        params.append(limit)
+        cur = conn.execute(
+            f"SELECT id, summary_time, run_type, content, "
+            f"CASE WHEN report_html IS NOT NULL AND report_html != '' THEN 1 ELSE 0 END AS has_html "
+            f"FROM agent_summary {where} ORDER BY created_at DESC LIMIT ?",
+            params,
+        )
         return _rows_to_dicts(cur)
 
 
@@ -1033,7 +1165,6 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM cls_news WHERE created_at < ?", (cutoff_7d,))
         # 30 days
         conn.execute("DELETE FROM sector_flow WHERE fetch_time < ?", (cutoff_30d,))
-        conn.execute("DELETE FROM market_pulse WHERE created_at < ?", (cutoff_30d,))
         # 60 days
         conn.execute("DELETE FROM agent_summary WHERE created_at < ?", (cutoff_60d,))
         conn.execute("DELETE FROM fundamental_coverage WHERE created_at < ?", (cutoff_60d,))
@@ -1080,30 +1211,6 @@ def cleanup_old_data() -> None:
         conn.execute("DELETE FROM policy_news WHERE created_at < ?", (cutoff_30d,))
         conn.execute("DELETE FROM research_report WHERE created_at < ?", (cutoff_90d,))
         conn.execute("DELETE FROM quant_signals WHERE created_at < ?", (cutoff_90d,))
-
-
-# ── market_pulse ──────────────────────────────────────────────────────────────
-
-def insert_market_pulse(fetch_time: str, zt_count: int, dt_count: int, zb_count: int, zt_dt_ratio: float,
-                        real_zt=None, real_dt=None, activity=None,
-                        advance=None, decline=None) -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT INTO market_pulse "
-            "(fetch_time, zt_count, dt_count, zb_count, zt_dt_ratio, "
-            " real_zt, real_dt, activity, advance, decline) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (fetch_time, zt_count, dt_count, zb_count, zt_dt_ratio,
-             real_zt, real_dt, activity, advance, decline),
-        )
-
-
-def get_market_pulse_latest(n: int = 60) -> list[dict]:
-    with _conn() as conn:
-        cur = conn.execute(
-            "SELECT * FROM market_pulse ORDER BY created_at DESC LIMIT ?", (n,)
-        )
-        return _rows_to_dicts(cur)
 
 
 # ── market_emotion ────────────────────────────────────────────────────────────
@@ -1366,6 +1473,40 @@ def get_latest_emotion_date() -> str:
         return row[0] if row else ""
 
 
+# ── review_daily ──────────────────────────────────────────────────────────────
+
+def insert_review_daily(trade_date: str, payload_json: str) -> None:
+    with _write_lock:
+        with _conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO review_daily (trade_date, payload) VALUES (?, ?)",
+                (trade_date, payload_json),
+            )
+
+
+def get_review_daily(trade_date: str | None = None) -> dict | None:
+    with _conn() as conn:
+        if trade_date:
+            row = conn.execute(
+                "SELECT * FROM review_daily WHERE trade_date = ?", (trade_date,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM review_daily ORDER BY trade_date DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        return {"trade_date": row[1], "payload": row[2], "created_at": row[3]}
+
+
+def get_review_dates() -> list[str]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT trade_date FROM review_daily ORDER BY trade_date DESC LIMIT 60"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+
 # ── turnover_stats ────────────────────────────────────────────────────────────
 
 def upsert_turnover_stats(trade_date: str, low_count: int, mid_count: int,
@@ -1471,6 +1612,11 @@ def insert_zbgc_pool(trade_date: str, stock_code: str, stock_name: str,
         )
 
 
+def clear_zbgc_pool(trade_date: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM zbgc_pool WHERE trade_date = ?", (trade_date,))
+
+
 def get_zbgc_pool(trade_date=None) -> list[dict]:
     with _conn() as conn:
         date = trade_date or _latest_trade_date(conn, "zbgc_pool")
@@ -1493,6 +1639,11 @@ def insert_strong_pool(trade_date: str, stock_code: str, stock_name: str,
             "VALUES (?,?,?,?,?,?,?,?)",
             (trade_date, stock_code, stock_name, change_pct, is_new_high, volume_ratio, reason, sector),
         )
+
+
+def clear_strong_pool(trade_date: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM strong_pool WHERE trade_date = ?", (trade_date,))
 
 
 def get_strong_pool(trade_date=None) -> list[dict]:
@@ -1855,6 +2006,106 @@ def get_market_breadth_latest(n: int = 120) -> list[dict]:
         )
         rows = _rows_to_dicts(cur)
     return list(reversed(rows))
+
+
+# ── Watchlist（关注股池，多池分组） ───────────────────────────────────────────
+
+DEFAULT_POOL = "默认"
+
+
+def get_watchlist(pool: str | None = None) -> list[dict]:
+    """返回股池股票。pool=None 返回全部池（每项带 pool 字段）。"""
+    with _conn() as conn:
+        if pool:
+            cur = conn.execute(
+                "SELECT id, pool, code, name, note, added_at, sort FROM watchlist "
+                "WHERE pool = ? ORDER BY sort ASC, id ASC",
+                (pool,),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT id, pool, code, name, note, added_at, sort FROM watchlist "
+                "ORDER BY pool ASC, sort ASC, id ASC"
+            )
+        return _rows_to_dicts(cur)
+
+
+def pool_exists(name: str) -> bool:
+    with _conn() as conn:
+        row = conn.execute("SELECT 1 FROM watchlist_pools WHERE name = ?", (name,)).fetchone()
+        return row is not None
+
+
+def create_pool(name: str) -> None:
+    with _conn() as conn:
+        conn.execute("INSERT INTO watchlist_pools (name) VALUES (?)", (name,))
+
+
+def list_pools() -> list[dict]:
+    """池列表含股票数量：[{"name", "count", "created_at"}]"""
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT p.name, p.created_at, COUNT(w.id) AS count "
+            "FROM watchlist_pools p LEFT JOIN watchlist w ON w.pool = p.name "
+            "GROUP BY p.name ORDER BY p.rowid ASC"
+        )
+        return _rows_to_dicts(cur)
+
+
+def rename_pool(old: str, new: str) -> bool:
+    """池改名（池内股票跟随）。'默认'池不可改名。成功返回 True。"""
+    if old == DEFAULT_POOL or old == new:
+        return False
+    with _conn() as conn:
+        exists = conn.execute("SELECT 1 FROM watchlist_pools WHERE name = ?", (old,)).fetchone()
+        dup = conn.execute("SELECT 1 FROM watchlist_pools WHERE name = ?", (new,)).fetchone()
+        if not exists or dup:
+            return False
+        conn.execute("UPDATE watchlist_pools SET name = ? WHERE name = ?", (new, old))
+        conn.execute("UPDATE watchlist SET pool = ? WHERE pool = ?", (new, old))
+        return True
+
+
+def delete_pool(name: str) -> int | None:
+    """删除池并连带删除池内股票，返回删除条数。'默认'池拒绝删除返回 None。"""
+    if name == DEFAULT_POOL:
+        return None
+    with _conn() as conn:
+        exists = conn.execute("SELECT 1 FROM watchlist_pools WHERE name = ?", (name,)).fetchone()
+        if not exists:
+            return None
+        cur = conn.execute("DELETE FROM watchlist WHERE pool = ?", (name,))
+        conn.execute("DELETE FROM watchlist_pools WHERE name = ?", (name,))
+        return cur.rowcount
+
+
+def add_watchlist(code: str, name: str = "", note: str = "", pool: str = DEFAULT_POOL) -> dict:
+    """新增关注股票；(pool, code) 已存在时更新 name，note 仅在传入非空时覆盖。"""
+    added_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO watchlist (pool, code, name, note, added_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(pool, code) DO UPDATE SET name = excluded.name, "
+            "note = CASE WHEN excluded.note != '' THEN excluded.note ELSE watchlist.note END",
+            (pool, code, name, note, added_at),
+        )
+        row = conn.execute(
+            "SELECT id, pool, code, name, note, added_at, sort FROM watchlist WHERE pool = ? AND code = ?",
+            (pool, code),
+        ).fetchone()
+    return {"id": row[0], "pool": row[1], "code": row[2], "name": row[3], "note": row[4], "added_at": row[5], "sort": row[6]}
+
+
+def remove_watchlist(code: str, pool: str = DEFAULT_POOL) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM watchlist WHERE pool = ? AND code = ?", (pool, code))
+        return cur.rowcount > 0
+
+
+def update_watchlist_note(code: str, note: str, pool: str = DEFAULT_POOL) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("UPDATE watchlist SET note = ? WHERE pool = ? AND code = ?", (note, pool, code))
+        return cur.rowcount > 0
 
 
 # ── Module init ───────────────────────────────────────────────────────────────

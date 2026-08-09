@@ -410,7 +410,9 @@ def get_trading_data(code: str) -> pd.DataFrame:
         logger.warning("[loader] 文件不存在: %s", csv_path)
         return pd.DataFrame()
     try:
-        df = pd.read_csv(csv_path, encoding="GBK", skiprows=1)
+        # 显式 with open() 避免大批量调用（>2000 只）触发 macOS 默认 ulimit 256
+        with open(csv_path, "r", encoding="GBK") as f:
+            df = pd.read_csv(f, skiprows=1)
         df = df.rename(columns=_TRADING_COL_MAP)
         if "trade_date" in df.columns:
             df["trade_date"] = df["trade_date"].astype(str)

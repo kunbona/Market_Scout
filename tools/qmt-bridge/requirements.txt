@@ -1,0 +1,10 @@
+# QMT Bridge 依赖（运行在 Windows VM 上）
+# 安装：pip install -r requirements.txt
+
+flask>=3.0
+waitress>=3.0
+
+# xtquant 由券商 QMT 客户端自带，不在此处安装。
+# 客户端安装后通常位于 <QMT 安装目录>/bin.x64/xtquant/
+# Python 端 pip install xtquant 即可（部分券商提供 pip 包）。
+# 安装后 import xtquant 验证。

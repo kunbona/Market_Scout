@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { BarChart3, FileText, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, FileText, Star, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle, Waves } from 'lucide-react';
+import { QmtBreakerStatus } from './QmtBreakerStatus';
 
 interface FetchResult { name: string; ok: boolean; error?: string; }
 interface FetchState { status: 'idle' | 'running' | 'done' | 'auto'; results: FetchResult[]; ts: string; auto_ts: string; auto_task: string; }
@@ -83,6 +84,10 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
 
   const menuItems = [
     { id: 'market',      icon: TrendingUp, label: '市场数据' },
+    { id: 'qmt',         icon: Activity,   label: 'QMT数据' },
+    { id: 'cycle',       icon: Waves,      label: '市场周期' },
+    { id: 'review',      icon: BookOpen,   label: '复盘数据' },
+    { id: 'watchlist',   icon: Star,       label: '关注股池' },
     { id: 'news',        icon: FileText,   label: '财经快讯' },
     { id: 'policy',      icon: BarChart3,  label: '政策动态' },
     { id: 'research',    icon: FileText,   label: '研究报告' },
@@ -143,6 +148,9 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
           </div>
         </div>
       </div>
+
+      {/* QMT 桥熔断状态（VM 不通时显示，全局可见） */}
+      <QmtBreakerStatus />
 
       {/* Nav */}
       <nav aria-label="主导航" className="flex-1 p-4 relative z-10 overflow-y-auto">

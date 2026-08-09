@@ -211,7 +211,6 @@ python agent/write_result.py \
 | `scout.json` / `news.json` 等 | 不提及 |
 | `data_health` | 数据状态 |
 | `market_breadth` | 市场宽度数据 / 涨跌家数 |
-| `market_pulse` | 市场情绪数据 |
 
 检查标准：任何一个用户看到会困惑"这是什么"的词，都不应该出现在报告正文里。
 

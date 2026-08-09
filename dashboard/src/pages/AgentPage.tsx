@@ -1,32 +1,26 @@
-import { useEffect, useRef, useState, Component, useCallback } from 'react';
+import { useEffect, useRef, useState, Component } from 'react';
 import type { ReactNode } from 'react';
 import {
   AlertTriangle,
+  BookOpen,
   Brain,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Clock,
+  FileText,
+  Landmark,
   Loader2,
-  Square,
   TrendingDown,
   TrendingUp,
-  Users,
   Zap,
 } from 'lucide-react';
 import { TabHeader } from '../components/TabHeader';
+import { PhaseBar, HtmlReportView, safeFetch, formatAlreadyRunningMessage } from '../components/agentShared';
+import type { AgentStatus, AlreadyRunningData } from '../components/agentShared';
+import { PushToWecomButton } from '../components/PushToWecomButton';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AgentStatus {
-  running: boolean;
-  phase: 'analysts' | 'chief' | null;
-  phase_detail: string | null;
-  last_run: string | null;
-  last_run_type: string | null;
-  last_error: string | null;
-  pid: number | null;
-}
 
 interface MarketStatus {
   mode: string;
@@ -124,18 +118,9 @@ interface HistoryItem {
   data?: AgentReport;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+type TriggerRunType = 'intraday' | 'morning' | 'evening' | 'policy' | 'research' | 'notice';
 
-async function safeFetch<T>(path: string, options?: RequestInit): Promise<T | null> {
-  try {
-    const res = await fetch(path, options);
-    const json = await res.json();
-    if (!json.success) return null;
-    return json.data as T;
-  } catch {
-    return null;
-  }
-}
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function isFullReport(r: AgentReport): r is FullReport {
   return r.run_type === 'evening' || r.run_type === 'morning';
@@ -179,80 +164,6 @@ function Badge({ text, style }: { text: string; style?: { bg: string; text: stri
     <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold ${s.bg} ${s.text}`}>
       {text}
     </span>
-  );
-}
-
-// ─── Phase Progress Bar ───────────────────────────────────────────────────────
-
-const PHASES: Array<{ key: 'analysts' | 'chief'; label: string; icon: React.ElementType }> = [
-  { key: 'analysts', label: '分析师', icon: Users },
-  { key: 'chief',    label: '裁决',   icon: Brain },
-];
-
-function PhaseBar({
-  status,
-  onStop,
-}: {
-  status: AgentStatus;
-  onStop: () => void;
-}) {
-  const currentIdx = status.phase ? PHASES.findIndex(p => p.key === status.phase) : -1;
-
-  return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-[var(--shadow-sm)] mb-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
-          <span className="text-sm font-semibold text-gray-800">
-            {status.phase_detail ?? 'AI 分析进行中…'}
-          </span>
-        </div>
-        <button
-          onClick={onStop}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                     bg-gray-100 text-gray-600 hover:bg-red-50 hover:text-red-600
-                     border border-gray-200 hover:border-red-200 transition-colors"
-        >
-          <Square className="w-3 h-3" />
-          停止
-        </button>
-      </div>
-
-      <div className="flex items-center gap-2">
-        {PHASES.map((phase, idx) => {
-          const Icon = phase.icon;
-          const isPast    = idx < currentIdx;
-          const isCurrent = idx === currentIdx;
-
-          return (
-            <div key={phase.key} className="flex items-center gap-2 flex-1">
-              <div className="flex flex-col items-center flex-1">
-                <div
-                  className={`w-full h-1.5 rounded-full transition-all duration-500 ${
-                    isPast    ? 'bg-indigo-500' :
-                    isCurrent ? 'bg-indigo-400 animate-pulse' :
-                    'bg-gray-200'
-                  }`}
-                />
-                <div className={`flex items-center gap-1 mt-1.5 text-xs font-medium ${
-                  isCurrent ? 'text-indigo-600' :
-                  isPast    ? 'text-gray-400' :
-                  'text-gray-300'
-                }`}>
-                  <Icon className="w-3 h-3" />
-                  {phase.label}
-                </div>
-              </div>
-              {idx < PHASES.length - 1 && (
-                <div className={`w-3 h-px mt-[-12px] flex-shrink-0 ${
-                  idx < currentIdx ? 'bg-indigo-400' : 'bg-gray-200'
-                }`} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
   );
 }
 
@@ -300,7 +211,7 @@ function TriggerPanel({
   onTrigger,
 }: {
   running: boolean;
-  onTrigger: (type: 'intraday' | 'morning' | 'evening') => void;
+  onTrigger: (type: TriggerRunType) => void;
 }) {
   const slot = useTimeSlot();
 
@@ -369,12 +280,96 @@ function TriggerPanel({
         </button>
       </div>
 
+      {/* 政策解读 */}
+      <div className="relative group">
+        <button
+          onClick={() => onTrigger('policy')}
+          disabled={running}
+          title="专项解读近3日政策动态（发改委/证监会/交易所/公告）"
+          className={`${btnBase} bg-emerald-100 text-emerald-700 hover:bg-emerald-200 ring-1 ring-emerald-300`}
+        >
+          <Landmark className="w-4 h-4" />
+          政策解读
+        </button>
+      </div>
+
+      {/* 研报解读 */}
+      <div className="relative group">
+        <button
+          onClick={() => onTrigger('research')}
+          disabled={running}
+          title="专项解读近3日券商研报：机构共识与分歧、评级变动、未来展望"
+          className={`${btnBase} bg-violet-100 text-violet-700 hover:bg-violet-200 ring-1 ring-violet-300`}
+        >
+          <BookOpen className="w-4 h-4" />
+          研报解读
+        </button>
+      </div>
+
+      {/* 公告解读 */}
+      <div className="relative group">
+        <button
+          onClick={() => onTrigger('notice')}
+          disabled={running}
+          title="专项解读近3日巨潮公告：分类研究、筛出高含量公告、推理影响与跟踪建议"
+          className={`${btnBase} bg-orange-100 text-orange-700 hover:bg-orange-200 ring-1 ring-orange-300`}
+        >
+          <FileText className="w-4 h-4" />
+          公告解读
+        </button>
+      </div>
+
       {running && (
         <span className="text-xs text-gray-400 flex items-center gap-1">
           <Loader2 className="w-3 h-3 animate-spin" />
           分析进行中，请等待…
         </span>
       )}
+    </div>
+  );
+}
+
+// ─── Info Brief Panel (4 路信息源综合整理) ─────────────────────────────
+
+function InfoBriefPanel({
+  running,
+  onTrigger,
+}: {
+  running: boolean;
+  onTrigger: (type: 'morning' | 'intraday' | 'evening') => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 mb-6 p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-100">
+      <div className="flex items-center gap-2 mr-2">
+        <div className={`w-2 h-2 rounded-full ${running ? 'bg-amber-500 animate-pulse' : 'bg-indigo-500'}`} />
+        <span className="text-xs font-semibold text-indigo-700">信息情报简报</span>
+        <span className="text-xs text-indigo-500">
+          {running ? '正在生成中,约需 1-2 分钟...' : '4 路信息源 (快讯/政策/公告/研报) 综合整理'}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 ml-auto">
+        <button
+          onClick={() => onTrigger('morning')}
+          disabled={running}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? '⏳' : '☀️'} 盘前版
+        </button>
+        <button
+          onClick={() => onTrigger('intraday')}
+          disabled={running}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? '⏳' : '⏰'} 盘中版
+        </button>
+        <button
+          onClick={() => onTrigger('evening')}
+          disabled={running}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? '⏳ 生成中...' : '🌙 盘后版（推荐）'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -680,38 +675,6 @@ function SummaryCard({ text }: { text: string }) {
   );
 }
 
-// ─── HTML Report (iframe) ────────────────────────────────────────────────────
-
-function HtmlReportView({ reportId }: { reportId: number }) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState(600);
-
-  const onMessage = useCallback((e: MessageEvent) => {
-    if (e.data?.type === 'mra-report-height' && typeof e.data.height === 'number') {
-      setHeight(Math.max(400, e.data.height + 32));
-    }
-  }, []);
-
-  useEffect(() => {
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, [onMessage]);
-
-  return (
-    <iframe
-      ref={iframeRef}
-      src={`/api/agent/report/${reportId}`}
-      style={{ width: '100%', height, border: 'none', borderRadius: '16px', display: 'block' }}
-      onLoad={() => {
-        // 注入高度上报脚本
-        try {
-          iframeRef.current?.contentWindow?.postMessage({ type: 'mra-request-height' }, '*');
-        } catch { /* cross-origin guard */ }
-      }}
-    />
-  );
-}
-
 // ─── Intraday Report ──────────────────────────────────────────────────────────
 
 function IntradayReportView({ r }: { r: IntradayReport }) {
@@ -791,6 +754,10 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
     morning:  '早盘前',
     auction:  '竞价',
     closing:  '收盘后',
+    policy:   '政策解读',
+    research: '研报解读',
+    notice:   '公告解读',
+    watchlist: '股池动态',
   };
 
   const handleToggle = async (item: HistoryItem) => {
@@ -840,14 +807,26 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
                 const isLoading = loadingId === item.id;
                 return (
                   <div key={item.id}>
-                    <button
+                    <div
+                      role="button"
+                      tabIndex={0}
                       onClick={() => handleToggle(item)}
-                      className="w-full flex items-center gap-3 px-6 py-3.5 hover:bg-gray-50 transition-colors text-left"
+                      className="w-full flex items-center gap-3 px-6 py-3.5 hover:bg-gray-50 transition-colors text-left cursor-pointer"
                     >
                       <span className={`shrink-0 text-xs px-2 py-0.5 rounded font-semibold ${
                         item.run_type === 'intraday'
                           ? 'bg-blue-50 text-blue-600'
-                          : 'bg-indigo-50 text-indigo-600'
+                          : item.run_type === 'policy'
+                            ? 'bg-emerald-50 text-emerald-600'
+                            : item.run_type === 'research'
+                              ? 'bg-violet-50 text-violet-600'
+                              : item.run_type === 'notice'
+                                ? 'bg-orange-50 text-orange-600'
+                                : item.run_type === 'watchlist'
+                                  ? 'bg-rose-50 text-rose-600'
+                                  : item.run_type === 'info_brief'
+                                    ? 'bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-700'
+                                    : 'bg-indigo-50 text-indigo-600'
                       }`}>
                         {RUN_TYPE_LABEL[item.run_type] ?? item.run_type}
                       </span>
@@ -855,12 +834,22 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
                       {item.summary && (
                         <span className="text-xs text-gray-400 truncate flex-1">{item.summary}</span>
                       )}
-                      <span className="ml-auto shrink-0">
+                      <span
+                        onClick={e => e.stopPropagation()}
+                        className="shrink-0"
+                      >
+                        <PushToWecomButton
+                          mode="agent-report"
+                          rowId={item.id as number}
+                          label="推"
+                        />
+                      </span>
+                      <span className="ml-1 shrink-0">
                         {isExpanded
                           ? <ChevronUp className="w-3.5 h-3.5 text-gray-400" />
                           : <ChevronDown className="w-3.5 h-3.5 text-gray-400" />}
                       </span>
-                    </button>
+                    </div>
 
                     {isExpanded && (
                       <div className="px-6 pb-6 pt-4 bg-gray-50 border-t border-gray-100">
@@ -922,6 +911,7 @@ function AgentPageInner() {
   const [report, setReport]     = useState<AgentReport | null>(null);
   const [history, setHistory]   = useState<HistoryItem[]>([]);
   const [error, setError]       = useState<string | null>(null);
+  const [infoBriefLoading, setInfoBriefLoading] = useState(false);
 
   const pollRef         = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopConfirmRef  = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -935,19 +925,27 @@ function AgentPageInner() {
 
   const loadLatest = async () => {
     const data = await safeFetch<AgentReport>('/api/agent/latest');
+    // 关注股池分析有自己的页面（关注股池），AI 智能分析页不显示
+    if (data && (data as { run_type?: string }).run_type === 'watchlist') {
+      setReport(null);
+      return;
+    }
     if (data) setReport(data);
   };
 
   const loadHistory = async () => {
     const raw = await safeFetch<Array<{ id: number | string; run_time: string; run_type: string; summary_text?: string; summary_time?: string; has_html?: boolean }>>('/api/agent/history');
     if (raw) {
-      setHistory(raw.map(item => ({
-        id: item.id,
-        run_time: item.run_time,
-        run_type: item.run_type,
-        summary: item.summary_text,
-        has_html: item.has_html,
-      })));
+      setHistory(raw
+        // 关注股池分析有自己的页面（关注股池），AI 智能分析页不显示
+        .filter(item => item.run_type !== 'watchlist')
+        .map(item => ({
+          id: item.id,
+          run_time: item.run_time,
+          run_type: item.run_type,
+          summary: item.summary_text,
+          has_html: item.has_html,
+        })));
     }
   };
 
@@ -982,23 +980,53 @@ function AgentPageInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleTrigger = async (run_type: 'intraday' | 'morning' | 'evening') => {
+  const handleTrigger = async (run_type: TriggerRunType, pool?: string) => {
     setError(null);
     try {
       const res = await fetch('/api/agent/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ run_type }),
+        body: JSON.stringify(pool ? { run_type, pool } : { run_type }),
       });
       const json = await res.json();
       if (!json.success) {
         setError(json.error ?? '启动失败');
         return;
       }
+      // 已有其他管道在跑：后端返回 success=true 但 data.status='already_running'，
+      // 给用户友好提示而不是显示别家的进度条
+      if (json.data?.status === 'already_running') {
+        setError(formatAlreadyRunningMessage(json.data as AlreadyRunningData));
+        return;
+      }
       const newStatus = await loadStatus();
       if (newStatus?.running) startPolling();
     } catch {
       setError('请求失败，请检查后端服务');
+    }
+  };
+
+  const handleInfoBrief = async (run_type: 'morning' | 'intraday' | 'evening') => {
+    setError(null);
+    setInfoBriefLoading(true);
+    try {
+      const res = await fetch('/api/info_brief/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_type }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        setError(json.error ?? '信息情报简报启动失败');
+        return;
+      }
+      // 成功, 刷新历史列表
+      await loadLatest();
+      await loadHistory();
+    } catch {
+      setError('请求失败，请检查后端服务');
+    } finally {
+      setInfoBriefLoading(false);
     }
   };
 
@@ -1033,10 +1061,14 @@ function AgentPageInner() {
     morning:  '早盘前',
     auction:  '竞价',
     closing:  '收盘后',
+    policy:   '政策解读',
+    research: '研报解读',
+    notice:   '公告解读',
+    watchlist: '股池动态',
   };
-  const lastRunLabel = status?.last_run
+  const lastRunLabel = status?.last_run && status.last_run_type !== 'watchlist'
     ? `${status.last_run}${status.last_run_type ? `（${RUN_TYPE_LABEL_STATUS[status.last_run_type] ?? status.last_run_type}）` : ''}`
-    : undefined;
+    : (status?.last_run ?? undefined);
 
   return (
     <div className="space-y-0">
@@ -1069,6 +1101,7 @@ function AgentPageInner() {
 
       <TriggerPanel running={isRunning} onTrigger={handleTrigger} />
 
+      <InfoBriefPanel running={isRunning || infoBriefLoading} onTrigger={handleInfoBrief} />
 
       {report ? (
         report.has_html && report.id

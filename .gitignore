@@ -5,6 +5,31 @@ tmp/
 db/*.db
 db/*.db-shm
 db/*.db-wal
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# 量化数据 (本地可再生, 不传)
+data/raw/
+data/processed/
+data/pic/
+data/auto_runner_logs/
+data/completion_flags/
+data/market_radar.db
+data/results/
+data/
+
+# 崩溃报告 / 临时转储
+*.dmp
+None
+
+# Claude Code 本地配置 (settings 含密钥, 不提交)
+.claude/settings.json
+.claude/settings.local.json
+.claude/projects/
+.claude/todos/
+.claude/plans/
+.claude/wiki/
 
 # Codex / Claude tooling caches
 .codegraph/
@@ -67,3 +92,23 @@ dashboard/.vite/
 # pnpm
 dashboard/node_modules/
 dashboard/pnpm-lock.yaml
+ifind-mcp-config.txt
+
+# 根目录遗留数据库 / 用户脚本
+market_radar.db
+*.command
+
+# QMT 券商专有文档（不在开源仓里放）
+docs/xtdata.pdf
+docs/xttrader.pdf
+
+# 本地子项目（各自独立 git 仓, 不混入主仓）
+quant-data-d1-main/
+quant-trader/
+
+# 顶层缓存 / 中间产物
+raw/
+daemon/
+
+# 历史归档（旧版顶底算法副本, 等 v2 稳定后直接 mv 到 .legacy）
+stock-top-and-bottom-analysis/

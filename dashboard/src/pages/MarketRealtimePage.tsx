@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { formatFlowYi } from '../lib/flowFormatters';
 
 // ─── 格式化 ───────────────────────────────────────────────────
 const fmtYi   = (v?: number | null) => v != null ? `${(v / 1e8).toFixed(2)}亿` : '--';
@@ -171,6 +172,7 @@ interface SF     { sector_name: string; change_pct: number; main_inflow: number;
 interface CF     { concept: string; change_pct: number; net_amount: number; lead_stock: string; lead_pct: number; }
 interface ZT     { stock_code: string; stock_name: string; zt_count: number; first_zt_time: string; sector: string; zb_count: number; seal_amount: number; }
 interface DT     { stock_code: string; stock_name: string; sector: string; first_dt_time: string; }
+interface DTV3   { stock_code: string; stock_name: string; sector: string; last_price: number; last_close: number; down_limit: number; }
 interface ZBGC   { stock_code: string; stock_name: string; first_zt_time: string; zb_count: number; amplitude: number; sector: string; }
 interface LHB    { stock_code: string; stock_name: string; net_buy: number; change_pct: number; interpret: string; }
 interface STRONG { stock_code: string; stock_name: string; change_pct: number; is_new_high: string; volume_ratio: number; reason: string; }
@@ -221,6 +223,8 @@ export function MarketRealtimePage() {
   const [cf,     setCf]     = useState<CF[]>([]);
   const [zt,     setZt]     = useState<ZT[]>([]);
   const [dt,     setDt]     = useState<DT[]>([]);
+  const [dtV2,   setDtV2]   = useState<DT[]>([]);
+  const [dtV3,   setDtV3]   = useState<DTV3[]>([]);
   const [zbgc,   setZbgc]   = useState<ZBGC[]>([]);
   const [lhb,    setLhb]    = useState<LHB[]>([]);
   const [strong, setStrong] = useState<STRONG[]>([]);
@@ -240,6 +244,8 @@ export function MarketRealtimePage() {
     apiFetch<CF[]>('/api/concept-flow?top_n=50').then(d => setCf(d ?? [])).catch(() => {});
     apiFetch<ZT[]>('/api/zt-pool?date=').then(d => setZt(d ?? [])).catch(() => {});
     apiFetch<DT[]>('/api/dt-pool?date=').then(d => setDt(d ?? [])).catch(() => {});
+    apiFetch<DT[]>('/api/dt-pool-v2?date=').then(d => setDtV2(d ?? [])).catch(() => {});
+    apiFetch<DTV3[]>('/api/dt-pool-v3?date=').then(d => setDtV3(d ?? [])).catch(() => {});
     apiFetch<ZBGC[]>('/api/zbgc-pool?date=').then(d => setZbgc(d ?? [])).catch(() => {});
     apiFetch<LHB[]>('/api/lhb?date=').then(d => setLhb(d ?? [])).catch(() => {});
     apiFetch<STRONG[]>('/api/strong-pool?date=').then(d => setStrong(d ?? [])).catch(() => {});
@@ -336,11 +342,27 @@ export function MarketRealtimePage() {
           </div>
         </div>
 
+        <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
+          <div className="text-xs text-gray-400 mb-2">实验跌停</div>
+          <div className="text-2xl font-bold text-emerald-600">{dtV2.length}</div>
+          <div className="text-xs text-gray-500 mt-1.5">
+            对照旧版 <b className="text-gray-700">{dt.length}</b>
+          </div>
+        </div>
+
+        <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
+          <div className="text-xs text-gray-400 mb-2">QMT跌停</div>
+          <div className="text-2xl font-bold text-teal-600">{dtV3.length}</div>
+          <div className="text-xs text-gray-500 mt-1.5">
+            对照实验 <b className="text-gray-700">{dtV2.length}</b>
+          </div>
+        </div>
+
         {/* 行业资金 */}
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
           <div className="text-xs text-gray-400 mb-2">行业资金净额</div>
           <div className={`text-lg font-bold ${sfNetTotal >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-            {sfNetTotal >= 0 ? '+' : ''}{(sfNetTotal / 1e8).toFixed(0)}亿
+            {sfNetTotal > 0 ? '+' : ''}{formatFlowYi(sfNetTotal)}
           </div>
           <div className="flex gap-1.5 mt-1.5 text-xs">
             <span className="text-red-400">↑{sfInCount}板块</span>
@@ -417,7 +439,7 @@ export function MarketRealtimePage() {
                 <span className="text-gray-400 font-mono w-4 flex-shrink-0">{i+1}</span>
                 <span className="font-medium text-gray-800">{d.sector_name}</span>
               </span>,
-              <span className="font-mono text-red-600">+{fmtYi(d.main_inflow)}</span>,
+              <span className="font-mono text-red-600">+{formatFlowYi(d.main_inflow)}</span>,
               <MiniBar ratio={d.main_inflow / sfInMax} isInflow={true} />,
               <span className={`font-mono ${numColor(d.change_pct)}`}>{fmtPct(d.change_pct)}</span>,
             ])}
@@ -429,7 +451,7 @@ export function MarketRealtimePage() {
                 <span className="text-gray-400 font-mono w-4 flex-shrink-0">{i+1}</span>
                 <span className="font-medium text-gray-800">{d.sector_name}</span>
               </span>,
-              <span className="font-mono text-green-600">{fmtYi(d.main_inflow)}</span>,
+              <span className="font-mono text-green-600">{formatFlowYi(d.main_inflow)}</span>,
               <MiniBar ratio={Math.abs(d.main_inflow) / sfOutMax} isInflow={false} />,
               <span className={`font-mono ${numColor(d.change_pct)}`}>{fmtPct(d.change_pct)}</span>,
             ])}

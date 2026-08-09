@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from quant.loader import DATA_ROOT, load_daily_snapshot, load_daily_range, get_latest_trade_date
+import quant.loader as _loader
+from quant.loader import load_daily_snapshot, load_daily_range, get_latest_trade_date
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +275,11 @@ def compute_chip_status(trade_date: str) -> None:
         logger.info("[daily_compute] chip_status %s: 无目标股票（涨停池和成交异动均为空）", trade_date)
         return
 
-    chip_dir = DATA_ROOT / "stock-chip-distribution"
+    data_root = _loader.DATA_ROOT
+    if not data_root:
+        logger.warning("[daily_compute] chip_status: DATA_ROOT 未配置，跳过")
+        return
+    chip_dir = data_root / "stock-chip-distribution"
     inserted = 0
 
     for code in target_codes:
@@ -359,7 +364,11 @@ def compute_research_activity(trade_date: str) -> None:
     """
     from db.storage import insert_research_activity
 
-    act_dir = DATA_ROOT / "stock-activation-records"
+    data_root = _loader.DATA_ROOT
+    if not data_root:
+        logger.warning("[daily_compute] research_activity: DATA_ROOT 未配置，跳过")
+        return
+    act_dir = data_root / "stock-activation-records"
     if not act_dir.exists():
         logger.warning("[daily_compute] research_activity: 调研记录目录不存在")
         return
@@ -490,7 +499,11 @@ def compute_concept_zt_density(trade_date: str) -> None:
             logger.info("[daily_compute] concept_zt_density %s: 无涨停股", trade_date)
             return
 
-        concept_dir = DATA_ROOT / "stock-popular-concept-detail"
+        data_root = _loader.DATA_ROOT
+        if not data_root:
+            logger.warning("[daily_compute] concept_zt_density: DATA_ROOT 未配置，跳过")
+            return
+        concept_dir = data_root / "stock-popular-concept-detail"
         if not concept_dir.exists():
             logger.warning("[daily_compute] concept_zt_density: 概念目录不存在")
             return
@@ -551,7 +564,11 @@ def compute_call_auction_stats(trade_date: str) -> None:
             logger.info("[daily_compute] call_auction_stats %s: 无涨停股", trade_date)
             return
 
-        auction_dir = DATA_ROOT / "stock-call-auction-data"
+        data_root = _loader.DATA_ROOT
+        if not data_root:
+            logger.warning("[daily_compute] call_auction_stats: DATA_ROOT 未配置，跳过")
+            return
+        auction_dir = data_root / "stock-call-auction-data"
         if not auction_dir.exists():
             logger.warning("[daily_compute] call_auction_stats: 竞价数据目录不存在")
             return

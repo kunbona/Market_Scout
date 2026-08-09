@@ -346,7 +346,6 @@ curl http://localhost:1200/wallstreetcn/live/a-stock
 | `northbound_flow` | 北向/南向资金 | 30 天 |
 | `xq_hot` | 雪球关注热度 top 50 | 7 天 |
 | `big_deal` | 大单异动 | 7 天 |
-| `market_pulse` | 全市场涨停快照 + 乐咕活跃度 | 30 天 |
 | `margin` | 融资融券余额 | 30 天 |
 | `block_trade` | 大宗交易 | 30 天 |
 | `holder_count` | 股东人数变化 | 30 天 |
@@ -406,7 +405,6 @@ market-radar/
 │   ├── eastmoney.py          # 行业资金流/龙虎榜/融资融券/大宗交易等
 │   ├── sector_heat.py        # 涨停/跌停/炸板/强势股池 + 概念热度
 │   ├── concept_flow.py       # 同花顺概念资金流（387个概念）
-│   ├── realtime_quote.py     # 全市场快照 + 乐咕活跃度
 │   ├── market_sentiment.py   # 人气飙升/北向资金/雪球热度/大单异动
 │   └── fundamentals.py       # mootdx 基本面财务/F10
 ├── quant/
