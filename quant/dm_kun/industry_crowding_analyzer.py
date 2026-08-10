@@ -4,8 +4,9 @@
 
 方法论要点（广发情绪投资系列）：
   拥挤度 = 行业成交额 / 全A成交额，MA5 平滑（熨平单日波动），衡量情绪/预期演绎程度。
-  法则一（比较区间）：只看近一年（~250 交易日）分位数，不拉长——行业逻辑变迁会使占比中枢漂移
-                      （新能源车 3-6%→4-9%→3-4.5%；白酒 1-4%→5%→2%）。
+  法则一（比较区间）：看近三年（~750 交易日）分位数，跨过牛熊周期更能识别真极端。
+                      行业逻辑确实会变（新能源车 3-6%→4-9%→3-4.5%；白酒 1-4%→5%→2%），
+                      但 1 年分位太短易在短期波动中误判"史无前例拥挤"。
   法则二（顶部规律）：分位 ≥80% → 拥挤，对利好钝化、对利空敏感，超额收益易阶段性见顶。
                       对主题类/稳定价值/顺周期有效；景气成长若景气上行可突破上限（弱指引）。
   法则三（底部规律）：分位 ≤20% → 出清，性价比回升。稳定价值/顺周期可左侧配置；
@@ -28,8 +29,10 @@ import pandas as pd
 
 # ==================== 配置 ====================
 DATA_DIR = os.environ.get("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata") + "/stock-trading-data-pro"
-LOOKBACK_CALENDAR = 400  # 日历天数，确保覆盖 ~260 个交易日（近一年250 + MA5预热）
-PERCENTILE_WINDOW = 250  # 近一年分位数窗口（交易日）
+# 三年分位: 750 个交易日 (~3 年), 用更长历史参考能识别真周期, 避免 1 年分位
+# 在短期波动中误判"史无前例拥挤". 老股票历史 19-35 年 (茅台 25 / 万科 35) 足够.
+LOOKBACK_CALENDAR = 1100  # 日历天数，确保覆盖 ~760 个交易日（3 年 750 + MA5 预热）
+PERCENTILE_WINDOW = 750  # 近三年分位数窗口（交易日）
 MA_WINDOW = 5            # 拥挤度 MA5 平滑
 TOP_QUANTILE = 80.0      # 顶部规律阈值（分位%）
 BOTTOM_QUANTILE = 20.0   # 底部规律阈值（分位%）
@@ -126,7 +129,7 @@ def load_panel(data_dir: str, analysis_date: str, n_jobs: int = 12) -> pd.DataFr
 
 
 def compute_crowding(full: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """核心：行业成交额占比(MA5) + 近一年分位数。
+    """核心：行业成交额占比(MA5) + 近三年分位数。
 
     返回 (每日行业占比矩阵[date × industry], 全A每日成交额)。
     """
@@ -152,7 +155,7 @@ def build_report(ratio_ma5: pd.DataFrame, total_amt: pd.Series, analysis_date: s
     """生成 Markdown 摘要（可嵌入市场分析报告 L3.5 层）。"""
     latest = ratio_ma5.index[-1]
     lines = []
-    lines.append(f"## 行业拥挤度（成交额占比 MA5，近一年分位）— {latest.strftime('%Y-%m-%d')}")
+    lines.append(f"## 行业拥挤度（成交额占比 MA5，近三年分位）— {latest.strftime('%Y-%m-%d')}")
     lines.append("")
 
     # ===== 全市场情绪权重：存量博弈检测 =====
@@ -193,33 +196,33 @@ def build_report(ratio_ma5: pd.DataFrame, total_amt: pd.Series, analysis_date: s
             zone = "中性"
         rows.append({
             "行业": ind, "资产类别": asset, "占比MA5(%)": round(float(cur), 2),
-            "近一年分位(%)": pct, "5日方向": direction, "区间": zone,
-            "近一年均值(%)": round(float(year.mean()), 2),
-            "近一年最高(%)": round(float(year.max()), 2),
-            "近一年最低(%)": round(float(year.min()), 2),
+            "近三年分位(%)": pct, "5日方向": direction, "区间": zone,
+            "近三年均值(%)": round(float(year.mean()), 2),
+            "近三年最高(%)": round(float(year.max()), 2),
+            "近三年最低(%)": round(float(year.min()), 2),
         })
-    df = pd.DataFrame(rows).sort_values("近一年分位(%)", ascending=False)
+    df = pd.DataFrame(rows).sort_values("近三年分位(%)", ascending=False)
 
     crowded = df[df["区间"] == "🔴拥挤"]
     cleared = df[df["区间"] == "🟢出清"]
 
     if not crowded.empty:
-        lst = "、".join(f"{r['行业']}({r['近一年分位(%)']:.0f}%)" for _, r in crowded.iterrows())
+        lst = "、".join(f"{r['行业']}({r['近三年分位(%)']:.0f}%)" for _, r in crowded.iterrows())
         lines.append(f"**🔴 拥挤区（分位≥80%，顶部规律生效：对利好钝化、超额收益易阶段性见顶）**：{lst}")
     else:
         lines.append("**🔴 拥挤区（分位≥80%）**：无")
     if not cleared.empty:
-        lst = "、".join(f"{r['行业']}({r['近一年分位(%)']:.0f}%)" for _, r in cleared.iterrows())
+        lst = "、".join(f"{r['行业']}({r['近三年分位(%)']:.0f}%)" for _, r in cleared.iterrows())
         lines.append(f"\n**🟢 出清区（分位≤20%，情绪出清：价值类可左侧关注，成长类等右侧催化）**：{lst}")
     else:
         lines.append("\n**🟢 出清区（分位≤20%）**：无")
     lines.append("")
-    lines.append("| 行业 | 资产类别 | 占比MA5(%) | 近一年分位 | 5日方向 | 区间 | 年均值 | 年最高 | 年最低 |")
+    lines.append("| 行业 | 资产类别 | 占比MA5(%) | 近三年分位 | 5日方向 | 区间 | 年均值 | 年最高 | 年最低 |")
     lines.append("|------|---------|-----------|-----------|--------|------|--------|--------|--------|")
     for _, r in df.iterrows():
         lines.append(
-            f"| {r['行业']} | {r['资产类别']} | {r['占比MA5(%)']:.2f} | {r['近一年分位(%)']:.1f}% | "
-            f"{r['5日方向']} | {r['区间']} | {r['近一年均值(%)']:.2f} | {r['近一年最高(%)']:.2f} | {r['近一年最低(%)']:.2f} |"
+            f"| {r['行业']} | {r['资产类别']} | {r['占比MA5(%)']:.2f} | {r['近三年分位(%)']:.1f}% | "
+            f"{r['5日方向']} | {r['区间']} | {r['近三年均值(%)']:.2f} | {r['近三年最高(%)']:.2f} | {r['近三年最低(%)']:.2f} |"
         )
     lines.append("")
 
@@ -249,7 +252,7 @@ def main():
         print("[拥挤度] 错误：没有有效数据")
         sys.exit(1)
 
-    # 截断到 --date 且只保留近一年窗口
+    # 截断到 --date 且只保留近三年窗口
     full = full[full[COL_DATE] <= pd.Timestamp(analysis_date)]
     unique_dates = sorted(full[COL_DATE].unique())
     selected = unique_dates[-(PERCENTILE_WINDOW + MA_WINDOW):]
