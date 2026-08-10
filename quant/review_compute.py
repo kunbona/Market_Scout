@@ -187,6 +187,21 @@ def _market_overview(latest: pd.DataFrame, full: pd.DataFrame | None = None) -> 
     down_count = int((latest["涨跌幅"] < 0).sum()) if "涨跌幅" in latest.columns else 0
     stock_count = len(latest)
 
+    # ── 成交额 MA20 + ratio ────────────────────────────
+    # 跟市场数据页 (MarketSentimentPage AmountRatioGauge) 一致:
+    # 按交易日期 group 全市场成交额, 取前 20 个交易日 (不含当日) 均值.
+    # ratio 永远正数 (成交额 > 0), 4 档色: ≥1.5 红 / ≥1.0 浅红 / ≥0.8 橙 / else 绿
+    amount_ma20 = 0.0
+    amount_ratio = 0.0
+    if full is not None and "成交额(亿)" in full.columns and not full.empty:
+        latest_date = latest["交易日期"].iloc[0] if not latest.empty else None
+        daily_amount = full.groupby("交易日期")["成交额(亿)"].sum().sort_index()
+        prev = daily_amount[daily_amount.index < latest_date] if latest_date is not None else daily_amount
+        base = prev.iloc[-20:] if len(prev) >= 20 else prev
+        if not base.empty and total_amount > 0:
+            amount_ma20 = float(base.mean())
+            amount_ratio = round(total_amount / amount_ma20, 2)
+
     # ── 主力净流入 MA20 + 差额/比值 ────────────────────────────
     # 思路跟 amount_ma20 (daily_compute.py) 一致: 按交易日期 group 全市场
     # 主力净流入, 取最近 20 个交易日 (不含当日) 的均值作为 MA20.
@@ -214,6 +229,8 @@ def _market_overview(latest: pd.DataFrame, full: pd.DataFrame | None = None) -> 
 
     return {
         "total_amount_yi": round(total_amount, 2),
+        "amount_ma20": round(amount_ma20, 2),
+        "amount_ratio": amount_ratio,
         "main_net_yi": round(main_net, 2),
         "main_net_ma20": round(main_net_ma20, 2),
         "main_net_diff": main_net_diff,

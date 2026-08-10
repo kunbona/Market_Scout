@@ -9,6 +9,8 @@ interface ReviewData {
   computed_at: string;
   overview: {
     total_amount_yi: number;
+    amount_ma20?: number;
+    amount_ratio?: number;
     main_net_yi: number;
     main_net_ma20?: number;
     main_net_diff?: number;
@@ -142,7 +144,26 @@ export function ReviewPage() {
           {/* KPI 概览卡片 */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 px-4 mb-4">
             {[
-              { label: '全市场成交额', value: fmtYi(data.overview.total_amount_yi) },
+              {
+                label: '全市场成交额',
+                value: fmtYi(data.overview.total_amount_yi),
+                extra: (() => {
+                  // 跟市场数据页 AmountRatioGauge 4 档色完全一致
+                  const r = data.overview.amount_ratio;
+                  if (r == null) return undefined;
+                  if (r >= 1.5) return 'text-red-600';
+                  if (r >= 1.0) return 'text-red-400';
+                  if (r >= 0.8) return 'text-amber-500';
+                  return 'text-green-600';
+                })(),
+                sub: data.overview.amount_ratio != null ? (() => {
+                  const r = data.overview.amount_ratio!;
+                  return {
+                    text: `MA20 ${r.toFixed(2)}x`,
+                    color: r >= 1.5 ? 'text-red-500' : r >= 1.0 ? 'text-red-400' : r >= 0.8 ? 'text-amber-500' : 'text-green-600',
+                  };
+                })() : undefined,
+              },
               {
                 label: '主力净流入',
                 value: fmtYi(data.overview.main_net_yi),
