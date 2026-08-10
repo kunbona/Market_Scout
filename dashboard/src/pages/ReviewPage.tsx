@@ -536,6 +536,166 @@ function percentileColor(p: number): string {
 }
 
 // ════════════════════════════════════════════════════════════════
+// 选股推荐 (stock_recommender) 解析 + 图形化
+// ════════════════════════════════════════════════════════════════
+interface RecStock {
+  rank: number; code: string; name: string; price: number;
+  score: number; d20: number; mainNet3: number; reason: string;
+}
+interface RecIndustry {
+  name: string; stocks: RecStock[];
+}
+interface RecOverview {
+  scanIndustries: string[];
+  totalFiles: number;
+  totalStocks: number;
+  filteredStocks: number;
+}
+interface ParsedRecommender {
+  overview: RecOverview;
+  industries: RecIndustry[];
+}
+
+function parseRecommender(md: string): ParsedRecommender | null {
+  const overview: RecOverview = {
+    scanIndustries: [], totalFiles: 0, totalStocks: 0, filteredStocks: 0,
+  };
+  const scanM = md.match(/扫描行业:\s*\[([^\]]+)\]/);
+  if (scanM) {
+    overview.scanIndustries = scanM[1].match(/['"]([^'"]+)['"]/g)?.map(s => s.replace(/['"]/g, '')) || [];
+  }
+  const fileM = md.match(/共\s*(\d+)\s*个股票文件/);
+  if (fileM) overview.totalFiles = parseInt(fileM[1]);
+  const foundM = md.match(/找到\s*(\d+)\s*只目标行业股票/);
+  if (foundM) overview.totalStocks = parseInt(foundM[1]);
+  const filtM = md.match(/过滤后[（(][^）)]+[）)]:\s*(\d+)\s*只/);
+  if (filtM) overview.filteredStocks = parseInt(filtM[1]);
+
+  const industries: RecIndustry[] = [];
+  // 按 "## 行业名" 切分 (markdown h2)
+  const blocks = md.split(/\n## /);
+  for (const block of blocks) {
+    const firstLine = block.split('\n')[0].trim();
+    // "通信" "建筑材料" "电子" "有色金属" - 中文行业名
+    if (!firstLine || firstLine.includes('强势行业个股推荐') || firstLine.startsWith('|') || firstLine.startsWith('#')) continue;
+    if (!/^[\u4e00-\u9fa5]{2,8}$/.test(firstLine)) continue;
+    const stocks: RecStock[] = [];
+    const lines = block.split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length < 8) continue;
+      const codeM = c[1].match(/([a-z]{2}\d{6})/);
+      const priceM = c[3].match(/([\d.]+)/);
+      const scoreM = c[4].match(/(\d+)/);
+      const d20M = c[5].match(/([+\-]?[\d.]+)/);
+      const mainM = c[6].match(/([+\-]?[\d.]+)/);
+      if (codeM) {
+        stocks.push({
+          rank: parseInt(c[0]),
+          code: codeM[1],
+          name: c[2],
+          price: priceM ? parseFloat(priceM[1]) : 0,
+          score: scoreM ? parseInt(scoreM[1]) : 0,
+          d20: d20M ? parseFloat(d20M[1]) : 0,
+          mainNet3: mainM ? parseFloat(mainM[1]) : 0,
+          reason: c[7],
+        });
+      }
+    }
+    if (stocks.length > 0) industries.push({ name: firstLine, stocks });
+  }
+
+  if (!industries.length) return null;
+  return { overview, industries };
+}
+
+function RecommenderView({ md }: { md: string }) {
+  const p = useMemo(() => parseRecommender(md), [md]);
+  if (!p) {
+    return <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">{md}</pre>;
+  }
+  // 找全局最大综合分
+  const maxScore = Math.max(...p.industries.flatMap(i => i.stocks.map(s => s.score)), 1);
+  return (
+    <div className="space-y-4">
+      {/* 区域 1: 概览 */}
+      <div className="bg-white border border-gray-100 rounded-xl p-3">
+        <div className="flex items-center justify-between flex-wrap gap-2 text-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-gray-700">🔍 扫描行业</span>
+            {p.overview.scanIndustries.map(s => (
+              <span key={s} className="text-[10px] px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded">
+                {s}
+              </span>
+            ))}
+          </div>
+          <div className="flex items-center gap-3 text-[10px] text-gray-500">
+            <span>总股票: <span className="font-mono font-semibold text-gray-700">{p.overview.totalFiles}</span></span>
+            <span>目标行业: <span className="font-mono font-semibold text-gray-700">{p.overview.totalStocks}</span></span>
+            <span>过滤后: <span className="font-mono font-semibold text-red-600">{p.overview.filteredStocks}</span></span>
+          </div>
+        </div>
+      </div>
+      {/* 区域 2: 4 行业 × 10 股票表 */}
+      {p.industries.map(ind => (
+        <div key={ind.name} className="bg-white border border-gray-100 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <div className="text-sm font-semibold text-gray-700">{ind.name}</div>
+            <span className="text-[10px] text-gray-500">{ind.stocks.length} 只 · 按综合分排序</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-100">
+                  <th className="text-left py-1.5 pr-2 font-medium">#</th>
+                  <th className="text-left py-1.5 px-1 font-medium">代码</th>
+                  <th className="text-left py-1.5 px-1 font-medium">名称</th>
+                  <th className="text-right py-1.5 px-1 font-medium">现价</th>
+                  <th className="text-right py-1.5 px-1 font-medium">综合分</th>
+                  <th className="text-left py-1.5 px-1 font-medium" style={{ minWidth: 100 }}>强度</th>
+                  <th className="text-right py-1.5 px-1 font-medium">20日涨</th>
+                  <th className="text-right py-1.5 px-1 font-medium">主力3日</th>
+                  <th className="text-left py-1.5 pl-2 font-medium">核心理由</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ind.stocks.map(s => {
+                  const barPct = (s.score / maxScore) * 100;
+                  const barColor = s.score >= 70 ? 'bg-red-500' :
+                                   s.score >= 60 ? 'bg-orange-400' :
+                                   s.score >= 50 ? 'bg-yellow-400' : 'bg-gray-300';
+                  return (
+                    <tr key={s.code} className="border-b border-gray-50 hover:bg-gray-50/50">
+                      <td className="py-1.5 pr-2 text-gray-400 font-mono text-[10px]">{s.rank}</td>
+                      <td className="py-1.5 px-1 font-mono text-[10px] text-gray-500">{s.code}</td>
+                      <td className="py-1.5 px-1 font-medium text-gray-700 whitespace-nowrap">{s.name}</td>
+                      <td className="py-1.5 px-1 text-right font-mono text-gray-700">{s.price.toFixed(2)}</td>
+                      <td className="py-1.5 px-1 text-right font-mono font-semibold text-gray-800">{s.score}</td>
+                      <td className="py-1.5 px-1">
+                        <div className="h-2.5 bg-gray-50 rounded overflow-hidden">
+                          <div className={`h-full rounded ${barColor}`} style={{ width: `${barPct}%` }} />
+                        </div>
+                      </td>
+                      <td className={`py-1.5 px-1 text-right font-mono ${pctColor(s.d20)}`}>
+                        {s.d20 > 0 ? '+' : ''}{s.d20.toFixed(1)}%
+                      </td>
+                      <td className={`py-1.5 px-1 text-right font-mono ${pctColor(s.mainNet3)}`}>
+                        {s.mainNet3 > 0 ? '+' : ''}{s.mainNet3.toFixed(1)}亿
+                      </td>
+                      <td className="py-1.5 pl-2 text-gray-600 text-[10px]">{s.reason}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
 // 主题阶梯 (theme_ladder) 解析 + 6 区域图形化
 // ════════════════════════════════════════════════════════════════
 interface SentimentSummary {
@@ -2842,6 +3002,8 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
           <IndustryEnhancedView md={cache.markdown} />
         ) : name === 'theme-ladder' ? (
           <ThemeLadderView md={cache.markdown} />
+        ) : name === 'stock-recommender' ? (
+          <RecommenderView md={cache.markdown} />
         ) : (
           <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
             {cache.markdown}
