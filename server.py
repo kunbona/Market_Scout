@@ -222,19 +222,38 @@ _DM_KUN_CACHE: dict[str, dict] = {
 _DM_KUN_LOCK = threading.Lock()
 
 
-def _dm_kun_run_one(name: str, fn) -> None:
-    """跑一个 quant.dm_kun 脚本, 抓 stdout 当 markdown 存 cache. 任何异常都吞掉, 不影响 server."""
+def _dm_kun_run_one(name: str, script_module: str) -> None:
+    """跑一个 quant.dm_kun 脚本 (独立子进程), 抓 stdout 当 markdown 存 cache.
+
+    关键: 用 subprocess.run 起独立 Python 进程, capture_output=True 拿隔离的 stdout.
+    不能直接调 main() 函数, 因为 main() 内部 ProcessPoolExecutor fork 的子进程
+    stdout 直连父进程 fd, redirect_stdout 抓不到, 会跟并发跑的兄弟脚本串行.
+    独立子进程 → stdout 完全隔离 → 干净 cache.
+    """
+    import subprocess as _sp
     with _DM_KUN_LOCK:
         _DM_KUN_CACHE[name]["loading"] = True
         _DM_KUN_CACHE[name]["error"] = None
     try:
-        buf = _io.StringIO()
-        with _redirect_stdout(buf):
-            fn()
-        text = buf.getvalue() or ""
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        result = _sp.run(
+            [sys.executable, "-m", f"quant.dm_kun.{script_module}"],
+            capture_output=True, text=True, timeout=180,
+            cwd=repo_root, env=os.environ.copy(),
+        )
+        # 优先 stdout, 如果有 stderr 警告也保留 (前面)
+        text = result.stdout or ""
+        if result.returncode != 0 and not text:
+            text = (result.stderr or "")[:4000]
         with _DM_KUN_LOCK:
             _DM_KUN_CACHE[name]["markdown"] = text
             _DM_KUN_CACHE[name]["computed_at"] = datetime.now().isoformat(timespec="seconds")
+            if result.returncode != 0:
+                _DM_KUN_CACHE[name]["error"] = f"exit {result.returncode}"
+    except _sp.TimeoutExpired:
+        with _DM_KUN_LOCK:
+            _DM_KUN_CACHE[name]["error"] = "timeout (180s)"
+        print(f"[dm_kun] {name} run timeout")
     except Exception as e:
         with _DM_KUN_LOCK:
             _DM_KUN_CACHE[name]["error"] = f"{type(e).__name__}: {e}"
@@ -244,22 +263,25 @@ def _dm_kun_run_one(name: str, fn) -> None:
             _DM_KUN_CACHE[name]["loading"] = False
 
 
+# Script module 名 → cache key
+_DM_KUN_SCRIPT = {
+    "market_regime":     "market_regime_analyzer",
+    "sentiment_cycle":   "sentiment_cycle_analyzer",
+    "industry_crowding": "industry_crowding_analyzer",
+}
+
+
 def _dm_kun_prewarm() -> None:
-    """server 启动后, 后台线程跑 3 个分析填 cache. 失败不阻塞."""
-    from quant.dm_kun import (
-        market_regime_analyzer,
-        sentiment_cycle_analyzer,
-        industry_crowding_analyzer,
-    )
-    targets = [
-        ("market_regime",     market_regime_analyzer.main),
-        ("sentiment_cycle",   sentiment_cycle_analyzer.main),
-        ("industry_crowding", industry_crowding_analyzer.main),
-    ]
-    def _spawn(name, fn):
+    """server 启动后, 后台线程跑 3 个分析填 cache. 失败不阻塞.
+
+    串行跑 (不并发): subprocess 各自独立 stdout, 内容已隔离. 串行只是为了避免
+    3 个脚本同时跑时占满内存 (sentiment 5879 股票 + industry 5477 同时跑会 ~6GB).
+    累计耗时约 75s (industry 5s + sentiment 60s + regime 10s).
+    """
+    def _spawn(name, script_module):
         try:
             print(f"[dm_kun] prewarm {name} ...", flush=True)
-            _dm_kun_run_one(name, fn)
+            _dm_kun_run_one(name, script_module)
             with _DM_KUN_LOCK:
                 cached = _DM_KUN_CACHE[name]
             if cached.get("error"):
@@ -270,10 +292,11 @@ def _dm_kun_prewarm() -> None:
         except Exception as e:
             print(f"[dm_kun] prewarm {name} crash: {e}")
 
-    for name, fn in targets:
-        # daemon=True 让 server 退出时线程一起退; 三个脚本并发跑 (各占 1 核)
-        t = threading.Thread(target=_spawn, args=(name, fn), daemon=True, name=f"dm_kun_{name}")
-        t.start()
+    def _runner():
+        for name, mod in _DM_KUN_SCRIPT.items():
+            _spawn(name, mod)
+    t = threading.Thread(target=_runner, daemon=True, name="dm_kun_prewarm")
+    t.start()
 
 
 _QMT_BACKGROUND_REFRESH_COOLDOWN_SECONDS = 30.0
@@ -1916,17 +1939,7 @@ def api_dm_kun_recompute(name: str):
         if _DM_KUN_CACHE[cache_key]["loading"]:
             return _err(f"{name} 已在计算中, 请等完成", 409)
     def _runner():
-        from quant.dm_kun import (
-            market_regime_analyzer,
-            sentiment_cycle_analyzer,
-            industry_crowding_analyzer,
-        )
-        fn_map = {
-            "market_regime":     market_regime_analyzer.main,
-            "sentiment_cycle":   sentiment_cycle_analyzer.main,
-            "industry_crowding": industry_crowding_analyzer.main,
-        }
-        _dm_kun_run_one(cache_key, fn_map[cache_key])
+        _dm_kun_run_one(cache_key, _DM_KUN_SCRIPT[cache_key])
     threading.Thread(target=_runner, daemon=True, name=f"dm_kun_recompute_{name}").start()
     return _ok({"started": True, "name": name})
 

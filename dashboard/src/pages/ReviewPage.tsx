@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { TabHeader } from '../components/TabHeader';
 import { FilterTabs } from '../components/FilterTabs';
 import { apiFetch } from '../lib/api';
@@ -30,6 +30,10 @@ const REVIEW_TABS = [
   { id: 'style', label: '风格研判' },
   { id: 'structure', label: '结构分布' },
   { id: 'sentiment', label: '情绪' },
+  // DM-kun 市场分析 3 个新 tab (quant.dm_kun 脚本产出, server 后台预热填 cache)
+  { id: 'regime', label: '市场状态' },
+  { id: 'sentiment-cycle', label: '情绪周期' },
+  { id: 'industry-crowding', label: '行业拥挤' },
 ];
 
 export function ReviewPage() {
@@ -146,6 +150,9 @@ export function ReviewPage() {
             {activeTab === 'style' && <StyleTab data={data} />}
             {activeTab === 'structure' && <StructureTab data={data} />}
             {activeTab === 'sentiment' && <SentimentTab data={data} />}
+            {activeTab === 'regime' && <DmMarkdownTab name="market-regime" title="市场状态 (4 维: 趋势/波动/风格/宽度)" hint="30-60s 跑全市场+12 指数" />}
+            {activeTab === 'sentiment-cycle' && <DmMarkdownTab name="sentiment-cycle" title="情绪周期 (涨停/连板/炸板/涨跌停比)" hint="60s 跑 5879 只股票" />}
+            {activeTab === 'industry-crowding' && <DmMarkdownTab name="industry-crowding" title="行业拥挤度 (成交占比 × 近 1 年分位)" hint="5s 跑 5477 只股票 × 31 行业" />}
           </div>
         </>
       )}
@@ -346,6 +353,110 @@ function SentimentTab({ data }: { data: ReviewData }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─── DM-kun 通用 markdown Tab ──────────────────────────────
+// 给 review 页 3 个新 tab 共用: market-regime / sentiment-cycle / industry-crowding
+// 数据来源: server.py 的 quant.dm_kun.<脚本>.main() 后台预热填内存 cache
+// endpoint: GET /api/dm-kun/<name> 返 {markdown, computed_at, loading, error}
+//          POST /api/dm-kun/<name>/recompute 手动重算 (后台线程)
+
+interface DmCache {
+  markdown: string | null;
+  computed_at: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentiment-cycle' | 'industry-crowding'; title: string; hint: string }) {
+  const [cache, setCache] = useState<DmCache | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [recomputing, setRecomputing] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await apiFetch<DmCache>(`/api/dm-kun/${name}`);
+      setCache(d);
+    } catch (e: any) {
+      setCache({ markdown: null, computed_at: null, loading: false, error: e.message || '加载失败' });
+    } finally {
+      setLoading(false);
+    }
+  }, [name]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleRecompute = async () => {
+    if (recomputing) return;
+    if (!confirm(`重算 ${title}?\n${hint}\n跑完会自动刷新当前数据`)) return;
+    setRecomputing(true);
+    try {
+      await fetch(`/api/dm-kun/${name}/recompute`, { method: 'POST' });
+      // poll 最多 90s, 每 2s 拉一次, loading=false 就 break
+      const start = Date.now();
+      while (Date.now() - start < 90000) {
+        await new Promise(r => setTimeout(r, 2000));
+        const fresh = await apiFetch<DmCache>(`/api/dm-kun/${name}`);
+        setCache(fresh);
+        if (!fresh.loading) break;
+      }
+    } catch (e: any) {
+      setCache(prev => prev ? { ...prev, error: e.message || '重算失败' } : { markdown: null, computed_at: null, loading: false, error: e.message || '重算失败' });
+    } finally {
+      setRecomputing(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3 px-4">
+      {/* 状态条: 标题 + computed_at + loading + 重算按钮 */}
+      <div className="flex items-center gap-3 text-xs">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-gray-900 mb-1">{title}</div>
+          <div className="flex items-center gap-2 text-gray-400">
+            {cache?.computed_at ? (
+              <span>📅 {cache.computed_at} 计算</span>
+            ) : cache?.loading ? (
+              <span className="text-amber-500">⟳ 加载中...</span>
+            ) : (
+              <span>未计算</span>
+            )}
+            {recomputing && <span className="text-blue-500">⟳ 重算中...</span>}
+            <span className="text-gray-300">·</span>
+            <span className="text-gray-400">{hint}</span>
+          </div>
+        </div>
+        <button
+          onClick={handleRecompute}
+          disabled={recomputing || loading}
+          className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+        >
+          {recomputing ? '⏳ 重算中…' : '🔄 重算'}
+        </button>
+      </div>
+
+      {/* 错误提示 */}
+      {cache?.error && (
+        <div className="bg-red-50 border border-red-200 text-red-800 text-xs rounded-lg p-3">
+          ⚠ {cache.error}
+        </div>
+      )}
+
+      {/* markdown 内容 (脚本 main() 的 stdout 输出) */}
+      {cache?.markdown ? (
+        <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+          {cache.markdown}
+        </pre>
+      ) : !loading ? (
+        <div className="text-center text-gray-400 text-sm py-12">
+          暂无数据, 点 🔄 重算 跑一次
+        </div>
+      ) : null}
     </div>
   );
 }
