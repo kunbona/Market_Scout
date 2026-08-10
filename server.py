@@ -218,17 +218,22 @@ _DM_KUN_CACHE: dict[str, dict] = {
     "market_regime":     {"markdown": None, "computed_at": None, "loading": False, "error": None},
     "sentiment_cycle":   {"markdown": None, "computed_at": None, "loading": False, "error": None},
     "industry_crowding": {"markdown": None, "computed_at": None, "loading": False, "error": None},
+    "industry_enhanced": {"markdown": None, "computed_at": None, "loading": False, "error": None},
+    "theme_ladder":      {"markdown": None, "computed_at": None, "loading": False, "error": None},
+    "stock_recommender": {"markdown": None, "computed_at": None, "loading": False, "error": None},
 }
 _DM_KUN_LOCK = threading.Lock()
 
 
-def _dm_kun_run_one(name: str, script_module: str) -> None:
+def _dm_kun_run_one(name: str, script_module: str, extra_args: list[str] | None = None) -> None:
     """跑一个 quant.dm_kun 脚本 (独立子进程), 抓 stdout 当 markdown 存 cache.
 
     关键: 用 subprocess.run 起独立 Python 进程, capture_output=True 拿隔离的 stdout.
     不能直接调 main() 函数, 因为 main() 内部 ProcessPoolExecutor fork 的子进程
     stdout 直连父进程 fd, redirect_stdout 抓不到, 会跟并发跑的兄弟脚本串行.
     独立子进程 → stdout 完全隔离 → 干净 cache.
+
+    extra_args: 传给脚本的额外 CLI args (e.g. ["--summary-only", "电子", "有色金属"]).
     """
     import subprocess as _sp
     with _DM_KUN_LOCK:
@@ -236,9 +241,11 @@ def _dm_kun_run_one(name: str, script_module: str) -> None:
         _DM_KUN_CACHE[name]["error"] = None
     try:
         repo_root = os.path.dirname(os.path.abspath(__file__))
+        cmd = [sys.executable, "-m", f"quant.dm_kun.{script_module}"]
+        if extra_args:
+            cmd.extend(extra_args)
         result = _sp.run(
-            [sys.executable, "-m", f"quant.dm_kun.{script_module}"],
-            capture_output=True, text=True, timeout=180,
+            cmd, capture_output=True, text=True, timeout=180,
             cwd=repo_root, env=os.environ.copy(),
         )
         # 优先 stdout, 如果有 stderr 警告也保留 (前面)
@@ -263,25 +270,60 @@ def _dm_kun_run_one(name: str, script_module: str) -> None:
             _DM_KUN_CACHE[name]["loading"] = False
 
 
-# Script module 名 → cache key
+# Script module 名 → cache key (前端 url 里的 name 直接用 cache key)
 _DM_KUN_SCRIPT = {
-    "market_regime":     "market_regime_analyzer",
-    "sentiment_cycle":   "sentiment_cycle_analyzer",
-    "industry_crowding": "industry_crowding_analyzer",
+    "market_regime":      "market_regime_analyzer",
+    "sentiment_cycle":    "sentiment_cycle_analyzer",
+    "industry_crowding":  "industry_crowding_analyzer",
+    "industry_enhanced":  "industry_enhanced_analyzer",
+    "theme_ladder":       "theme_ladder_analyzer",
+    "stock_recommender":  "stock_recommender",
 }
 
 
+# 某些脚本需要额外 CLI args 才能 print md 到 stdout (默认行为是写文件):
+#   - industry_enhanced: 需 --summary-only 才会 print md (默认写文件到 kun/data/)
+#   - theme_ladder: 默认就 print md (再额外写文件), 无需 flag
+#   - stock_recommender: 必传行业名, 自动从 industry_crowding cache 抽 top 5 拥挤行业
+_DM_KUN_EXTRA_ARGS: dict[str, list[str]] = {
+    "industry_enhanced": ["--summary-only"],
+    "theme_ladder":      [],
+    "stock_recommender": [],  # 动态从 cache 拿 top 5 行业名
+}
+
+
+def _dm_kun_default_industries() -> list[str]:
+    """stock_recommender 默认行业: 从 industry_crowding cache 抽分位≥80% 的拥挤行业
+    (最多 5 个). 没 cache 就用 5 个常见行业兜底."""
+    with _DM_KUN_LOCK:
+        md = _DM_KUN_CACHE["industry_crowding"].get("markdown") or ""
+    # 抠 "🔴 拥挤区（分位≥80%...）**：" 后面那一行, 格式 "建筑材料(100%)、通信(98%)、医药生物(83%)"
+    # 注意 markdown `）**：` 之间有 markdown 加粗标记 `**`, regex 用 \*+ 容忍
+    import re as _re
+    m = _re.search(r"🔴\s*拥挤区（分位≥80%[^）]*）\s*\*+\s*[：:]\s*([^\n]+)", md)
+    if m:
+        # 抠出 "XXX(NN%)" 里的 XXX
+        names = _re.findall(r"([^、，,\s()]+)\(\d+%\)", m.group(1))
+        if names:
+            return names[:5]
+    return ["电子", "电力设备", "有色金属", "医药生物", "通信"]
+
+
 def _dm_kun_prewarm() -> None:
-    """server 启动后, 后台线程跑 3 个分析填 cache. 失败不阻塞.
+    """server 启动后, 后台线程跑 6 个分析填 cache. 失败不阻塞.
 
     串行跑 (不并发): subprocess 各自独立 stdout, 内容已隔离. 串行只是为了避免
     3 个脚本同时跑时占满内存 (sentiment 5879 股票 + industry 5477 同时跑会 ~6GB).
-    累计耗时约 75s (industry 5s + sentiment 60s + regime 10s).
+    累计耗时约 110s (industry 5s + sentiment 60s + regime 10s + enhanced 30s + ladder 10s + recommender 5s).
     """
     def _spawn(name, script_module):
         try:
+            # stock_recommender 必传行业名, 从 industry_crowding cache 拿 top 5
+            extra = list(_DM_KUN_EXTRA_ARGS.get(name, []))
+            if name == "stock_recommender":
+                extra.extend(_dm_kun_default_industries())
             print(f"[dm_kun] prewarm {name} ...", flush=True)
-            _dm_kun_run_one(name, script_module)
+            _dm_kun_run_one(name, script_module, extra)
             with _DM_KUN_LOCK:
                 cached = _DM_KUN_CACHE[name]
             if cached.get("error"):
@@ -1911,9 +1953,12 @@ def api_review_v2_dates():
 # POST /api/dm-kun/<name>/recompute 手动触发重算, 用于 daily 复盘后刷新数据.
 
 _DM_KUN_ENDPOINTS = {
-    "market-regime":     "market_regime",
-    "sentiment-cycle":   "sentiment_cycle",
-    "industry-crowding": "industry_crowding",
+    "market-regime":      "market_regime",
+    "sentiment-cycle":    "sentiment_cycle",
+    "industry-crowding":  "industry_crowding",
+    "industry-enhanced":  "industry_enhanced",
+    "theme-ladder":       "theme_ladder",
+    "stock-recommender":  "stock_recommender",
 }
 
 
@@ -1938,8 +1983,19 @@ def api_dm_kun_recompute(name: str):
     with _DM_KUN_LOCK:
         if _DM_KUN_CACHE[cache_key]["loading"]:
             return _err(f"{name} 已在计算中, 请等完成", 409)
+    # 解析 JSON body 拿额外 args (e.g. industries list for stock_recommender)
+    body = {}
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    user_industries = body.get("industries") if isinstance(body, dict) else None
     def _runner():
-        _dm_kun_run_one(cache_key, _DM_KUN_SCRIPT[cache_key])
+        extra = list(_DM_KUN_EXTRA_ARGS.get(cache_key, []))
+        if cache_key == "stock_recommender":
+            inds = user_industries if (isinstance(user_industries, list) and user_industries) else None
+            extra.extend(inds if inds else _dm_kun_default_industries())
+        _dm_kun_run_one(cache_key, _DM_KUN_SCRIPT[cache_key], extra)
     threading.Thread(target=_runner, daemon=True, name=f"dm_kun_recompute_{name}").start()
     return _ok({"started": True, "name": name})
 

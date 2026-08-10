@@ -30,10 +30,13 @@ const REVIEW_TABS = [
   { id: 'style', label: '风格研判' },
   { id: 'structure', label: '结构分布' },
   { id: 'sentiment', label: '情绪' },
-  // DM-kun 市场分析 3 个新 tab (quant.dm_kun 脚本产出, server 后台预热填 cache)
+  // DM-kun 市场分析 6 个 tab (quant.dm_kun 脚本产出, server 后台预热填 cache)
   { id: 'regime', label: '市场状态' },
   { id: 'sentiment-cycle', label: '情绪周期' },
   { id: 'industry-crowding', label: '行业拥挤' },
+  { id: 'industry-enhanced', label: '行业增强' },
+  { id: 'theme-ladder', label: '主题阶梯' },
+  { id: 'stock-recommender', label: '选股推荐' },
 ];
 
 export function ReviewPage() {
@@ -150,9 +153,12 @@ export function ReviewPage() {
             {activeTab === 'style' && <StyleTab data={data} />}
             {activeTab === 'structure' && <StructureTab data={data} />}
             {activeTab === 'sentiment' && <SentimentTab data={data} />}
-            {activeTab === 'regime' && <DmMarkdownTab name="market-regime" title="市场状态 (4 维: 趋势/波动/风格/宽度)" hint="30-60s 跑全市场+12 指数" />}
+            {activeTab === 'regime' && <DmMarkdownTab name="market-regime" title="市场状态 (4 维: 趋势/波动/风格/宽度)" hint="10s 跑 12 指数 + 2839 股票" />}
             {activeTab === 'sentiment-cycle' && <DmMarkdownTab name="sentiment-cycle" title="情绪周期 (涨停/连板/炸板/涨跌停比)" hint="60s 跑 5879 只股票" />}
-            {activeTab === 'industry-crowding' && <DmMarkdownTab name="industry-crowding" title="行业拥挤度 (成交占比 × 近 1 年分位)" hint="5s 跑 5477 只股票 × 31 行业" />}
+            {activeTab === 'industry-crowding' && <DmMarkdownTab name="industry-crowding" title="行业拥挤度 (成交占比 × 近 1 年分位)" hint="5s 跑 5477 只 × 31 行业" />}
+            {activeTab === 'industry-enhanced' && <DmMarkdownTab name="industry-enhanced" title="行业增强分析 (BIAS20 热力 + 抱团检测 + 二级热点 + 持续性)" hint="30s 跑 5477 只" />}
+            {activeTab === 'theme-ladder' && <DmMarkdownTab name="theme-ladder" title="主题阶梯 (广发机构视角: 题材热度梯次)" hint="10s 跑 31 行业" />}
+            {activeTab === 'stock-recommender' && <DmMarkdownTab name="stock-recommender" title="选股推荐 (按拥挤区 top 5 行业筛强势股)" hint="5s 自动选 top 5 拥挤行业" />}
           </div>
         </>
       )}
@@ -370,7 +376,7 @@ interface DmCache {
   error: string | null;
 }
 
-function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentiment-cycle' | 'industry-crowding'; title: string; hint: string }) {
+function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentiment-cycle' | 'industry-crowding' | 'industry-enhanced' | 'theme-ladder' | 'stock-recommender'; title: string; hint: string }) {
   const [cache, setCache] = useState<DmCache | null>(null);
   const [loading, setLoading] = useState(true);
   const [recomputing, setRecomputing] = useState(false);
