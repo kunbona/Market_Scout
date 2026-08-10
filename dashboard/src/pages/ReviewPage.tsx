@@ -536,6 +536,477 @@ function percentileColor(p: number): string {
 }
 
 // ════════════════════════════════════════════════════════════════
+// 主题阶梯 (theme_ladder) 解析 + 6 区域图形化
+// ════════════════════════════════════════════════════════════════
+interface SentimentSummary {
+  ztCount: number; ztNorm: string; ztLevel: string; ztNote: string;
+  highBan: string; highBanNorm: string;
+  firstBan: number; firstBanProj: string;
+}
+interface MainLineRow {
+  theme: string; todayZt: number; todayPct: number;
+  yestPct: number; prePct: number; judge: string;
+}
+interface PyramidRow {
+  theme: string; low: number; mid: number; high: number; topBan: string; shape: string;
+}
+interface PromotionRow {
+  path: string; yesterday: number; today: number; rate: number; note: string;
+}
+interface FiveClassMember {
+  role: string; name: string; code: string; note: string;
+}
+interface FiveClassGroup {
+  caliber: string; theme: string;
+  members: FiveClassMember[];
+}
+interface PoolStock {
+  pool: string; theme: string; code: string; name: string; reason: string;
+}
+interface ParsedThemeLadder {
+  summary: SentimentSummary;
+  mainLines: MainLineRow[];
+  hasMainLine: boolean;     // 题材荒 = false
+  pyramid: PyramidRow[];
+  promotion: PromotionRow[];
+  fiveClass: FiveClassGroup[];
+  pools: PoolStock[];
+  stage: string;            // 轮动补涨/题材荒/...
+  stageNote: string;
+}
+
+function parseThemeLadder(md: string): ParsedThemeLadder | null {
+  // 短线情绪
+  const summary: SentimentSummary = {
+    ztCount: 0, ztNorm: '', ztLevel: '', ztNote: '',
+    highBan: '', highBanNorm: '', firstBan: 0, firstBanProj: '',
+  };
+  const ztM = md.match(/涨停\s*(\d+)\s*家[（(]([^）)]+)[）)][^→]*→\s*([^→\n]+)[→\n]([^（\n]+)/);
+  if (ztM) {
+    summary.ztCount = parseInt(ztM[1]);
+    summary.ztNorm = ztM[2];
+    summary.ztLevel = ztM[3].trim();
+    summary.ztNote = ztM[4].trim();
+  }
+  const hbM = md.match(/高度板\s*(\d+B)[（(]([^）)]+)[）)]/);
+  if (hbM) {
+    summary.highBan = hbM[1];
+    summary.highBanNorm = hbM[2];
+  }
+  const fbM = md.match(/首板\s*(\d+)\s*家/);
+  if (fbM) summary.firstBan = parseInt(fbM[1]);
+  const projM = md.match(/今日首板\s*(\d+)\s*家\s*→\s*(\S+)/);
+  if (projM) summary.firstBanProj = projM[2];
+
+  // 主线判定
+  const mainLines: MainLineRow[] = [];
+  const mlBlock = md.match(/### 主线题材判定[\s\S]*?\n([\s\S]*?)(?=\n###|\*\*⚠️|\n\n)/);
+  if (mlBlock) {
+    const lines = mlBlock[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 5) {
+        const todayZtM = c[1].match(/(\d+)/);
+        const todayPctM = c[2].match(/(\d+)/);
+        const yestPctM = c[3].match(/(\d+)/);
+        const prePctM = c[4].match(/(\d+)/);
+        mainLines.push({
+          theme: c[0],
+          todayZt: todayZtM ? parseInt(todayZtM[1]) : 0,
+          todayPct: todayPctM ? parseInt(todayPctM[1]) : 0,
+          yestPct: yestPctM ? parseInt(yestPctM[1]) : 0,
+          prePct: prePctM ? parseInt(prePctM[1]) : 0,
+          judge: c[5] || '',
+        });
+      }
+    }
+  }
+  // 题材荒
+  const hasMainLine = mainLines.some(r => r.todayPct >= 40);
+  const droughtM = md.match(/\*\*⚠️ 题材荒[（(]无主线[）)]\*\*[：:]\s*([^\n]+(?:\n[^-#\n][^\n]*)*)/);
+  const drought = droughtM ? droughtM[1].trim() : '';
+
+  // 梯队金字塔
+  const pyramid: PyramidRow[] = [];
+  const pyBlock = md.match(/### 题材梯队金字塔[\s\S]*?\n([\s\S]*?)(?=\n###|\n\n)/);
+  if (pyBlock) {
+    const lines = pyBlock[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 6) {
+        pyramid.push({
+          theme: c[0],
+          low: parseInt(c[1]) || 0,
+          mid: parseInt(c[2]) || 0,
+          high: parseInt(c[3]) || 0,
+          topBan: c[4],
+          shape: c[5],
+        });
+      }
+    }
+  }
+
+  // 晋级率
+  const promotion: PromotionRow[] = [];
+  const prBlock = md.match(/### 晋级率[\s\S]*?\n([\s\S]*?)(?=\n###|\n\n)/);
+  if (prBlock) {
+    const lines = prBlock[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 4) {
+        const yestM = c[1].match(/(\d+)/);
+        const todayM = c[2].match(/(\d+)/);
+        const rateM = c[3].match(/(\d+)/);
+        promotion.push({
+          path: c[0],
+          yesterday: yestM ? parseInt(yestM[1]) : 0,
+          today: todayM ? parseInt(todayM[1]) : 0,
+          rate: rateM ? parseInt(rateM[1]) : 0,
+          note: c[4] || '',
+        });
+      }
+    }
+  }
+
+  // 五类结构 - 解析 3 段 (申万一级/二级/概念)
+  const fiveClass: FiveClassGroup[] = [];
+  // 申万一级
+  const sw1Block = md.match(/### 板块内五类结构[（(]申万一级[）)][\s\S]*?(?=\n###|\n\n###|$)/);
+  if (sw1Block) {
+    const sw1Lines = sw1Block[0].split('\n').filter(l => l.trim().startsWith('**'));
+    for (const line of sw1Lines) {
+      // "**医药生物** —— 龙头：... ｜ 人气股：... ｜ 中军：... ｜ 先锋：... ｜ 杂毛：..."
+      const themeM = line.match(/^\*\*([^*]+)\*\*\s*——\s*(.+)$/);
+      if (themeM) {
+        const theme = themeM[1].trim();
+        const content = themeM[2];
+        const members: FiveClassMember[] = [];
+        const parts = content.split(' ｜ ');
+        for (const p of parts) {
+          const m = p.match(/^(龙头|人气股|中军|先锋|杂毛)[：:]\s*(.+?)(?:（([^）]+)）)?$/);
+          if (m) {
+            const text = m[2].trim();
+            const codeM = text.match(/(\w{2}\d{6})/);
+            members.push({
+              role: m[1],
+              name: text.replace(/\(\w{2}\d{6}\)/, '').replace(/（[\d.亿]+家）/, '').trim(),
+              code: codeM ? codeM[1] : '',
+              note: m[3] || '',
+            });
+          }
+        }
+        if (members.length > 0) fiveClass.push({ caliber: '申万一级', theme, members });
+      }
+    }
+  }
+
+  // 观察池 - 5 池
+  const pools: PoolStock[] = [];
+  const poolPatterns: { pool: string; re: RegExp }[] = [
+    { pool: '容量核心', re: /\*\*容量核心\*\*[^*]*?\n([\s\S]*?)(?=\n\*\*|\n###|$)/ },
+    { pool: '情绪核心', re: /\*\*情绪核心\*\*[^*]*?\n([\s\S]*?)(?=\n\*\*|\n###|$)/ },
+    { pool: '人气股',   re: /\*\*人气股\*\*[^*]*?\n([\s\S]*?)(?=\n\*\*|\n###|$)/ },
+    { pool: '补涨候选', re: /\*\*补涨候选\*\*[^*]*?\n([\s\S]*?)(?=\n\*\*|\n###|$)/ },
+    { pool: '低吸候选', re: /\*\*低吸候选\*\*[^*]*?\n([\s\S]*?)(?=\n\*\*|\n###|$)/ },
+  ];
+  for (const { pool, re } of poolPatterns) {
+    const m = md.match(re);
+    if (!m) continue;
+    // 每行 "- [医药生物] 药明康德(sh603259) —— 题材成交额第1..."
+    for (const line of m[1].split('\n')) {
+      const lm = line.match(/-\s*\[([^\]]+)\]\s*(\S+?)\(([a-z]{2}\d{6})\)\s*——\s*(.+)$/);
+      if (lm) {
+        pools.push({ pool, theme: lm[1], name: lm[2], code: lm[3], reason: lm[4].trim() });
+      }
+    }
+  }
+
+  // 阶段判定
+  const stageM = md.match(/\*\*([^*]+阶段)\*\*[：:]?\s*([^\n]+(?:\n[^#*\n][^\n]*)*)/);
+  const stage = stageM ? stageM[1].trim() : '';
+  const stageNote = stageM ? stageM[2].trim() : '';
+
+  if (!mainLines.length && !pyramid.length && !promotion.length) return null;
+  return { summary, mainLines, hasMainLine: hasMainLine && !drought, pyramid, promotion, fiveClass, pools, stage, stageNote };
+}
+
+// 主题阶梯 - 顶部 4 数字卡
+function SentSummaryCards({ s, hasMainLine }: { s: SentimentSummary; hasMainLine: boolean }) {
+  const cards = [
+    { label: '涨停家数', value: `${s.ztCount}`, sub: s.ztNorm, color: s.ztCount >= 50 ? 'text-red-600' : s.ztCount >= 30 ? 'text-orange-600' : 'text-gray-600' },
+    { label: '高度板', value: s.highBan, sub: s.highBanNorm, color: 'text-purple-600' },
+    { label: '首板家数', value: `${s.firstBan}`, sub: s.firstBanProj, color: 'text-blue-600' },
+    { label: '主线条数', value: hasMainLine ? '有主线' : '题材荒', sub: hasMainLine ? '情绪一致' : '轮动补涨', color: hasMainLine ? 'text-red-600' : 'text-orange-600' },
+  ];
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {cards.map((c, i) => (
+        <div key={i} className="bg-white border border-gray-100 rounded-xl p-3">
+          <div className="text-[10px] text-gray-500 mb-1">{c.label}</div>
+          <div className={`text-xl font-bold ${c.color}`}>{c.value}</div>
+          <div className="text-[10px] text-gray-400 mt-0.5">{c.sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// 主线判定 - 8 行业 × 6 列 (今日/昨日/前日 占比横向条)
+function MainLineTable({ rows, hasMainLine }: { rows: MainLineRow[]; hasMainLine: boolean }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="text-xs font-semibold text-gray-700">🎯 主线题材判定 (涨停占比 ≥ 40% 连续 2 天 = 主线)</div>
+        <span className={`text-[10px] px-2 py-0.5 rounded ${hasMainLine ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-orange-50 text-orange-700 border border-orange-100'}`}>
+          {hasMainLine ? '✅ 主线存在' : '⚠️ 题材荒'}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-500 border-b border-gray-100">
+              <th className="text-left py-1.5 pr-2 font-medium">题材</th>
+              <th className="text-right py-1.5 px-1 font-medium">今日涨停</th>
+              <th className="text-left py-1.5 px-1 font-medium" colSpan={3}>3 日占比 (今日 / 昨日 / 前日)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => {
+              const max = Math.max(r.todayPct, r.yestPct, r.prePct, 1);
+              return (
+                <tr key={r.theme} className="border-b border-gray-50">
+                  <td className="py-1.5 pr-2 font-medium text-gray-700 whitespace-nowrap">{r.theme}</td>
+                  <td className="py-1.5 px-1 text-right font-mono font-semibold text-red-600">{r.todayZt}</td>
+                  <td className="py-1.5 px-1">
+                    <div className="flex items-center gap-1">
+                      <div className="w-16 h-3 bg-gray-50 rounded overflow-hidden">
+                        <div className="h-full bg-red-500 rounded" style={{ width: `${(r.todayPct / max) * 100}%` }} />
+                      </div>
+                      <span className="font-mono text-[10px] w-7 text-right">{r.todayPct}%</span>
+                    </div>
+                  </td>
+                  <td className="py-1.5 px-1">
+                    <div className="flex items-center gap-1">
+                      <div className="w-16 h-3 bg-gray-50 rounded overflow-hidden">
+                        <div className="h-full bg-orange-400 rounded" style={{ width: `${(r.yestPct / max) * 100}%` }} />
+                      </div>
+                      <span className="font-mono text-[10px] w-7 text-right">{r.yestPct}%</span>
+                    </div>
+                  </td>
+                  <td className="py-1.5 px-1">
+                    <div className="flex items-center gap-1">
+                      <div className="w-16 h-3 bg-gray-50 rounded overflow-hidden">
+                        <div className="h-full bg-yellow-400 rounded" style={{ width: `${(r.prePct / max) * 100}%` }} />
+                      </div>
+                      <span className="font-mono text-[10px] w-7 text-right">{r.prePct}%</span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// 梯队金字塔
+function PyramidTable({ rows }: { rows: PyramidRow[] }) {
+  const maxLow = Math.max(...rows.map(r => r.low), 1);
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs font-semibold text-gray-700 mb-3">🏛️ 题材梯队金字塔 (越完整持续性越强)</div>
+      <div className="space-y-2">
+        {rows.map(r => (
+          <div key={r.theme} className="flex items-center gap-2 text-xs">
+            <span className="w-20 truncate text-gray-700 font-medium" title={r.theme}>{r.theme}</span>
+            <div className="flex-1 flex items-center gap-1">
+              <div className="flex items-center" title={`低位 1-3B: ${r.low}家`}>
+                <div className="h-3 bg-gray-50 rounded overflow-hidden flex items-center">
+                  <div className="h-full bg-green-400 rounded-l" style={{ width: `${Math.max((r.low / maxLow) * 100, 5)}%`, minWidth: '8px' }} />
+                </div>
+                <span className="font-mono text-[10px] ml-1 w-5 text-green-700">{r.low}</span>
+              </div>
+              <div className="flex items-center" title={`中位 4-6B: ${r.mid}家`}>
+                <div className="h-3 bg-gray-50 rounded overflow-hidden flex items-center">
+                  <div className="h-full bg-orange-400 rounded" style={{ width: `${Math.max((r.mid / maxLow) * 100, 5)}%`, minWidth: r.mid > 0 ? '8px' : '0' }} />
+                </div>
+                <span className="font-mono text-[10px] ml-1 w-5 text-orange-700">{r.mid}</span>
+              </div>
+              <div className="flex items-center" title={`高位 7B+: ${r.high}家`}>
+                <div className="h-3 bg-gray-50 rounded overflow-hidden flex items-center">
+                  <div className="h-full bg-red-500 rounded-r" style={{ width: `${Math.max((r.high / maxLow) * 100, 5)}%`, minWidth: r.high > 0 ? '8px' : '0' }} />
+                </div>
+                <span className="font-mono text-[10px] ml-1 w-5 text-red-700">{r.high}</span>
+              </div>
+            </div>
+            <span className="font-mono text-[10px] text-gray-600 w-10 text-center">{r.topBan}</span>
+            <span className="text-[10px] text-gray-500 w-32 truncate" title={r.shape}>{r.shape}</span>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 text-[10px] text-gray-400 mt-2 pt-2 border-t border-gray-50">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-green-400 rounded"/>低位 1-3B</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-orange-400 rounded"/>中位 4-6B</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-red-500 rounded"/>高位 7B+</span>
+      </div>
+    </div>
+  );
+}
+
+// 晋级率
+function PromotionTable({ rows }: { rows: PromotionRow[] }) {
+  const maxYest = Math.max(...rows.map(r => r.yesterday), 1);
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs font-semibold text-gray-700 mb-3">📈 晋级率 (昨日 N 板 → 今日 N+1 板)</div>
+      <div className="space-y-2">
+        {rows.map(r => {
+          const barPct = (r.yesterday / maxYest) * 100;
+          const rateColor = r.rate >= 30 ? 'text-red-600' : r.rate >= 10 ? 'text-orange-600' : 'text-green-600';
+          return (
+            <div key={r.path} className="flex items-center gap-2 text-xs">
+              <span className="w-12 font-mono text-gray-700 font-semibold">{r.path}</span>
+              <div className="flex-1 flex items-center gap-2">
+                <span className="text-[10px] text-gray-500 w-12">基数 {r.yesterday}</span>
+                <div className="flex-1 h-3 bg-gray-50 rounded overflow-hidden">
+                  <div className="h-full bg-blue-400 rounded" style={{ width: `${barPct}%` }} />
+                </div>
+                <span className="text-[10px] text-gray-500 w-12">晋级 {r.today}</span>
+              </div>
+              <span className={`font-mono font-semibold w-12 text-right ${rateColor}`}>{r.rate}%</span>
+              <span className="text-[10px] text-gray-500 w-32 truncate" title={r.note}>{r.note}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// 五类结构 (按口径分组)
+function FiveClassView({ groups }: { groups: FiveClassGroup[] }) {
+  const calibers = ['申万一级', '申万二级', '概念口径'];
+  return (
+    <div className="space-y-3">
+      {calibers.map(cal => {
+        const themes = groups.filter(g => g.caliber === cal);
+        if (!themes.length) return null;
+        return (
+          <div key={cal} className="bg-white border border-gray-100 rounded-xl p-4">
+            <div className="text-xs font-semibold text-gray-700 mb-3">🎭 五类结构 · {cal} ({themes.length} 题材)</div>
+            <div className="space-y-3">
+              {themes.map((g, i) => (
+                <div key={i} className="rounded-lg border border-gray-100 p-2.5">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-xs font-semibold text-gray-700">{g.theme}</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-1.5 text-[10px]">
+                    {g.members.map((m, j) => {
+                      const roleColors: Record<string, string> = {
+                        '龙头': 'bg-red-50 text-red-700 border-red-100',
+                        '人气股': 'bg-orange-50 text-orange-700 border-orange-100',
+                        '中军': 'bg-blue-50 text-blue-700 border-blue-100',
+                        '先锋': 'bg-purple-50 text-purple-700 border-purple-100',
+                        '杂毛': 'bg-gray-50 text-gray-600 border-gray-100',
+                      };
+                      return (
+                        <div key={j} className={`rounded border px-1.5 py-1 ${roleColors[m.role] || ''}`}>
+                          <div className="text-[9px] opacity-70">{m.role}</div>
+                          <div className="font-semibold truncate" title={m.name}>{m.name}</div>
+                          <div className="font-mono text-[9px] opacity-70">{m.code}</div>
+                          {m.note && <div className="text-[9px] opacity-60 truncate" title={m.note}>{m.note}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 观察池 (5 池)
+function PoolView({ pools }: { pools: PoolStock[] }) {
+  const poolOrder = ['容量核心', '情绪核心', '人气股', '补涨候选', '低吸候选'];
+  const poolColors: Record<string, string> = {
+    '容量核心': 'bg-blue-50 text-blue-700 border-blue-200',
+    '情绪核心': 'bg-red-50 text-red-700 border-red-200',
+    '人气股':   'bg-orange-50 text-orange-700 border-orange-200',
+    '补涨候选': 'bg-purple-50 text-purple-700 border-purple-200',
+    '低吸候选': 'bg-green-50 text-green-700 border-green-200',
+  };
+  return (
+    <div className="space-y-3">
+      {poolOrder.map(pool => {
+        const list = pools.filter(p => p.pool === pool);
+        if (!list.length) return null;
+        return (
+          <div key={pool} className={`rounded-xl border p-3 ${poolColors[pool]}`}>
+            <div className="text-xs font-semibold mb-2 flex items-center gap-2">
+              <span>{pool}</span>
+              <span className="text-[10px] opacity-70">({list.length} 只)</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+              {list.map((s, i) => (
+                <div key={i} className="bg-white/70 rounded p-2 text-[10px]">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono opacity-60">[{s.theme}]</span>
+                    <span className="font-mono opacity-60">{s.code}</span>
+                  </div>
+                  <div className="font-semibold text-gray-800">{s.name}</div>
+                  <div className="opacity-70 truncate" title={s.reason}>{s.reason}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ThemeLadderView({ md }: { md: string }) {
+  const p = useMemo(() => parseThemeLadder(md), [md]);
+  if (!p) {
+    return <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">{md}</pre>;
+  }
+  return (
+    <div className="space-y-4">
+      {/* 区域 1: 4 数字卡 */}
+      <SentSummaryCards s={p.summary} hasMainLine={p.hasMainLine} />
+      {/* 区域 2: 阶段判定 */}
+      {p.stage && (
+        <div className="bg-white border border-gray-100 rounded-xl p-3">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-semibold text-gray-700">🎲 阶段判定</span>
+            <span className="text-[10px] px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded">
+              {p.stage}
+            </span>
+          </div>
+          <div className="text-[10px] text-gray-600 leading-relaxed">{p.stageNote}</div>
+        </div>
+      )}
+      {/* 区域 3: 主线判定 */}
+      {p.mainLines.length > 0 && <MainLineTable rows={p.mainLines} hasMainLine={p.hasMainLine} />}
+      {/* 区域 4: 梯队金字塔 */}
+      {p.pyramid.length > 0 && <PyramidTable rows={p.pyramid} />}
+      {/* 区域 5: 晋级率 */}
+      {p.promotion.length > 0 && <PromotionTable rows={p.promotion} />}
+      {/* 区域 6: 五类结构 (3 口径) */}
+      {p.fiveClass.length > 0 && <FiveClassView groups={p.fiveClass} />}
+      {/* 区域 7: 观察池 (5 池) */}
+      {p.pools.length > 0 && <PoolView pools={p.pools} />}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
 // 行业增强 (industry_enhanced) 解析 + 6 区域图形化
 // ════════════════════════════════════════════════════════════════
 interface TopSnapshotRow {
@@ -2369,6 +2840,8 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
           <SentimentCycleView md={cache.markdown} />
         ) : name === 'industry-enhanced' ? (
           <IndustryEnhancedView md={cache.markdown} />
+        ) : name === 'theme-ladder' ? (
+          <ThemeLadderView md={cache.markdown} />
         ) : (
           <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
             {cache.markdown}
