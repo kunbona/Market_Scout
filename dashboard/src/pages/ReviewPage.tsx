@@ -536,6 +536,532 @@ function percentileColor(p: number): string {
 }
 
 // ════════════════════════════════════════════════════════════════
+// 行业增强 (industry_enhanced) 解析 + 6 区域图形化
+// ════════════════════════════════════════════════════════════════
+interface TopSnapshotRow {
+  rank: number; name: string; upPct: number; zt: number; bigMeat: number;
+  aboveMA10: number; aboveMA20: number; avgChange: number;
+}
+interface Bias20Row {
+  rank: number; name: string; bias20Pct: number; d5Mean: number; d20Mean: number;
+  trend: string; persistDays: number;
+}
+interface HeatTrendRow {
+  name: string; values: number[]; direction: string;
+}
+interface HuddleRow {
+  name: string; level: string; huddleCount: string;
+  aboveMA10: number; aboveMA20: number; bigMeat: number; zt: number; score: number;
+}
+interface PersistenceRow {
+  window: string; corr: number; top10Retention: string; note: string;
+}
+interface RankChange {
+  direction: 'up' | 'down'; name: string; change: number;
+}
+interface ParsedIndustryEnhanced {
+  top10: TopSnapshotRow[];
+  bias20: Bias20Row[];
+  accelUp: { name: string; pp: number }[];
+  accelDown: { name: string; pp: number }[];
+  heatTrend: HeatTrendRow[];
+  huddle: HuddleRow[];
+  cyclePeriod: string;
+  huddleCount: string;
+  histHuddleTop: { name: string; pct: number }[];
+  persistence: PersistenceRow[];
+  rankUp: RankChange[];
+  rankDown: RankChange[];
+}
+
+function parseTableRow(line: string): string[] {
+  return line.split('|').map(s => s.trim()).filter(s => s.length > 0);
+}
+
+function parseIndustryEnhanced(md: string): ParsedIndustryEnhanced | null {
+  // 找 "### 今日行业综合快照 Top 10" 表
+  const top10Match = md.match(/### 今日行业综合快照 Top 10\s*\n\s*\n([\s\S]*?)(?=\n###|\n\n###|$)/);
+  const top10: TopSnapshotRow[] = [];
+  if (top10Match) {
+    const lines = top10Match[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 8) {
+        const upMatch = c[2].match(/(\d+)/);
+        const ztMatch = c[3].match(/(\d+)/);
+        const meatMatch = c[4].match(/(\d+)/);
+        const ma10Match = c[5].match(/(\d+)/);
+        const ma20Match = c[6].match(/(\d+)/);
+        const avgMatch = c[7].match(/([+\-]?[\d.]+)/);
+        top10.push({
+          rank: parseInt(c[0]),
+          name: c[1],
+          upPct: upMatch ? parseInt(upMatch[1]) : 0,
+          zt: ztMatch ? parseInt(ztMatch[1]) : 0,
+          bigMeat: meatMatch ? parseInt(meatMatch[1]) : 0,
+          aboveMA10: ma10Match ? parseInt(ma10Match[1]) : 0,
+          aboveMA20: ma20Match ? parseInt(ma20Match[1]) : 0,
+          avgChange: avgMatch ? parseFloat(avgMatch[1]) : 0,
+        });
+      }
+    }
+  }
+  // ── 31 行业 BIAS20 ──
+  const biasMatch = md.match(/### 31行业BIAS20热度排名[\s\S]*?\n([\s\S]*?)(?=\n###|\n\*\*热度)/);
+  const bias20: Bias20Row[] = [];
+  if (biasMatch) {
+    const lines = biasMatch[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 7) {
+        bias20.push({
+          rank: parseInt(c[0]),
+          name: c[1],
+          bias20Pct: parseFloat(c[2]),
+          d5Mean: parseFloat(c[3]),
+          d20Mean: parseFloat(c[4]),
+          trend: c[5],
+          persistDays: parseInt(c[6]),
+        });
+      }
+    }
+  }
+  // ── 热度加速变化 (文字段) ── 格式: "电子(变化+28.5pp)" ──
+  const accelUp: { name: string; pp: number }[] = [];
+  const accelDown: { name: string; pp: number }[] = [];
+  for (const m of md.matchAll(/\*\*热度加速上升\*\*:\s*([^\n]+)/g)) {
+    for (const piece of m[1].split(',')) {
+      const pm = piece.match(/(\S+)\(变化([+\-]?[\d.]+)pp\)/);
+      if (pm) accelUp.push({ name: pm[1], pp: parseFloat(pm[2]) });
+    }
+  }
+  for (const m of md.matchAll(/\*\*热度加速下滑\*\*:\s*([^\n]+)/g)) {
+    for (const piece of m[1].split(',')) {
+      const pm = piece.match(/(\S+)\(变化([+\-]?[\d.]+)pp\)/);
+      if (pm) accelDown.push({ name: pm[1], pp: parseFloat(pm[2]) });
+    }
+  }
+  // ── BIAS20 趋势 (近10日) ──
+  const trendMatch = md.match(/### BIAS20热度趋势[\s\S]*?\n([\s\S]*?)(?=\*Top 8|\n###|$)/);
+  const heatTrend: HeatTrendRow[] = [];
+  if (trendMatch) {
+    const lines = trendMatch[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 12) {
+        const values: number[] = [];
+        for (let j = 1; j <= 10; j++) {
+          const vm = c[j].match(/(\d+)/);
+          values.push(vm ? parseInt(vm[1]) : 0);
+        }
+        heatTrend.push({ name: c[0], values, direction: c[11] });
+      }
+    }
+  }
+  // ── 抱团检测 ──
+  const huddleMatch = md.match(/### 行业抱团检测[\s\S]*?\n([\s\S]*?)(?=\n###|\n\*\*当前周期|$)/);
+  const huddle: HuddleRow[] = [];
+  if (huddleMatch) {
+    const lines = huddleMatch[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 8) {
+        const ma10M = c[3].match(/(\d+)/);
+        const ma20M = c[4].match(/(\d+)/);
+        const meatM = c[5].match(/(\d+)/);
+        const ztM = c[6].match(/(\d+)/);
+        const scoreM = c[7].match(/([\d.]+)/);
+        huddle.push({
+          name: c[1], level: c[0], huddleCount: c[2],
+          aboveMA10: ma10M ? parseInt(ma10M[1]) : 0,
+          aboveMA20: ma20M ? parseInt(ma20M[1]) : 0,
+          bigMeat: meatM ? parseInt(meatM[1]) : 0,
+          zt: ztM ? parseInt(ztM[1]) : 0,
+          score: scoreM ? parseFloat(scoreM[1]) : 0,
+        });
+      }
+    }
+  }
+  // 当前周期 + 抱团行业数 + 历史抱团 Top 5
+  const cycleM = md.match(/\*\*当前周期\*\*:\s*([^\n]+)/);
+  const countM = md.match(/\*\*抱团行业数\*\*:\s*([^\n]+)/);
+  const histHuddleTop: { name: string; pct: number }[] = [];
+  const histM = md.match(/\*\*历史抱团频率 Top 5\*\*:\s*([^\n]+)/);
+  if (histM) {
+    for (const piece of histM[1].split(',')) {
+      const pm = piece.match(/(\S+)\((\d+)%\)/);
+      if (pm) histHuddleTop.push({ name: pm[1], pct: parseInt(pm[2]) });
+    }
+  }
+  // ── 多周期持续性 ──
+  const persistMatch = md.match(/### 多周期持续性分析\s*\n\s*\n([\s\S]*?)(?=\n###|\n\*\*排名大幅|$)/);
+  const persistence: PersistenceRow[] = [];
+  if (persistMatch) {
+    const lines = persistMatch[1].split('\n').filter(l => l.trim().startsWith('|') && !l.includes('---'));
+    for (let i = 1; i < lines.length; i++) {
+      const c = parseTableRow(lines[i]);
+      if (c.length >= 4) {
+        const corrM = c[1].match(/([+\-]?[\d.]+)/);
+        persistence.push({
+          window: c[0],
+          corr: corrM ? parseFloat(corrM[1]) : 0,
+          top10Retention: c[2],
+          note: c[3],
+        });
+      }
+    }
+  }
+  // 排名变化 (markdown 格式: "- ↑ 跃升: 国防军工(+26位), 有色金属(+26位), ...")
+  const rankUp: RankChange[] = [];
+  const rankDown: RankChange[] = [];
+  const upM = md.match(/↑ 跃升:\s*([^\n]+)/);
+  const downM = md.match(/↓ 下滑:\s*([^\n]+)/);
+  if (upM) {
+    for (const piece of upM[1].split(',')) {
+      const pm = piece.match(/(\S+)\(\+(\d+)位\)/);
+      if (pm) rankUp.push({ direction: 'up', name: pm[1], change: parseInt(pm[2]) });
+    }
+  }
+  if (downM) {
+    for (const piece of downM[1].split(',')) {
+      const pm = piece.match(/(\S+)\(-(\d+)位\)/);
+      if (pm) rankDown.push({ direction: 'down', name: pm[1], change: parseInt(pm[2]) });
+    }
+  }
+  if (!top10.length && !bias20.length && !huddle.length) return null;
+  return {
+    top10, bias20, accelUp, accelDown, heatTrend, huddle,
+    cyclePeriod: cycleM ? cycleM[1].trim() : '',
+    huddleCount: countM ? countM[1].trim() : '',
+    histHuddleTop, persistence, rankUp, rankDown,
+  };
+}
+
+function sparkPath(values: number[], width: number, height: number): string {
+  if (!values.length) return '';
+  const max = 100, min = 0;
+  const stepX = width / (values.length - 1);
+  return values.map((v, i) => {
+    const x = i * stepX;
+    const y = height - ((v - min) / (max - min)) * height;
+    return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(' ');
+}
+
+function IndustryEnhancedView({ md }: { md: string }) {
+  const p = useMemo(() => parseIndustryEnhanced(md), [md]);
+  if (!p) {
+    return <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">{md}</pre>;
+  }
+  return (
+    <div className="space-y-4">
+      {/* 区域 1: Top 10 综合快照 */}
+      {p.top10.length > 0 && <EnhancedTop10 rows={p.top10} />}
+      {/* 区域 2: 31 行业 BIAS20 + 加速变化 */}
+      {p.bias20.length > 0 && (
+        <EnhancedBias20
+          rows={p.bias20} accelUp={p.accelUp} accelDown={p.accelDown}
+        />
+      )}
+      {/* 区域 3: BIAS20 热度趋势 (sparkline) */}
+      {p.heatTrend.length > 0 && <EnhancedHeatTrend rows={p.heatTrend} />}
+      {/* 区域 4: 抱团检测 */}
+      {p.huddle.length > 0 && (
+        <EnhancedHuddle
+          rows={p.huddle}
+          cyclePeriod={p.cyclePeriod}
+          huddleCount={p.huddleCount}
+          histTop={p.histHuddleTop}
+        />
+      )}
+      {/* 区域 5: 持续性分析 + 排名变化 */}
+      <EnhancedPersistence
+        rows={p.persistence}
+        rankUp={p.rankUp}
+        rankDown={p.rankDown}
+      />
+    </div>
+  );
+}
+
+// 区域 1: Top 10 综合快照
+function EnhancedTop10({ rows }: { rows: TopSnapshotRow[] }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs text-gray-500 mb-3 font-semibold text-gray-700">
+        🏆 今日行业综合快照 Top 10
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+        {rows.map(r => (
+          <div key={r.name} className="rounded-lg border border-gray-100 p-2 hover:shadow-sm transition">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] text-gray-400 font-mono">#{r.rank}</span>
+              <span className={`text-[10px] font-mono font-semibold ${r.avgChange >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {r.avgChange >= 0 ? '+' : ''}{r.avgChange.toFixed(1)}%
+              </span>
+            </div>
+            <div className="text-xs font-semibold text-gray-700 truncate" title={r.name}>{r.name}</div>
+            <div className="text-[10px] text-gray-500 mt-1 space-y-0.5">
+              <div className="flex justify-between">
+                <span>上涨占比</span>
+                <span className={`font-mono ${r.upPct >= 80 ? 'text-red-600' : 'text-gray-700'}`}>{r.upPct}%</span>
+              </div>
+              <div className="flex justify-between">
+                <span>MA10/20</span>
+                <span className="font-mono">{r.aboveMA10}/{r.aboveMA20}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>涨停/大肉</span>
+                <span className="font-mono">{r.zt}/{r.bigMeat}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 区域 2: 31 行业 BIAS20 + 加速变化
+function EnhancedBias20({ rows, accelUp, accelDown }: {
+  rows: Bias20Row[];
+  accelUp: { name: string; pp: number }[];
+  accelDown: { name: string; pp: number }[];
+}) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs text-gray-500 mb-3 font-semibold text-gray-700">
+        📊 31 行业 BIAS20 热度排名 (中期趋势)
+      </div>
+      <div className="space-y-1 mb-3 max-h-72 overflow-y-auto">
+        {rows.map(r => (
+          <div key={r.name} className="flex items-center gap-2 text-xs">
+            <span className="w-6 text-right text-gray-400 font-mono text-[10px]">{r.rank}</span>
+            <span className="w-20 truncate text-gray-700" title={r.name}>{r.name}</span>
+            <div className="flex-1 h-3 bg-gray-50 rounded overflow-hidden">
+              <div
+                className={`h-full rounded ${
+                  r.bias20Pct >= 90 ? 'bg-red-500' :
+                  r.bias20Pct >= 70 ? 'bg-red-400' :
+                  r.bias20Pct >= 50 ? 'bg-orange-400' :
+                  r.bias20Pct >= 30 ? 'bg-yellow-400' : 'bg-gray-300'
+                }`}
+                style={{ width: `${r.bias20Pct}%` }}
+              />
+            </div>
+            <span className="w-12 text-right font-mono text-[10px] text-gray-600">{r.bias20Pct.toFixed(0)}%</span>
+            <span className={`w-12 text-right font-mono text-[10px] ${
+              r.trend.includes('加速') ? 'text-red-600 font-semibold' :
+              r.trend.includes('减速') ? 'text-green-600 font-semibold' : 'text-gray-600'
+            }`}>{r.trend}</span>
+            <span className="w-12 text-right font-mono text-[10px] text-gray-500">{r.persistDays}天</span>
+          </div>
+        ))}
+      </div>
+      {/* 加速变化 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-gray-50">
+        <div>
+          <div className="text-[10px] text-red-600 font-semibold mb-1.5">↑ 热度加速上升</div>
+          <div className="space-y-0.5">
+            {accelUp.map((x, i) => (
+              <div key={i} className="flex justify-between text-xs">
+                <span className="text-gray-700">{x.name}</span>
+                <span className="font-mono text-red-600">+{x.pp.toFixed(1)}pp</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] text-green-600 font-semibold mb-1.5">↓ 热度加速下滑</div>
+          <div className="space-y-0.5">
+            {accelDown.map((x, i) => (
+              <div key={i} className="flex justify-between text-xs">
+                <span className="text-gray-700">{x.name}</span>
+                <span className="font-mono text-green-600">{x.pp.toFixed(1)}pp</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 区域 3: BIAS20 趋势 sparkline
+function EnhancedHeatTrend({ rows }: { rows: HeatTrendRow[] }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs text-gray-500 mb-3 font-semibold text-gray-700">
+        📈 BIAS20 热度趋势 (近 10 日 · Top 8 + Bottom 8)
+      </div>
+      <div className="space-y-1.5">
+        {rows.map(r => {
+          const last = r.values[r.values.length - 1] || 0;
+          const first = r.values[0] || 0;
+          const up = last > first;
+          const lineColor = up ? '#ef4444' : '#22c55e';
+          return (
+            <div key={r.name} className="flex items-center gap-2 text-xs">
+              <span className="w-20 truncate text-gray-700" title={r.name}>{r.name}</span>
+              <svg width="160" height="20" className="flex-shrink-0">
+                <path d={sparkPath(r.values, 160, 20)} stroke={lineColor} strokeWidth="1.5" fill="none" />
+                <circle cx={160} cy={20 - (last / 100) * 20} r="2" fill={lineColor} />
+              </svg>
+              <div className="flex gap-0.5 text-[9px] font-mono text-gray-400 flex-1">
+                {r.values.map((v, i) => (
+                  <span key={i} className={v >= 50 ? 'text-red-500' : 'text-gray-500'}>{v}</span>
+                ))}
+              </div>
+              <span className={`w-8 text-right font-mono text-[11px] ${
+                r.direction === '↑' ? 'text-red-600' : 'text-green-600'
+              }`}>{r.direction}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// 区域 4: 抱团检测
+function EnhancedHuddle({ rows, cyclePeriod, huddleCount, histTop }: {
+  rows: HuddleRow[];
+  cyclePeriod: string;
+  huddleCount: string;
+  histTop: { name: string; pct: number }[];
+}) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="text-xs text-gray-500 font-semibold text-gray-700">
+          🔥 行业抱团检测 (5 日周期 · 多维度评分)
+        </div>
+        <div className="flex items-center gap-2 text-[10px]">
+          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded">
+            周期: {cyclePeriod}
+          </span>
+          <span className="px-2 py-0.5 bg-orange-50 text-orange-700 border border-orange-100 rounded">
+            抱团: {huddleCount}
+          </span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-500 border-b border-gray-100">
+              <th className="text-left py-1.5 pr-2 font-medium">行业</th>
+              <th className="text-left py-1.5 pr-2 font-medium">级别</th>
+              <th className="text-right py-1.5 px-1 font-medium">抱团</th>
+              <th className="text-right py-1.5 px-1 font-medium">MA10</th>
+              <th className="text-right py-1.5 px-1 font-medium">MA20</th>
+              <th className="text-right py-1.5 px-1 font-medium">大肉</th>
+              <th className="text-right py-1.5 px-1 font-medium">涨停</th>
+              <th className="text-right py-1.5 pl-1 font-medium">评分</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => {
+              const scoreBg = r.score >= 3.5 ? 'bg-red-100 text-red-700' :
+                              r.score >= 3.0 ? 'bg-orange-100 text-orange-700' :
+                              r.score >= 2.5 ? 'bg-yellow-50 text-yellow-700' : 'bg-gray-50 text-gray-600';
+              return (
+                <tr key={r.name} className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="py-1.5 pr-2 font-medium text-gray-700 whitespace-nowrap">{r.name}</td>
+                  <td className="py-1.5 pr-2 text-[10px] whitespace-nowrap">{r.level}</td>
+                  <td className="py-1.5 px-1 text-right font-mono text-gray-600">{r.huddleCount}</td>
+                  <td className="py-1.5 px-1 text-right font-mono text-gray-600">{r.aboveMA10}%</td>
+                  <td className="py-1.5 px-1 text-right font-mono text-gray-600">{r.aboveMA20}%</td>
+                  <td className="py-1.5 px-1 text-right font-mono text-gray-600">{r.bigMeat}家</td>
+                  <td className="py-1.5 px-1 text-right font-mono text-gray-600">{r.zt}家</td>
+                  <td className={`py-1.5 pl-1 text-right font-mono font-semibold rounded ${scoreBg}`}>
+                    {r.score.toFixed(1)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {histTop.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-50">
+          <div className="text-[10px] text-gray-500 font-semibold mb-1.5">📜 历史抱团频率 Top 5</div>
+          <div className="flex flex-wrap gap-2">
+            {histTop.map((h, i) => (
+              <span key={i} className="text-[10px] px-2 py-0.5 bg-orange-50 text-orange-700 border border-orange-100 rounded">
+                {h.name} {h.pct}%
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 区域 5: 持续性 + 排名变化
+function EnhancedPersistence({ rows, rankUp, rankDown }: {
+  rows: PersistenceRow[];
+  rankUp: RankChange[];
+  rankDown: RankChange[];
+}) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs text-gray-500 mb-3 font-semibold text-gray-700">
+        🔁 多周期持续性 + 排名变化 (5 日)
+      </div>
+      {rows.length > 0 && (
+        <table className="w-full text-xs mb-3">
+          <thead>
+            <tr className="text-gray-500 border-b border-gray-100">
+              <th className="text-left py-1.5 pr-2 font-medium">窗口</th>
+              <th className="text-right py-1.5 px-1 font-medium">Spearman 相关性</th>
+              <th className="text-right py-1.5 px-1 font-medium">Top10 留存率</th>
+              <th className="text-left py-1.5 pl-2 font-medium">说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.window} className="border-b border-gray-50">
+                <td className="py-1.5 pr-2 font-medium text-gray-700">{r.window}</td>
+                <td className={`py-1.5 px-1 text-right font-mono ${r.corr >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                  {r.corr >= 0 ? '+' : ''}{r.corr.toFixed(3)}
+                </td>
+                <td className="py-1.5 px-1 text-right font-mono text-gray-700">{r.top10Retention}</td>
+                <td className="py-1.5 pl-2 text-gray-600">{r.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-gray-50">
+        <div>
+          <div className="text-[10px] text-red-600 font-semibold mb-1.5">↑ 跃升行业 ({rankUp.length})</div>
+          <div className="space-y-0.5">
+            {rankUp.map((r, i) => (
+              <div key={i} className="flex justify-between text-xs">
+                <span className="text-gray-700">{r.name}</span>
+                <span className="font-mono text-red-600">+{r.change}位</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] text-green-600 font-semibold mb-1.5">↓ 下滑行业 ({rankDown.length})</div>
+          <div className="space-y-0.5">
+            {rankDown.map((r, i) => (
+              <div key={i} className="flex justify-between text-xs">
+                <span className="text-gray-700">{r.name}</span>
+                <span className="font-mono text-green-600">-{r.change}位</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
 // 市场状态 (market_regime) 解析 + 6 区域图形化
 // ════════════════════════════════════════════════════════════════
 interface IndexRow {
@@ -1841,6 +2367,8 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
           <IndustryCrowdingView md={cache.markdown} />
         ) : name === 'sentiment-cycle' ? (
           <SentimentCycleView md={cache.markdown} />
+        ) : name === 'industry-enhanced' ? (
+          <IndustryEnhancedView md={cache.markdown} />
         ) : (
           <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
             {cache.markdown}
