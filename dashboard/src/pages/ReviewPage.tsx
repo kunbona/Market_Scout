@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { TabHeader } from '../components/TabHeader';
 import { FilterTabs } from '../components/FilterTabs';
 import { apiFetch } from '../lib/api';
@@ -163,6 +163,15 @@ export function ReviewPage() {
                     color: r >= 1.5 ? 'text-red-500' : r >= 1.0 ? 'text-red-400' : r >= 0.8 ? 'text-amber-500' : 'text-green-600',
                   };
                 })() : undefined,
+                // 学习自 MarketSentimentPage.AmountRatioGauge: 0-2x 量程水平 Gauge
+                // 1.0 = 均值线 (50% 位置), 复用 kpi-gauge-bar CSS 动画
+                gauge: data.overview.amount_ratio != null ? (() => {
+                  const r = data.overview.amount_ratio!;
+                  return {
+                    ratio: r,
+                    color: r >= 1.5 ? '#ef4444' : r >= 1.0 ? '#f87171' : r >= 0.8 ? '#f59e0b' : '#16a34a',
+                  };
+                })() : undefined,
               },
               {
                 label: '主力净流入',
@@ -186,6 +195,7 @@ export function ReviewPage() {
                 <div className="text-xs text-gray-400 mb-1">{kpi.label}</div>
                 <div className={`text-lg font-bold ${kpi.extra || 'text-gray-900'}`}>{kpi.value}</div>
                 {kpi.sub && <div className={`text-[10px] mt-0.5 font-mono ${kpi.sub.color}`}>{kpi.sub.text}</div>}
+                {kpi.gauge && <MiniGauge ratio={kpi.gauge.ratio} color={kpi.gauge.color} />}
               </div>
             ))}
           </div>
@@ -509,6 +519,33 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
           暂无数据, 点 🔄 重算 跑一次
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// ─── 迷你水平 Gauge (学习自 MarketSentimentPage.AmountRatioGauge) ─────
+// 跟市场数据页 AmountRatioGauge 一样: 0-2x 量程, 1.0 = 均值线 (50% 位置)
+// 复用 .kpi-gauge-bar CSS 动画, 不画底部 0/均值/2x 标尺 (KPI 卡空间有限)
+function MiniGauge({ ratio, color }: {
+  ratio: number; color: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ref.current) {
+      // CSS 公式: width = calc(min(pct, 200) / 200 * 100%)
+      // ratio 0-2x → pct 0-200, ratio=1.0 → width=50% (均值线位置)
+      ref.current.style.setProperty('--gauge-target', String(Math.min(Math.max(ratio, 0), 2) * 100));
+    }
+  }, [ratio]);
+  return (
+    <div className="relative h-1.5 bg-gray-100 rounded-full overflow-hidden mt-1.5" title={`${ratio.toFixed(2)}x`}>
+      <div
+        ref={ref}
+        className="kpi-gauge-bar absolute left-0 top-0 h-full rounded-full"
+        style={{ background: color }}
+      />
+      {/* 均值线: 50% 处 (即 ratio=1.0 时条形宽度的对应位置) */}
+      <div className="absolute top-0 bottom-0 w-px bg-gray-400/60" style={{ left: '50%' }} />
     </div>
   );
 }
