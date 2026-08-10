@@ -1768,6 +1768,30 @@ def api_review_v2_run():
         return _err(exc)
 
 
+@app.route("/api/review/v2/latest")
+def api_review_v2_latest():
+    """最近一次 9 维度复盘 (review_v2, 跟旧 review_daily 独立)。"""
+    try:
+        from db.storage import get_review_v2_daily
+        row = get_review_v2_daily(None)
+        if not row:
+            return _ok({"row": None})
+        return _ok({"row": {"id": row.get("id"), "trade_date": row.get("trade_date"),
+                             "payload": row.get("payload"), "created_at": row.get("created_at")}})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/review/v2/dates")
+def api_review_v2_dates():
+    """9 维度复盘历史日期列表。"""
+    try:
+        from db.storage import get_review_v2_dates
+        return _ok({"dates": get_review_v2_dates()})
+    except Exception as exc:
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------------
 # Runtime config (DATA_ROOT / RSSHub)
 # ---------------------------------------------------------------------------

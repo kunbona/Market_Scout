@@ -460,11 +460,13 @@ def render_html(dims: dict, sector_data: dict | None, compute_results: dict, tra
 def run(trade_date: str | None = None):
     """主入口: 14 compute + 1 sector + 收集 9 维度 + 渲染 + 落库"""
     from quant.review_compute import _latest_trade_date
-    from db.storage import insert_review_daily
+    from db.storage import insert_review_v2_daily
 
     if trade_date is None:
         trade_date = _latest_trade_date()
     print(f"[review_v2] start trade_date={trade_date}", flush=True)
+    # 强制设 QUANT_DATA_ROOT, 不然 loader 报 "未配置"
+    os.environ.setdefault("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata")
 
     # Step 1: 跑 14 个 daily_compute
     print(f"[review_v2] running 14 daily_computes...", flush=True)
@@ -500,8 +502,8 @@ def run(trade_date: str | None = None):
     payload_json = json.dumps(payload, ensure_ascii=False, default=str)
 
     try:
-        insert_review_daily(trade_date, payload_json)
-        print(f"[review_v2] review_daily upserted for {trade_date}", flush=True)
+        insert_review_v2_daily(trade_date, payload_json, html)
+        print(f"[review_v2] review_v2_daily upserted for {trade_date}", flush=True)
     except Exception as e:
         print(f"[review_v2] insert failed: {e}", flush=True)
 

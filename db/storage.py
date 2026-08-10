@@ -1507,6 +1507,58 @@ def get_review_dates() -> list[str]:
         return [r[0] for r in rows]
 
 
+# ── review_v2_daily (9 维度复盘, 跟 review_daily 独立, 不冲突旧 ReviewPage) ─────
+
+def _ensure_review_v2_table() -> None:
+    """review_v2_daily 表 (9 维度编排, 跟 review_daily 独立)"""
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS review_v2_daily (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL UNIQUE,
+                payload TEXT NOT NULL,
+                report_html TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+
+def insert_review_v2_daily(trade_date: str, payload_json: str, report_html: str = "") -> int:
+    _ensure_review_v2_table()
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT OR REPLACE INTO review_v2_daily (trade_date, payload, report_html) VALUES (?, ?, ?)",
+            (trade_date, payload_json, report_html),
+        )
+        return cur.lastrowid
+
+
+def get_review_v2_daily(trade_date: str | None = None) -> dict | None:
+    _ensure_review_v2_table()
+    with _conn() as conn:
+        if trade_date:
+            row = conn.execute(
+                "SELECT id, trade_date, payload, report_html, created_at FROM review_v2_daily WHERE trade_date = ?",
+                (trade_date,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, trade_date, payload, report_html, created_at FROM review_v2_daily ORDER BY trade_date DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "trade_date": row[1], "payload": row[2], "report_html": row[3], "created_at": row[4]}
+
+
+def get_review_v2_dates() -> list[str]:
+    _ensure_review_v2_table()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT trade_date FROM review_v2_daily ORDER BY trade_date DESC LIMIT 60"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+
 # ── turnover_stats ────────────────────────────────────────────────────────────
 
 def upsert_turnover_stats(trade_date: str, low_count: int, mid_count: int,
