@@ -678,6 +678,541 @@ function ZoneList({ title, color, items }: { title: string; color: 'red' | 'gree
   );
 }
 
+// ─── 情绪周期专用渲染 (从 markdown 提取, 替代 raw <pre>) ─────
+// 学习自 quant/dm_kun/sentiment_cycle_analyzer.py 的 stdout 输出格式
+// 重点: 6 数字总览 / 连板天梯 / 烂板质量 / 周期阶段 / 情绪温度计 / 仓位评估
+interface SentTop {
+  zt: number; dt: number; touchZt: number; zb: number; zbRate: number; zdRatio: string;
+}
+interface SentTrendRow { date: string; zt: number; dt: number; zb: number; zdRatio: number; }
+interface SentLianbanRow { tier: number; count: number; reps: string; }
+interface SentTopStock { code: string; name: string; industry: string; tier: number; pct: number; }
+interface SentIndustry { name: string; topTier: string; count: number; reps: string; }
+interface SentQualityRow { label: string; emoji: string; count: number; pct: number; desc: string; isPositive: boolean; }
+interface SentPhase { current: string; mode: string; tier: string; position: string; cap: string; rule: string; allPhases: Array<{ name: string; mode: string; tier: string; cap: string; rule: string; isCurrent: boolean; }>; }
+interface SentTempRow { dim: string; score: number; tag: string; }
+interface SentTempTotal { score: number; level: string; status: string; }
+interface SentPosition { dim: string; emoji: string; weight: number; rawScore: number; weighted: number; key: string; }
+interface SentPositionTotal { score: number; position: string; mood: string; }
+interface ParsedSentiment {
+  top: SentTop | null;
+  trend: SentTrendRow[];
+  lianban: SentLianbanRow[];
+  topStocks: SentTopStock[];
+  industries: SentIndustry[];
+  quality: SentQualityRow[];
+  qualityJudge: string;
+  phase: SentPhase | null;
+  tempRows: SentTempRow[];
+  tempTotal: SentTempTotal | null;
+  position: SentPosition[];
+  positionTotal: SentPositionTotal | null;
+}
+
+function parseSentimentCycle(md: string): ParsedSentiment | null {
+  // 1. 涨停生态总览 (6 数字)
+  const top: SentTop | null = (() => {
+    const zt = md.match(/涨停家数\s*\|\s*(\d+)\s*只/);
+    const dt = md.match(/跌停家数\s*\|\s*(\d+)\s*只/);
+    const touchZt = md.match(/触及涨停总数\s*\|\s*(\d+)\s*只/);
+    const zb = md.match(/炸板数\s*\|\s*(\d+)\s*只/);
+    const zbRate = md.match(/炸板率\s*\|\s*([\d.]+)%/);
+    const zdRatio = md.match(/涨跌停比\s*\|\s*([\d.]+:\d+)/);
+    if (!zt) return null;
+    return {
+      zt: +zt[1], dt: +(dt?.[1] || 0), touchZt: +(touchZt?.[1] || 0),
+      zb: +(zb?.[1] || 0), zbRate: +(zbRate?.[1] || 0),
+      zdRatio: zdRatio?.[1] || '0:0',
+    };
+  })();
+
+  // 2. 5 日趋势 (找表头含"涨跌停比"的表)
+  const trend: SentTrendRow[] = (() => {
+    const lines = md.split('\n');
+    let inTrend = false;
+    const rows: SentTrendRow[] = [];
+    for (const l of lines) {
+      if (l.includes('|') && l.includes('日期') && l.includes('涨跌停比')) { inTrend = true; continue; }
+      if (inTrend) {
+        if (!l.trim().startsWith('|')) break;
+        const cells = l.split('|').slice(1, -1).map(s => s.trim());
+        if (cells.length < 5 || !cells[0].match(/\d{2}-\d{2}/)) continue;
+        rows.push({ date: cells[0], zt: +cells[1] || 0, dt: +cells[2] || 0, zb: +cells[3] || 0, zdRatio: +cells[4] || 0 });
+      }
+    }
+    return rows;
+  })();
+
+  // 3. 连板天梯 (5板/4板/3板/2板/1板)
+  const lianban: SentLianbanRow[] = (() => {
+    const lines = md.split('\n');
+    let inLianban = false;
+    const rows: SentLianbanRow[] = [];
+    for (const l of lines) {
+      if (l.includes('|') && l.includes('连板数') && l.includes('股票数')) { inLianban = true; continue; }
+      if (inLianban) {
+        if (!l.trim().startsWith('|')) break;
+        const cells = l.split('|').slice(1, -1).map(s => s.trim());
+        if (cells.length < 2) continue;
+        const m = cells[0].match(/(\d+)板/);
+        if (!m) continue;
+        rows.push({ tier: +m[1], count: +cells[1].replace(/[^\d]/g, '') || 0, reps: cells[2] || '' });
+      }
+    }
+    return rows;
+  })();
+
+  // 4. 最高连板个股
+  const topStocks: SentTopStock[] = (() => {
+    const lines = md.split('\n');
+    let inStocks = false;
+    const rows: SentTopStock[] = [];
+    for (const l of lines) {
+      if (l.includes('|') && l.includes('代码') && l.includes('连板数')) { inStocks = true; continue; }
+      if (inStocks) {
+        if (!l.trim().startsWith('|')) break;
+        const cells = l.split('|').slice(1, -1).map(s => s.trim());
+        if (cells.length < 5) continue;
+        const code = cells[0]; if (!code.match(/^(sz|sh|bj)/)) continue;
+        const tierM = cells[3].match(/(\d+)板/);
+        rows.push({
+          code, name: cells[1], industry: cells[2],
+          tier: tierM ? +tierM[1] : 0,
+          pct: parseFloat(cells[4]) || 0,
+        });
+      }
+    }
+    return rows;
+  })();
+
+  // 5. 连板行业 Top 8
+  const industries: SentIndustry[] = (() => {
+    const lines = md.split('\n');
+    let inInd = false;
+    const rows: SentIndustry[] = [];
+    for (const l of lines) {
+      if (l.includes('|') && l.includes('行业') && l.includes('最高连板') && !l.includes('代表')) { inInd = true; continue; }
+      if (inInd) {
+        if (!l.trim().startsWith('|')) break;
+        const cells = l.split('|').slice(1, -1).map(s => s.trim());
+        if (cells.length < 4) continue;
+        if (cells[0] === '行业' || cells[0] === '---') continue;
+        rows.push({ name: cells[0], topTier: cells[1] || '', count: parseInt(cells[2]) || 0, reps: cells[3] || '' });
+      }
+    }
+    return rows;
+  })();
+
+  // 6. 烂板质量 (5 类)
+  const quality: SentQualityRow[] = (() => {
+    const lines = md.split('\n');
+    let inQ = false;
+    const rows: SentQualityRow[] = [];
+    for (const l of lines) {
+      if (l.includes('|') && l.includes('类型') && l.includes('数量') && l.includes('特征')) { inQ = true; continue; }
+      if (inQ) {
+        if (!l.trim().startsWith('|')) break;
+        const cells = l.split('|').slice(1, -1).map(s => s.trim());
+        if (cells.length < 4) continue;
+        if (cells[0] === '类型' || cells[0] === '---') continue;
+        const fullText = cells[0];
+        const emojiM = fullText.match(/^([🔒⚡🕐🌊📄])\s*(.+)/);
+        if (!emojiM) continue;
+        const countM = cells[1].match(/(\d+)\s*只/);
+        const pctM = cells[2].match(/([\d.]+)%/);
+        rows.push({
+          emoji: emojiM[1],
+          label: emojiM[2].replace(/\*\*/g, '').trim(),
+          count: countM ? +countM[1] : 0,
+          pct: pctM ? +pctM[1] : 0,
+          desc: cells[3] || '',
+          isPositive: cells[0].includes('硬板') || cells[0].includes('分歧回封'),
+        });
+      }
+    }
+    return rows;
+  })();
+
+  // 6b. 质量判断
+  const qj = md.match(/\*\*质量判断\*\*[：:]\s*([^\n]+)/);
+  const qualityJudge = qj ? qj[1].trim() : '';
+
+  // 7. 周期阶段判定 + 完整映射
+  const phase: SentPhase | null = (() => {
+    const lines = md.split('\n');
+    // 找 "**当前阶段**" 行
+    let currentLine = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes('当前阶段')) { currentLine = i; break; }
+    }
+    if (currentLine < 0) return null;
+    // 找 "### 4.5 操作模式映射"
+    const mapStart = lines.findIndex(l => l.includes('### 4.5'));
+    if (mapStart < 0) return null;
+    // 找 "完整映射表" 后的表头
+    const headerIdx = lines.findIndex((l, i) => i > mapStart && l.includes('|') && l.includes('阶段') && l.includes('仓位档位') && l.includes('纪律'));
+    if (headerIdx < 0) return null;
+    const allPhases: SentPhase['allPhases'] = [];
+    for (let i = headerIdx + 2; i < lines.length; i++) {
+      const l = lines[i];
+      if (!l.trim().startsWith('|')) break;
+      const cells = l.split('|').slice(1, -1).map(s => s.trim());
+      if (cells.length < 5) continue;
+      const isCurrent = cells[0].includes('当前') || cells[0].includes('←');
+      const cleanName = cells[0].replace(/当前|←/g, '').trim();
+      allPhases.push({
+        name: cleanName, mode: cells[1] || '', tier: cells[3] || '',
+        cap: cells[4] || '', rule: cells[5] || '', isCurrent,
+      });
+    }
+    // 当前阶段的 detail 从 ## 4 段 table 抓
+    const detailStart = lines.findIndex(l => l.includes('### 4. 情绪周期阶段判定'));
+    let mode = '', tier = '', position = '', cap = '', rule = '';
+    if (detailStart > 0) {
+      const seg = lines.slice(detailStart, mapStart).join('\n');
+      const m = seg.match(/允许操作模式\s*\|\s*([^\n|]+)/);
+      tier = seg.match(/允许板位\/介入方式\s*\|\s*([^\n|]+)/)?.[1]?.trim() || '';
+      position = tier;
+      cap = seg.match(/原仓位上限建议\s*\|\s*([^\n|]+)/)?.[1]?.trim() || '';
+      rule = seg.match(/纪律\s*\|\s*"?([^"\n|]+)"?/)?.[1]?.trim() || '';
+      mode = m?.[1]?.trim() || '';
+    }
+    // currentLine 抓名称
+    const currM = lines[currentLine]?.match(/\*\*当前阶段\*\*\s*\|\s*([^\n|]+)/);
+    const current = currM ? currM[1].trim().replace(/^.*?\*\*/, '').replace(/\*\*/g, '').trim() : '';
+    return { current, mode, tier, position, cap, rule, allPhases };
+  })();
+
+  // 8. 情绪温度计 (6 维 + 总分)
+  const tempRows: SentTempRow[] = (() => {
+    const lines = md.split('\n');
+    let inT = false;
+    const rows: SentTempRow[] = [];
+    for (const l of lines) {
+      if (l.includes('|') && l.includes('维度') && l.includes('解读')) { inT = true; continue; }
+      if (inT) {
+        if (!l.trim().startsWith('|')) break;
+        const cells = l.split('|').slice(1, -1).map(s => s.trim());
+        if (cells.length < 3) continue;
+        if (cells[0] === '维度' || cells[0] === '---') continue;
+        rows.push({ dim: cells[0], score: +cells[1] || 0, tag: cells[2] || '' });
+      }
+    }
+    return rows;
+  })();
+
+  const tempTotal: SentTempTotal | null = (() => {
+    const m = md.match(/\*\*情绪温度\*\*[：:]\s*(\d+)\/100\s+([🟢🟠🔴⚪]+)/);
+    const s = md.match(/\*\*状态\*\*[：:]\s*([^\n]+)/);
+    if (!m) return null;
+    return { score: +m[1], level: m[2], status: s?.[1]?.trim() || '' };
+  })();
+
+  // 9. 多维度仓位评估
+  const position: SentPosition[] = (() => {
+    const lines = md.split('\n');
+    let inP = false;
+    const rows: SentPosition[] = [];
+    for (const l of lines) {
+      if (l.includes('|') && l.includes('维度') && l.includes('权重') && l.includes('关键子指标')) { inP = true; continue; }
+      if (inP) {
+        if (!l.trim().startsWith('|')) break;
+        const cells = l.split('|').slice(1, -1).map(s => s.trim());
+        if (cells.length < 5) continue;
+        if (cells[0] === '维度' || cells[0] === '---') continue;
+        const dimM = cells[0].match(/^(\S+)\s+(.+)$/);
+        rows.push({
+          emoji: dimM?.[1] || '📊',
+          dim: dimM?.[2] || cells[0],
+          weight: parseFloat(cells[1]) || 0,
+          rawScore: parseFloat(cells[2]) || 0,
+          weighted: parseFloat(cells[3]) || 0,
+          key: cells[4] || '',
+        });
+      }
+    }
+    return rows;
+  })();
+
+  const positionTotal: SentPositionTotal | null = (() => {
+    const m = md.match(/\*\*加权总分\*\*\s*\|\s*\*?\*?(\d+)\/100\*?\*?/);
+    const pos = md.match(/\*\*建议仓位\*\*\s*\|\s*\*?\*?(\d+)%/);
+    const mood = md.match(/\(([🟢🟠🔴])\s*([^)]+)\)/);
+    if (!m) return null;
+    return { score: +m[1], position: pos?.[1] ? pos[1] + '%' : '', mood: mood?.[2] || '' };
+  })();
+
+  return {
+    top, trend, lianban, topStocks, industries,
+    quality, qualityJudge, phase,
+    tempRows, tempTotal, position, positionTotal,
+  };
+}
+
+// ─── 情绪周期渲染组件 ─────────────────────────────
+function SentimentCycleView({ md }: { md: string }) {
+  const p = useMemo(() => parseSentimentCycle(md), [md]);
+  if (!p) {
+    return <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">{md}</pre>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* 区域 1: 6 数字卡片 */}
+      {p.top && <SentTopCards top={p.top} />}
+
+      {/* 区域 2: 5 日趋势柱状图 */}
+      {p.trend.length > 0 && <SentTrendChart trend={p.trend} />}
+
+      {/* 区域 3: 连板天梯 + 烂板质量 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {p.lianban.length > 0 && p.topStocks.length > 0 && (
+          <SentLianbanPyramid tiers={p.lianban} topStocks={p.topStocks} />
+        )}
+        {p.quality.length > 0 && (
+          <SentQualityChart quality={p.quality} judge={p.qualityJudge} />
+        )}
+      </div>
+
+      {/* 区域 4: 周期阶段 + 完整映射 */}
+      {p.phase && <SentPhaseTable phase={p.phase} />}
+
+      {/* 区域 5: 情绪温度计 + 仓位评估 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {p.tempRows.length > 0 && <SentTempGauge rows={p.tempRows} total={p.tempTotal} />}
+        {p.position.length > 0 && <SentPositionBars rows={p.position} total={p.positionTotal} />}
+      </div>
+    </div>
+  );
+}
+
+// 6 数字卡片
+function SentTopCards({ top }: { top: SentTop }) {
+  const cards = [
+    { label: '涨停家数', value: `${top.zt}`, unit: '只', color: 'red' },
+    { label: '跌停家数', value: `${top.dt}`, unit: '只', color: 'green' },
+    { label: '触及涨停', value: `${top.touchZt}`, unit: '只', color: 'amber' },
+    { label: '炸板数', value: `${top.zb}`, unit: '只', color: 'orange' },
+    { label: '炸板率', value: `${top.zbRate.toFixed(1)}`, unit: '%', color: top.zbRate >= 30 ? 'red' : top.zbRate >= 20 ? 'amber' : 'green' },
+    { label: '涨跌停比', value: top.zdRatio, unit: '', color: 'blue' },
+  ];
+  const colorClass = (c: string) => c === 'red' ? 'text-red-600' : c === 'green' ? 'text-green-600' : c === 'amber' || c === 'orange' ? 'text-amber-600' : 'text-blue-600';
+  return (
+    <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+      {cards.map(c => (
+        <div key={c.label} className="kpi-card bg-white rounded-xl border border-gray-100 p-3">
+          <div className="text-xs text-gray-400">{c.label}</div>
+          <div className={`text-2xl font-bold mt-0.5 ${colorClass(c.color)}`}>
+            {c.value}
+            {c.unit && <span className="text-xs text-gray-400 ml-1">{c.unit}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// 5 日趋势柱状图 (涨停/跌停/炸板 3 组柱 + 涨跌停比折线)
+function SentTrendChart({ trend }: { trend: SentTrendRow[] }) {
+  if (trend.length === 0) return null;
+  const maxVal = Math.max(...trend.map(r => Math.max(r.zt, r.dt, r.zb)), 1);
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-3">
+      <div className="text-xs font-semibold text-gray-700 mb-2">近 {trend.length} 日涨停/跌停/炸板趋势</div>
+      <div className="flex items-end gap-3 h-32">
+        {trend.map((r, i) => (
+          <div key={i} className="flex-1 flex flex-col items-center gap-1">
+            <div className="flex items-end gap-1 h-full w-full justify-center">
+              <div className="flex flex-col items-center" title={`涨停 ${r.zt}`}>
+                <div className="text-[10px] text-red-600 font-mono">{r.zt}</div>
+                <div className="w-5 bg-red-400 rounded-t" style={{ height: `${(r.zt / maxVal) * 100}%` }} />
+              </div>
+              <div className="flex flex-col items-center" title={`跌停 ${r.dt}`}>
+                <div className="text-[10px] text-green-600 font-mono">{r.dt}</div>
+                <div className="w-5 bg-green-400 rounded-t" style={{ height: `${(r.dt / maxVal) * 100}%` }} />
+              </div>
+              <div className="flex flex-col items-center" title={`炸板 ${r.zb}`}>
+                <div className="text-[10px] text-orange-500 font-mono">{r.zb}</div>
+                <div className="w-5 bg-orange-400 rounded-t" style={{ height: `${(r.zb / maxVal) * 100}%` }} />
+              </div>
+            </div>
+            <div className="text-[10px] text-gray-500 font-mono">{r.date}</div>
+            <div className="text-[9px] text-blue-500 font-mono">比 {r.zdRatio.toFixed(1)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-red-400 rounded" />涨停</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-green-400 rounded" />跌停</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 bg-orange-400 rounded" />炸板</span>
+      </div>
+    </div>
+  );
+}
+
+// 连板天梯金字塔 (5/4/3/2/1 板, 宽=股票数, 高=连板数)
+function SentLianbanPyramid({ tiers, topStocks }: { tiers: SentLianbanRow[]; topStocks: SentTopStock[] }) {
+  const maxCount = Math.max(...tiers.map(t => t.count), 1);
+  const maxTier = Math.max(...tiers.map(t => t.tier), 1);
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-3">
+      <div className="text-xs font-semibold text-gray-700 mb-2">🔺 连板天梯 · 最高 {maxTier} 板</div>
+      <div className="space-y-1">
+        {tiers.map(t => {
+          const widthPct = (t.count / maxCount) * 100;
+          const topStock = topStocks.find(s => s.tier === t.tier);
+          return (
+            <div key={t.tier} className="flex items-center gap-2">
+              <div className="w-12 text-right">
+                <span className="text-sm font-bold text-red-600">{t.tier}板</span>
+              </div>
+              <div className="flex-1 flex items-center gap-2">
+                <div
+                  className="h-7 rounded flex items-center px-2 text-white text-xs font-bold"
+                  style={{ width: `${Math.max(widthPct, 8)}%`, background: `linear-gradient(90deg, #f87171 0%, #ef4444 100%)` }}
+                >
+                  {t.count > 0 && <span>{t.count} 只</span>}
+                </div>
+                {topStock && (
+                  <span className="text-[10px] text-gray-500 truncate">→ {topStock.name} {topStock.industry}</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// 烂板质量 5 类 (横向 bar + 质量判断)
+function SentQualityChart({ quality, judge }: { quality: SentQualityRow[]; judge: string }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-3">
+      <div className="text-xs font-semibold text-gray-700 mb-2">🎯 涨停质量分布 ({quality.reduce((s, q) => s + q.count, 0)} 只)</div>
+      {judge && <div className="text-[10px] text-gray-500 mb-2 italic">{judge}</div>}
+      <div className="space-y-1.5">
+        {quality.map((q, i) => {
+          const barColor = q.isPositive
+            ? (q.label.includes('硬板') ? 'bg-red-500' : 'bg-red-400')
+            : (q.label.includes('普通') ? 'bg-gray-400' : 'bg-orange-400');
+          return (
+            <div key={i} className="grid grid-cols-12 gap-2 items-center text-[11px]">
+              <span className="col-span-4 text-gray-700 truncate">
+                <span className="mr-1">{q.emoji}</span>{q.label}
+              </span>
+              <div className="col-span-6 relative h-5 bg-gray-100 rounded overflow-hidden">
+                <div className={`absolute left-0 top-0 h-full ${barColor} flex items-center px-2 text-white text-[10px] font-mono`}
+                     style={{ width: `${Math.max(q.pct, 8)}%` }}>
+                  {q.count} 只 · {q.pct.toFixed(1)}%
+                </div>
+              </div>
+              <span className="col-span-2 text-[9px] text-gray-400 truncate">{q.desc.split(/[，。,]/)[0]}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// 周期阶段判定 + 完整映射表
+function SentPhaseTable({ phase }: { phase: SentPhase }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-3">
+      <div className="text-xs font-semibold text-gray-700 mb-2">🌀 当前情绪周期阶段</div>
+      <div className="bg-gradient-to-r from-amber-50 to-amber-100 border border-amber-200 rounded-lg p-3 mb-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-base font-bold text-amber-700">⚡ {phase.current || '未知'}</span>
+          {phase.mode && <span className="text-[11px] text-gray-700">📍 {phase.mode}</span>}
+          {phase.position && <span className="text-[11px] text-gray-700">🎯 {phase.position}</span>}
+          {phase.cap && <span className="text-[11px] text-gray-700">💰 {phase.cap}</span>}
+        </div>
+        {phase.rule && <div className="text-[11px] text-gray-600 mt-1 italic">📜 {phase.rule}</div>}
+      </div>
+      <div className="text-[10px] font-medium text-gray-500 mb-1">完整映射 (高亮当前):</div>
+      <div className="space-y-1">
+        {phase.allPhases.map((p, i) => (
+          <div key={i} className={`grid grid-cols-12 gap-2 px-2 py-1.5 rounded text-[10px] ${p.isCurrent ? 'bg-amber-100 border border-amber-300' : 'hover:bg-gray-50'}`}>
+            <span className={`col-span-2 font-medium ${p.isCurrent ? 'text-amber-700' : 'text-gray-700'}`}>{p.name}{p.isCurrent && ' ←'}</span>
+            <span className="col-span-3 text-gray-600 truncate">{p.mode}</span>
+            <span className="col-span-2 text-gray-500">{p.tier}</span>
+            <span className="col-span-2 text-gray-500">{p.cap}</span>
+            <span className="col-span-3 text-gray-500 italic">{p.rule.split(/[，,]/)[0]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 情绪温度计 (6 维横条 + 总分大字)
+function SentTempGauge({ rows, total }: { rows: SentTempRow[]; total: SentTempTotal | null }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-semibold text-gray-700">🌡️ 情绪温度计</div>
+        {total && (
+          <div className="text-right">
+            <div className="text-2xl font-bold text-amber-600">{total.score}<span className="text-xs text-gray-400">/100</span></div>
+            <div className="text-[10px] text-gray-500">{total.level} · {total.status}</div>
+          </div>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {rows.map((r, i) => {
+          const color = r.score >= 80 ? 'bg-red-500' : r.score >= 50 ? 'bg-amber-500' : r.score >= 30 ? 'bg-blue-500' : 'bg-gray-400';
+          return (
+            <div key={i} className="grid grid-cols-12 gap-2 items-center text-[11px]">
+              <span className="col-span-3 text-gray-700 truncate">{r.dim}</span>
+              <div className="col-span-7 relative h-4 bg-gray-100 rounded overflow-hidden">
+                <div className={`absolute left-0 top-0 h-full ${color}`} style={{ width: `${r.score}%` }} />
+                <span className="relative z-10 px-2 text-white text-[10px] font-mono leading-none flex items-center h-full" style={{ textShadow: '0 1px 1px rgba(0,0,0,0.5)' }}>{r.score}</span>
+              </div>
+              <span className="col-span-2 text-[9px] text-gray-500 truncate">{r.tag}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// 仓位评估 5 维横条 + 总分 + 建议
+function SentPositionBars({ rows, total }: { rows: SentPosition[]; total: SentPositionTotal | null }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-semibold text-gray-700">💼 多维度仓位评估</div>
+        {total && (
+          <div className="text-right">
+            <div className="text-2xl font-bold text-green-600">{total.score}<span className="text-xs text-gray-400">/100</span></div>
+            <div className="text-[10px] text-gray-500">建议 {total.position} · {total.mood}</div>
+          </div>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {rows.map((r, i) => {
+          const color = r.rawScore >= 80 ? 'bg-green-500' : r.rawScore >= 50 ? 'bg-blue-500' : 'bg-amber-500';
+          return (
+            <div key={i} className="grid grid-cols-12 gap-2 items-center text-[11px]">
+              <span className="col-span-3 text-gray-700 truncate">
+                <span className="mr-1">{r.emoji}</span>{r.dim}
+                <span className="text-[9px] text-gray-400 ml-1">w{r.weight}%</span>
+              </span>
+              <div className="col-span-6 relative h-4 bg-gray-100 rounded overflow-hidden">
+                <div className={`absolute left-0 top-0 h-full ${color}`} style={{ width: `${r.rawScore}%` }} />
+                <span className="relative z-10 px-2 text-white text-[10px] font-mono leading-none flex items-center h-full" style={{ textShadow: '0 1px 1px rgba(0,0,0,0.5)' }}>{r.rawScore} → {r.weighted}</span>
+              </div>
+              <span className="col-span-3 text-[9px] text-gray-500 truncate">{r.key.split(/[，,]/)[0]}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── DM-kun 通用 markdown Tab ──────────────────────────────
 // 给 review 页 3 个新 tab 共用: market-regime / sentiment-cycle / industry-crowding
 // 数据来源: server.py 的 quant.dm_kun.<脚本>.main() 后台预热填内存 cache
@@ -772,6 +1307,8 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
       {cache?.markdown ? (
         name === 'industry-crowding' ? (
           <IndustryCrowdingView md={cache.markdown} />
+        ) : name === 'sentiment-cycle' ? (
+          <SentimentCycleView md={cache.markdown} />
         ) : (
           <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
             {cache.markdown}
