@@ -205,6 +205,77 @@ app = Flask(__name__, static_folder=None, static_url_path="/_static_disabled_")
 CORS(app)
 
 
+# ---------------------------------------------------------------------------
+# DM-kun 市场分析工具集 (quant.dm_kun) - 内存 cache + 异步预热
+# ---------------------------------------------------------------------------
+# 11 个核心分析脚本里的 3 个高频 (市场状态/情绪周期/行业拥挤度),
+# 跑一次 5-60s, 不能放 HTTP 同步路径. 用内存 cache + 启动后台预热 +
+# POST /recompute 手动重算. cache 结构: {"markdown": str, "computed_at": iso, "loading": bool}.
+import io as _io
+from contextlib import redirect_stdout as _redirect_stdout
+
+_DM_KUN_CACHE: dict[str, dict] = {
+    "market_regime":     {"markdown": None, "computed_at": None, "loading": False, "error": None},
+    "sentiment_cycle":   {"markdown": None, "computed_at": None, "loading": False, "error": None},
+    "industry_crowding": {"markdown": None, "computed_at": None, "loading": False, "error": None},
+}
+_DM_KUN_LOCK = threading.Lock()
+
+
+def _dm_kun_run_one(name: str, fn) -> None:
+    """跑一个 quant.dm_kun 脚本, 抓 stdout 当 markdown 存 cache. 任何异常都吞掉, 不影响 server."""
+    with _DM_KUN_LOCK:
+        _DM_KUN_CACHE[name]["loading"] = True
+        _DM_KUN_CACHE[name]["error"] = None
+    try:
+        buf = _io.StringIO()
+        with _redirect_stdout(buf):
+            fn()
+        text = buf.getvalue() or ""
+        with _DM_KUN_LOCK:
+            _DM_KUN_CACHE[name]["markdown"] = text
+            _DM_KUN_CACHE[name]["computed_at"] = datetime.now().isoformat(timespec="seconds")
+    except Exception as e:
+        with _DM_KUN_LOCK:
+            _DM_KUN_CACHE[name]["error"] = f"{type(e).__name__}: {e}"
+        print(f"[dm_kun] {name} run failed: {e}")
+    finally:
+        with _DM_KUN_LOCK:
+            _DM_KUN_CACHE[name]["loading"] = False
+
+
+def _dm_kun_prewarm() -> None:
+    """server 启动后, 后台线程跑 3 个分析填 cache. 失败不阻塞."""
+    from quant.dm_kun import (
+        market_regime_analyzer,
+        sentiment_cycle_analyzer,
+        industry_crowding_analyzer,
+    )
+    targets = [
+        ("market_regime",     market_regime_analyzer.main),
+        ("sentiment_cycle",   sentiment_cycle_analyzer.main),
+        ("industry_crowding", industry_crowding_analyzer.main),
+    ]
+    def _spawn(name, fn):
+        try:
+            print(f"[dm_kun] prewarm {name} ...", flush=True)
+            _dm_kun_run_one(name, fn)
+            with _DM_KUN_LOCK:
+                cached = _DM_KUN_CACHE[name]
+            if cached.get("error"):
+                print(f"[dm_kun] prewarm {name} FAILED: {cached['error']}")
+            else:
+                size = len(cached.get("markdown") or "")
+                print(f"[dm_kun] prewarm {name} OK ({size} chars, {cached['computed_at']})")
+        except Exception as e:
+            print(f"[dm_kun] prewarm {name} crash: {e}")
+
+    for name, fn in targets:
+        # daemon=True 让 server 退出时线程一起退; 三个脚本并发跑 (各占 1 核)
+        t = threading.Thread(target=_spawn, args=(name, fn), daemon=True, name=f"dm_kun_{name}")
+        t.start()
+
+
 _QMT_BACKGROUND_REFRESH_COOLDOWN_SECONDS = 30.0
 _qmt_background_refresh_lock = threading.Lock()
 _qmt_background_refresh_started_at: dict[str, float] = {}
@@ -1810,6 +1881,70 @@ def api_review_v2_dates():
 
 
 # ---------------------------------------------------------------------------
+# DM-kun 市场分析 (quant.dm_kun) - 内存 cache + 手动重算
+# ---------------------------------------------------------------------------
+# 三个高频分析: 市场状态 / 情绪周期 / 行业拥挤度.
+# 跑一次 5-60s, 不能放同步路径. server 启动时后台预热填 cache, 前端 GET 永远不阻塞.
+# POST /api/dm-kun/<name>/recompute 手动触发重算, 用于 daily 复盘后刷新数据.
+
+_DM_KUN_ENDPOINTS = {
+    "market-regime":     "market_regime",
+    "sentiment-cycle":   "sentiment_cycle",
+    "industry-crowding": "industry_crowding",
+}
+
+
+@app.route("/api/dm-kun/<name>")
+def api_dm_kun_get(name: str):
+    """返 cache: {markdown, computed_at, loading, error}. cache 空时 loading=True."""
+    if name not in _DM_KUN_ENDPOINTS:
+        return _err(f"unknown dm-kun endpoint: {name}", 404)
+    with _DM_KUN_LOCK:
+        entry = dict(_DM_KUN_CACHE[_DM_KUN_ENDPOINTS[name]])
+    return _ok(entry)
+
+
+@app.route("/api/dm-kun/<name>/recompute", methods=["POST"])
+def api_dm_kun_recompute(name: str):
+    """手动重算: 启动后台线程跑 main(), 立即返 {started: True, loading: True}.
+    跑完会自动更新 cache, 前端轮询 GET 看 loading=false.
+    同一名字已 loading 时拒绝 (避免并发)."""
+    if name not in _DM_KUN_ENDPOINTS:
+        return _err(f"unknown dm-kun endpoint: {name}", 404)
+    cache_key = _DM_KUN_ENDPOINTS[name]
+    with _DM_KUN_LOCK:
+        if _DM_KUN_CACHE[cache_key]["loading"]:
+            return _err(f"{name} 已在计算中, 请等完成", 409)
+    def _runner():
+        from quant.dm_kun import (
+            market_regime_analyzer,
+            sentiment_cycle_analyzer,
+            industry_crowding_analyzer,
+        )
+        fn_map = {
+            "market_regime":     market_regime_analyzer.main,
+            "sentiment_cycle":   sentiment_cycle_analyzer.main,
+            "industry_crowding": industry_crowding_analyzer.main,
+        }
+        _dm_kun_run_one(cache_key, fn_map[cache_key])
+    threading.Thread(target=_runner, daemon=True, name=f"dm_kun_recompute_{name}").start()
+    return _ok({"started": True, "name": name})
+
+
+@app.route("/api/dm-kun/list")
+def api_dm_kun_list():
+    """列出所有 dm-kun endpoint 状态 (给前端 dashboard 入口用)."""
+    with _DM_KUN_LOCK:
+        items = [{"name": n, "status": "loading" if _DM_KUN_CACHE[k]["loading"]
+                                           else "ok" if _DM_KUN_CACHE[k]["markdown"]
+                                           else "empty",
+                  "computed_at": _DM_KUN_CACHE[k]["computed_at"],
+                  "error": _DM_KUN_CACHE[k]["error"]}
+                 for n, k in _DM_KUN_ENDPOINTS.items()]
+    return _ok({"items": items})
+
+
+# ---------------------------------------------------------------------------
 # Runtime config (DATA_ROOT / RSSHub)
 # ---------------------------------------------------------------------------
 
@@ -2696,6 +2831,12 @@ if __name__ == "__main__":
         warm_up()
     except Exception:
         pass
+
+    # 后台预热 DM-kun 市场分析 (3 个高频脚本并发跑, 5-60s 填 cache)
+    try:
+        _dm_kun_prewarm()
+    except Exception as _e:
+        print(f"[dm_kun] prewarm 启动失败 (非致命): {_e}")
 
     print(f"[server] 仪表盘已启动 → http://0.0.0.0:{_port}")
 
