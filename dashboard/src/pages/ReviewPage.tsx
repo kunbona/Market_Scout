@@ -535,6 +535,536 @@ function percentileColor(p: number): string {
   return 'bg-green-100 text-green-700';
 }
 
+// ════════════════════════════════════════════════════════════════
+// 市场状态 (market_regime) 解析 + 6 区域图形化
+// ════════════════════════════════════════════════════════════════
+interface IndexRow {
+  name: string;
+  close: number;
+  day: number;
+  d5: number;
+  d10: number;
+  d20: number;
+  d60: number;
+  ytd: number;
+  vol: number;
+  ma5: '↑' | '↓';
+  ma10: '↑' | '↓';
+  ma20: '↑' | '↓';
+  ma60: '↑' | '↓';
+  ma120: '↑' | '↓';
+}
+interface StyleCompare {
+  label: string;     // e.g. "大盘vs小盘"
+  winner: string;    // e.g. "中证2000"
+  loser: string;     // e.g. "沪深300"
+  diff: number;      // e.g. 1.4
+  winnerPct: number; // 近20日 winner 涨幅
+  loserPct: number;
+}
+interface BreadthData {
+  aboveMa10: number;
+  aboveMa20: number;
+  up5d: number;
+  up20d: number;
+  median5d: number;
+  median20d: number;
+  judgment: string;
+}
+interface IndustryRegime {
+  name: string;
+  strongPct: number;
+  d5: number;
+  d20: number;
+  samples: number;
+}
+interface RegimeMeta {
+  trend: string;       // e.g. "📈 温和上涨"
+  volatility: string;  // e.g. "高波动"
+  breadth: string;     // e.g. "强势"
+  style: string;       // e.g. "周期主导"
+  regimeTag: string;   // e.g. "高波震荡"
+  confidence: string;  // e.g. "中"
+  recommends: string[];
+  cautions: string[];
+  fallback: string;
+}
+interface ParsedRegime {
+  indices: IndexRow[];
+  styles: StyleCompare[];
+  breadth: BreadthData;
+  industries: IndustryRegime[];
+  styleSummary: string;     // 周期/价值/成长
+  meta: RegimeMeta;
+  tradeDate: string;
+}
+
+function pctColor(v: number, bold = false): string {
+  if (v > 0) return bold ? 'text-red-700 font-semibold' : 'text-red-600';
+  if (v < 0) return bold ? 'text-green-700 font-semibold' : 'text-green-600';
+  return 'text-gray-500';
+}
+
+function pctBg(v: number): string {
+  if (v > 2) return 'bg-red-100';
+  if (v > 0) return 'bg-red-50';
+  if (v > -2) return 'bg-gray-50';
+  return 'bg-green-50';
+}
+
+function parseMarketRegime(md: string): ParsedRegime | null {
+  // ── 1. 指数表 ─────────────────────────────────────────
+  // 找表头行 "MA5 MA10 MA20 MA60 MA120" → 下一行 "=====" → 数据行 → 下一段 "=====" 或空行
+  const indices: IndexRow[] = [];
+  const lines = md.split('\n');
+  let headerLineIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/MA5\s+MA10\s+MA20\s+MA60\s+MA120/.test(lines[i])) {
+      headerLineIdx = i;
+      break;
+    }
+  }
+  if (headerLineIdx >= 0) {
+    // 跳到表头下一行 (skip 表头和 "=====" 分隔)
+    for (let i = headerLineIdx + 1; i < Math.min(headerLineIdx + 20, lines.length); i++) {
+      const line = lines[i];
+      // 数据行: 名字(中文) + 收盘价(数字) + 多个百分比
+      // 提取所有数字字段和箭头
+      const pctFields = line.matchAll(/(-?[\d.]+)%/g);
+      const pcts = Array.from(pctFields).map(m => parseFloat(m[1]));
+      const arrows = (line.match(/[↑↓]/g) || []);
+      if (pcts.length >= 7 && arrows.length >= 5) {
+        // pcts[0]=当日 d5[1] d10[2] d20[3] d60[4] ytd[5] vol[6]
+        // 收盘价在 pcts[0] 之前
+        const closeMatch = line.match(/^\s*(\S+(?:\s\S+)*?)\s{2,}(\d{3,5})\s/);
+        if (closeMatch) {
+          indices.push({
+            name: closeMatch[1].trim(),
+            close: parseFloat(closeMatch[2]),
+            day: pcts[0],
+            d5: pcts[1],
+            d10: pcts[2],
+            d20: pcts[3],
+            d60: pcts[4],
+            ytd: pcts[5],
+            ma5: arrows[0] as '↑' | '↓',
+            ma10: arrows[1] as '↑' | '↓',
+            ma20: arrows[2] as '↑' | '↓',
+            ma60: arrows[3] as '↑' | '↓',
+            ma120: arrows[4] as '↑' | '↓',
+            vol: pcts[6],
+          });
+        }
+      }
+    }
+  }
+
+  // ── 2. 风格对比 (3 行) ────────────────────────────────
+  const styles: StyleCompare[] = [];
+  const styleMatches = md.matchAll(/近20日\s+(\S+)\((-?[\d.]+)%\)\s+vs\s+(\S+)\((-?[\d.]+)%\),\s*差值(-?[\d.]+)%,\s*当前(\S+)占优/g);
+  for (const m of styleMatches) {
+    // m[1]/m[2] = 第一个指数名/涨幅, m[3]/m[4] = 第二个, m[5] = 差值, m[6] = 当前占优方
+    const winner = m[6];
+    const isFirstWinner = m[1] === winner;
+    const winnerPct = parseFloat(isFirstWinner ? m[2] : m[4]);
+    const loserPct = parseFloat(isFirstWinner ? m[4] : m[2]);
+    const loser = isFirstWinner ? m[3] : m[1];
+    const label = m[1].includes('2000') || m[3].includes('2000') ? '大盘vs小盘'
+      : m[1].includes('500') || m[3].includes('500') ? '超大盘vs中盘'
+      : '价值vs成长';
+    styles.push({ label, winner, loser, diff: parseFloat(m[5]), winnerPct, loserPct });
+  }
+
+  // ── 3. 宽度分析 ───────────────────────────────────────
+  let breadth: BreadthData = {
+    aboveMa10: 0, aboveMa20: 0, up5d: 0, up20d: 0, median5d: 0, median20d: 0, judgment: ''
+  };
+  const ma10 = md.match(/股价\s*>\s*MA10\s*占比:\s*([\d.]+)%/);
+  const ma20 = md.match(/股价\s*>\s*MA20\s*占比:\s*([\d.]+)%/);
+  const up5 = md.match(/近5日上涨占比:\s*([\d.]+)%/);
+  const up20 = md.match(/近20日上涨占比:\s*([\d.]+)%/);
+  const med5 = md.match(/中位数5日收益率:\s*(-?[\d.]+)%/);
+  const med20 = md.match(/中位数20日收益率:\s*(-?[\d.]+)%/);
+  const bj = md.match(/宽度判断:\s*([^\n]+)/);
+  if (ma10) breadth.aboveMa10 = parseFloat(ma10[1]);
+  if (ma20) breadth.aboveMa20 = parseFloat(ma20[1]);
+  if (up5) breadth.up5d = parseFloat(up5[1]);
+  if (up20) breadth.up20d = parseFloat(up20[1]);
+  if (med5) breadth.median5d = parseFloat(med5[1]);
+  if (med20) breadth.median20d = parseFloat(med20[1]);
+  if (bj) breadth.judgment = bj[1].trim();
+
+  // ── 4. 行业轮动 ──────────────────────────────────────
+  const industries: IndustryRegime[] = [];
+  const indBlock = md.match(/行业轮动分析[\s\S]*?\n([\s\S]*?)(?=\n=+\s*$|周期\/价值|综合市场状态)/m);
+  if (indBlock) {
+    const indLines = indBlock[1].split('\n');
+    for (const line of indLines) {
+      // 行业名     强势占比  5日  20日  样本数 [bar]
+      const m = line.match(/^\s*(\S+(?:\s\S+)*?)\s{2,}([\d.]+)%\s+(-?[\d.]+)%\s+(-?[\d.]+)%\s+(\d+)\s/);
+      if (m) {
+        industries.push({
+          name: m[1].trim(),
+          strongPct: parseFloat(m[2]),
+          d5: parseFloat(m[3]),
+          d20: parseFloat(m[4]),
+          samples: parseInt(m[5]),
+        });
+      }
+    }
+  }
+
+  // ── 5. 风格总结 (周期/价值/成长) ──────────────────────
+  let styleSummary = '';
+  const ssMatch = md.match(/当前风格:\s*([^\n]+)/);
+  if (ssMatch) styleSummary = ssMatch[1].trim();
+
+  // ── 6. 综合判断 + 策略 ────────────────────────────────
+  const meta: RegimeMeta = {
+    trend: '', volatility: '', breadth: '', style: '',
+    regimeTag: '', confidence: '',
+    recommends: [], cautions: [], fallback: '',
+  };
+  const trendM = md.match(/趋势:\s*([^\n]+)/);
+  const volM = md.match(/波动率:\s*([^\n]+)/);
+  const brM = md.match(/宽度:\s*([^\n]+)/);
+  const stM = md.match(/风格:\s*([^\n]+)/);
+  if (trendM) meta.trend = trendM[1].trim();
+  if (volM) meta.volatility = volM[1].trim();
+  if (brM) meta.breadth = brM[1].trim();
+  if (stM) meta.style = stM[1].trim();
+  const regM = md.match(/Regime标签:\s*([^\n]+)/);
+  const confM = md.match(/置信度:\s*([^\n]+)/);
+  if (regM) meta.regimeTag = regM[1].trim();
+  if (confM) meta.confidence = confM[1].trim();
+  // 推荐 + 谨慎
+  for (const m of md.matchAll(/✅\s*推荐:\s*([^\n]+)/g)) {
+    meta.recommends.push(m[1].trim());
+  }
+  for (const m of md.matchAll(/⚠️\s*谨慎:\s*([^\n]+)/g)) {
+    meta.cautions.push(m[1].trim());
+  }
+  const fbM = md.match(/⚠️\s*如果判断错了:\s*([\s\S]+?)(?:\n=+\s*$|$)/m);
+  if (fbM) meta.fallback = fbM[1].trim();
+
+  // ── 7. 交易日 ────────────────────────────────────────
+  const tdM = md.match(/A股市场状态分析\s*-\s*(\d{4}-\d{2}-\d{2})/);
+  const tradeDate = tdM ? tdM[1] : '';
+
+  if (!indices.length && !industries.length) return null;
+  return { indices, styles, breadth, industries, styleSummary, meta, tradeDate };
+}
+
+// ─── 市场状态顶层容器 ─────────────────────────────────────────
+function MarketRegimeView({ md }: { md: string }) {
+  const p = useMemo(() => parseMarketRegime(md), [md]);
+  if (!p) {
+    return <pre className="bg-white border border-gray-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">{md}</pre>;
+  }
+  return (
+    <div className="space-y-4">
+      {p.tradeDate && (
+        <div className="text-xs text-gray-400">交易日: <span className="font-mono">{p.tradeDate}</span></div>
+      )}
+      {/* 区域 1: 4 标签 + Regime 总览 + 置信度 */}
+      <RegimeHeader meta={p.meta} />
+      {/* 区域 2: 指数表 (12 行, 6 列 heatmap) */}
+      <RegimeIndices rows={p.indices} />
+      {/* 区域 3: 风格对比 (3 mini 卡) */}
+      {p.styles.length > 0 && <RegimeStyles styles={p.styles} />}
+      {/* 区域 4: 宽度分析 (5 数 + 横向条) */}
+      <RegimeBreadth b={p.breadth} />
+      {/* 区域 5: 行业轮动 (24 行业) */}
+      {p.industries.length > 0 && (
+        <RegimeIndustries rows={p.industries} styleSummary={p.styleSummary} />
+      )}
+      {/* 区域 6: 策略建议 */}
+      <RegimeStrategy meta={p.meta} />
+    </div>
+  );
+}
+
+// ── 区域 1: 顶部 4 标签 + Regime ──────────────────────────────
+function RegimeHeader({ meta }: { meta: RegimeMeta }) {
+  const tagBg = (s: string) => {
+    if (s.includes('强势') || s.includes('温和') || s.includes('占优')) return 'bg-red-50 text-red-700 border-red-200';
+    if (s.includes('弱势') || s.includes('下跌') || s.includes('衰退')) return 'bg-green-50 text-green-700 border-green-200';
+    return 'bg-gray-50 text-gray-600 border-gray-200';
+  };
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+        <div className={`rounded-lg border p-2.5 ${tagBg(meta.trend)}`}>
+          <div className="text-[10px] text-gray-500 mb-0.5">趋势</div>
+          <div className="text-sm font-semibold">{meta.trend || '--'}</div>
+        </div>
+        <div className={`rounded-lg border p-2.5 ${tagBg(meta.volatility)}`}>
+          <div className="text-[10px] text-gray-500 mb-0.5">波动率</div>
+          <div className="text-sm font-semibold">{meta.volatility || '--'}</div>
+        </div>
+        <div className={`rounded-lg border p-2.5 ${tagBg(meta.breadth)}`}>
+          <div className="text-[10px] text-gray-500 mb-0.5">宽度</div>
+          <div className="text-sm font-semibold">{meta.breadth || '--'}</div>
+        </div>
+        <div className={`rounded-lg border p-2.5 ${tagBg(meta.style)}`}>
+          <div className="text-[10px] text-gray-500 mb-0.5">风格</div>
+          <div className="text-sm font-semibold">{meta.style || '--'}</div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] text-gray-500">Regime:</span>
+        <span className="px-2.5 py-1 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 text-blue-700 rounded-md text-sm font-bold">
+          {meta.regimeTag || '--'}
+        </span>
+        <span className="text-[10px] text-gray-500 ml-2">置信度:</span>
+        <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+          meta.confidence === '高' ? 'bg-red-100 text-red-700' :
+          meta.confidence === '中' ? 'bg-orange-100 text-orange-700' :
+          meta.confidence === '低' ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400'
+        }`}>
+          {meta.confidence || '--'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── 区域 2: 指数表 ────────────────────────────────────────────
+function RegimeIndices({ rows }: { rows: IndexRow[] }) {
+  if (!rows.length) return null;
+  const cols: { key: keyof IndexRow; label: string }[] = [
+    { key: 'd5', label: '5日' },
+    { key: 'd10', label: '10日' },
+    { key: 'd20', label: '20日' },
+    { key: 'd60', label: '60日' },
+    { key: 'ytd', label: '年内' },
+    { key: 'vol', label: '20日波' },
+  ];
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs text-gray-500 mb-3 flex items-center gap-2">
+        <span className="font-semibold text-gray-700">📊 12 大指数多周期</span>
+        <span className="text-[10px] text-gray-400">MA5/10/20/60/120 方向 + 6 周期涨幅</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-500 border-b border-gray-100">
+              <th className="text-left py-1.5 pr-2 font-medium">指数</th>
+              <th className="text-right py-1.5 px-1.5 font-medium">收盘</th>
+              {cols.map(c => (
+                <th key={c.key} className="text-right py-1.5 px-1.5 font-medium">{c.label}</th>
+              ))}
+              <th className="text-right py-1.5 px-1.5 font-medium">MA</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.name} className="border-b border-gray-50 hover:bg-gray-50/50">
+                <td className="py-1.5 pr-2 font-medium text-gray-700 whitespace-nowrap">{r.name}</td>
+                <td className="py-1.5 px-1.5 text-right font-mono text-gray-600">{r.close}</td>
+                {cols.map(c => {
+                  const v = r[c.key] as number;
+                  return (
+                    <td key={c.key} className={`py-1.5 px-1.5 text-right font-mono ${pctBg(v)} ${pctColor(v)}`}>
+                      {v > 0 ? '+' : ''}{v.toFixed(1)}%
+                    </td>
+                  );
+                })}
+                <td className="py-1.5 px-1.5 text-right font-mono text-[10px] space-x-0.5">
+                  {[r.ma5, r.ma10, r.ma20, r.ma60, r.ma120].map((d, i) => (
+                    <span key={i} className={d === '↑' ? 'text-red-500' : 'text-green-500'}>{d}</span>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── 区域 3: 风格对比 ──────────────────────────────────────────
+function RegimeStyles({ styles }: { styles: StyleCompare[] }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs text-gray-500 mb-3 font-semibold text-gray-700">⚔️ 风格对比 (近 20 日)</div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {styles.map((s, i) => {
+          const winnerUp = s.winnerPct > s.loserPct;
+          return (
+            <div key={i} className="rounded-lg border border-gray-100 p-3">
+              <div className="text-[10px] text-gray-500 mb-2">{s.label}</div>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className={`text-xs font-semibold ${winnerUp ? 'text-red-600' : 'text-green-600'}`}>
+                    {s.winner}
+                  </span>
+                  <span className={`text-sm font-mono font-semibold ${pctColor(s.winnerPct, true)}`}>
+                    {s.winnerPct > 0 ? '+' : ''}{s.winnerPct.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className={`text-xs ${!winnerUp ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}`}>
+                    {s.loser}
+                  </span>
+                  <span className={`text-sm font-mono ${pctColor(s.loserPct)}`}>
+                    {s.loserPct > 0 ? '+' : ''}{s.loserPct.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="border-t border-gray-100 pt-1.5 flex items-center justify-between text-[10px]">
+                  <span className="text-gray-500">差值</span>
+                  <span className={`font-mono font-semibold ${s.diff > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {s.diff > 0 ? '+' : ''}{s.diff.toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── 区域 4: 宽度分析 ──────────────────────────────────────────
+function RegimeBreadth({ b }: { b: BreadthData }) {
+  const items: { label: string; v: number; suffix: string; isPct: boolean }[] = [
+    { label: '股价 > MA10', v: b.aboveMa10, suffix: '%', isPct: true },
+    { label: '股价 > MA20', v: b.aboveMa20, suffix: '%', isPct: true },
+    { label: '近 5 日上涨', v: b.up5d, suffix: '%', isPct: true },
+    { label: '近 20 日上涨', v: b.up20d, suffix: '%', isPct: true },
+    { label: '中位数 5 日', v: b.median5d, suffix: '%', isPct: true },
+    { label: '中位数 20 日', v: b.median20d, suffix: '%', isPct: true },
+  ];
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xs text-gray-500 font-semibold text-gray-700">📏 市场宽度</div>
+        {b.judgment && (
+          <span className="text-[10px] px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded">
+            {b.judgment}
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        {items.map((it, i) => {
+          const max = it.isPct ? 100 : 10;
+          const pct = Math.min(Math.abs(it.v) / max * 100, 100);
+          const positive = it.v > 0;
+          return (
+            <div key={i}>
+              <div className="flex items-center justify-between text-[10px] text-gray-500 mb-1">
+                <span>{it.label}</span>
+                <span className={`font-mono font-semibold ${pctColor(it.v, true)}`}>
+                  {it.v > 0 ? '+' : ''}{it.v.toFixed(1)}{it.suffix}
+                </span>
+              </div>
+              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${positive ? 'bg-red-400' : 'bg-green-400'}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── 区域 5: 行业轮动 ──────────────────────────────────────────
+function RegimeIndustries({ rows, styleSummary }: { rows: IndustryRegime[]; styleSummary: string }) {
+  // 排序: 强势占比降序
+  const sorted = [...rows].sort((a, b) => b.strongPct - a.strongPct);
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="text-xs font-semibold text-gray-700">🔄 行业轮动 ({rows.length} 行业 · 强势占比)</div>
+        {styleSummary && (
+          <span className="text-[10px] px-2 py-0.5 bg-orange-50 text-orange-700 border border-orange-100 rounded">
+            {styleSummary}
+          </span>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {sorted.map((r, i) => {
+          const barPct = r.strongPct;
+          return (
+            <div key={i} className="flex items-center gap-2 text-xs">
+              <span className="w-24 truncate text-gray-700" title={r.name}>{r.name}</span>
+              <div className="flex-1 h-3 bg-gray-50 rounded overflow-hidden relative">
+                <div
+                  className={`h-full rounded ${
+                    r.strongPct >= 80 ? 'bg-red-400' :
+                    r.strongPct >= 50 ? 'bg-orange-400' :
+                    r.strongPct >= 20 ? 'bg-yellow-400' :
+                    'bg-gray-300'
+                  }`}
+                  style={{ width: `${barPct}%` }}
+                />
+              </div>
+              <span className="w-12 text-right font-mono text-gray-600 text-[11px]">{r.strongPct.toFixed(0)}%</span>
+              <span className={`w-14 text-right font-mono text-[11px] ${pctColor(r.d5)}`}>
+                {r.d5 > 0 ? '+' : ''}{r.d5.toFixed(1)}%
+              </span>
+              <span className={`w-14 text-right font-mono text-[11px] ${pctColor(r.d20)}`}>
+                {r.d20 > 0 ? '+' : ''}{r.d20.toFixed(1)}%
+              </span>
+              <span className="w-10 text-right font-mono text-[10px] text-gray-400">{r.samples}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-3 text-[10px] text-gray-400 mt-2 pt-2 border-t border-gray-50">
+        <span>← 强势占比%</span>
+        <span>· 5日%</span>
+        <span>· 20日%</span>
+        <span className="ml-auto">· 样本数</span>
+      </div>
+    </div>
+  );
+}
+
+// ── 区域 6: 策略建议 ──────────────────────────────────────────
+function RegimeStrategy({ meta }: { meta: RegimeMeta }) {
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="text-xs text-gray-500 mb-3 font-semibold text-gray-700">🎯 策略适配</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        {meta.recommends.length > 0 && (
+          <div className="rounded-lg border border-red-100 bg-red-50/50 p-3">
+            <div className="text-[10px] text-red-600 font-semibold mb-1.5">✅ 推荐策略</div>
+            <ul className="space-y-1">
+              {meta.recommends.map((r, i) => (
+                <li key={i} className="text-xs text-red-800">• {r}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {meta.cautions.length > 0 && (
+          <div className="rounded-lg border border-orange-100 bg-orange-50/50 p-3">
+            <div className="text-[10px] text-orange-600 font-semibold mb-1.5">⚠️ 谨慎策略</div>
+            <ul className="space-y-1">
+              {meta.cautions.map((r, i) => (
+                <li key={i} className="text-xs text-orange-800">• {r}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+      {meta.fallback && (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="text-[10px] text-gray-600 font-semibold mb-1.5">🔄 错判预案</div>
+          <div className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{meta.fallback}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IndustryCrowdingView({ md }: { md: string }) {
   const parsed = useMemo(() => parseIndustryCrowding(md), [md]);
   if (!parsed) {
@@ -1305,7 +1835,9 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
 
       {/* markdown 内容 (脚本 main() 的 stdout 输出) */}
       {cache?.markdown ? (
-        name === 'industry-crowding' ? (
+        name === 'market-regime' ? (
+          <MarketRegimeView md={cache.markdown} />
+        ) : name === 'industry-crowding' ? (
           <IndustryCrowdingView md={cache.markdown} />
         ) : name === 'sentiment-cycle' ? (
           <SentimentCycleView md={cache.markdown} />
