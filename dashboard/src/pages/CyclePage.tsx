@@ -207,7 +207,7 @@ export function CyclePage() {
       if (!cancelled && j) setRefreshState(j);
     };
     sync();
-    const t = setInterval(sync, 3000);
+    const t = setInterval(sync, 5000);  // 3s → 5s, 减少轮询压力
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
@@ -224,7 +224,7 @@ export function CyclePage() {
           setRefreshBannerDismissed(false);
         }
       }
-    }, 2000);
+    }, 5000);  // 2s → 5s, 减少轮询压力
     return () => clearInterval(t);
   }, [refreshState?.status]);
 

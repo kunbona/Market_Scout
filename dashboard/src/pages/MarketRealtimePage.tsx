@@ -260,7 +260,7 @@ export function MarketRealtimePage() {
         .then(d => setBigDeal(d ?? []))
         .catch(() => {});
     load();
-    const timer = setInterval(load, 3 * 60 * 1000);
+    const timer = setInterval(load, 5 * 60 * 1000);  // 3min → 5min, 减少轮询压力
     return () => clearInterval(timer);
   }, []);
 

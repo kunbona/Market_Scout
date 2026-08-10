@@ -73,6 +73,26 @@ export function ReviewPage() {
     );
   }
 
+  const [recomputing, setRecomputing] = useState(false);
+
+  const handleRecompute = async () => {
+    if (recomputing) return;
+    if (!confirm('重算当前显示日期的复盘数据?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住')) return;
+    setRecomputing(true);
+    setError('');
+    try {
+      const targetDate = (selectedDate || data?.trade_date || '').replace(/-/g, '');
+      const url = `/api/review/data?date=${targetDate}&force=1`;
+      await fetch(url);  // 后端 INSERT OR REPLACE
+      // 重算完 reload
+      await fetchData();
+    } catch (e: any) {
+      setError(e.message || '重算失败');
+    } finally {
+      setRecomputing(false);
+    }
+  };
+
   return (
     <div>
       <TabHeader title="复盘数据" subtitle={data ? `${data.trade_date} · 全市场${data.overview.stock_count}只股票` : ''} />
@@ -89,6 +109,13 @@ export function ReviewPage() {
             <option value="">最新</option>
             {dates.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
+          <button
+            onClick={handleRecompute}
+            disabled={recomputing || loading}
+            className="ml-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {recomputing ? '⏳ 重算中…' : '🔄 重算'}
+          </button>
           {loading && <span className="text-xs text-amber-500">加载中...</span>}
           {error && <span className="text-xs text-red-500">{error}</span>}
         </div>

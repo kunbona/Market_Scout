@@ -15,6 +15,19 @@ from typing import Callable
 
 from core.python_runtime import get_python_executable
 
+# 加载 .env.local (项目根 + 当前目录), 不覆盖已有 env, 解决 "server 不读 .env.local" 老大难
+try:
+    from dotenv import load_dotenv
+    for _env_path in [
+        os.path.join(os.path.dirname(__file__), ".env.local"),
+        os.path.join(os.path.dirname(__file__), ".env"),
+    ]:
+        if os.path.exists(_env_path):
+            load_dotenv(_env_path, override=False)
+            break
+except ImportError:
+    pass
+
 # 强制 line-buffering，确保 PIPELINE 日志在重定向时也能实时刷出
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
@@ -1703,18 +1716,16 @@ import json as _json
 
 @app.route("/api/review/latest")
 def api_review_latest():
+    """最近一次复盘 — 永远返回 cache, 不触发自动重算 (compute 30-120s 太慢会拖死前端)。
+
+    想拿新数据: 调 /api/review/data?date=YYYY-MM-DD (单日重算, 走 INSERT OR REPLACE)。
+    想批量刷新: 手动跑 `python -c "from quant.review_compute import compute_daily_analysis; compute_daily_analysis()"`。
+    """
     try:
         row = get_review_daily(None)
-        # 缓存的交易日已落后于本地数据集最新交易日时，重新计算
         if row:
-            try:
-                from quant.review_compute import _latest_trade_date
-                data_latest = _latest_trade_date()
-            except Exception:
-                data_latest = ""
-            if not data_latest or row["trade_date"] >= data_latest:
-                return _ok(_json.loads(row["payload"]))
-        # 无缓存或缓存过期，触发计算
+            return _ok(_json.loads(row["payload"]))
+        # 完全没 cache, 同步算一次 (用户首次访问场景, 偶尔卡)
         from quant.review_compute import compute_daily_analysis
         data = compute_daily_analysis()
         if data:
