@@ -1,5 +1,5 @@
 """
-Market Radar — Flask 服务
+Market Scout — Flask 服务
 启动方式：bash start.sh
 端口通过 FLASK_PORT 环境变量配置（默认 20026），写入 .env.local 持久化。
 """

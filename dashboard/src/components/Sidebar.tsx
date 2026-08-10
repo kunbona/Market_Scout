@@ -143,7 +143,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
             <Sparkles className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">Market Radar</h1>
+            <h1 className="text-xl font-semibold text-gray-900">Market Scout</h1>
             <p className="text-xs text-gray-500">A 股行情监控</p>
           </div>
         </div>

@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-Market Radar — A 股财经信息聚合仪表盘。Flask 后端 + React SPA 前端。实时整合多源财经快讯、政策动态、市场数据、情绪指标、研究报告。
+Market Scout — A 股 Scout 派监控仪表盘。Flask 后端 + React SPA 前端。整合多源财经数据 + 本地量价 + LLM 推理 (周期定位 / 顶底量化 / 信息情报 / 战略推理 / 9 维度复盘)。
 
 **技术栈：** Flask + Waitress（生产 WSGI）、React 18 + TypeScript + Vite + Tailwind CSS v4、APScheduler（后台调度）、SQLite（`db/market.db`）。
 
@@ -134,7 +134,7 @@ React SPA (dashboard/dist/)，由 Flask 在 / 路径托管
 
 ### 子项目：`quant-trader/`
 
-`quant-trader/` 是一个独立的量化实盘交易框架。有自己的 `AGENTS.md`、conda 环境（`quantENV`）和 skills。主 Market Radar 项目不从它导入代码；二者仅共享同一个 Git 仓库。
+`quant-trader/` 是一个独立的量化实盘交易框架。有自己的 `AGENTS.md`、conda 环境（`quantENV`）和 skills。主 Market Scout 项目不从它导入代码；二者仅共享同一个 Git 仓库。
 
 ## 关键约定与注意事项
 

@@ -1,6 +1,6 @@
 # QMT Bridge
 
-把 Windows VM 上的 miniQMT / xtquant 能力通过 HTTP 暴露给 Mac 端的 Market Radar 主服务。
+把 Windows VM 上的 miniQMT / xtquant 能力通过 HTTP 暴露给 Mac 端的 Market Scout 主服务。
 
 ## 架构
 
