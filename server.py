@@ -195,7 +195,13 @@ from fetcher.cycle_signal import (
 
 DIST = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
 
-app = Flask(__name__, static_folder=DIST, static_url_path="")
+app = Flask(__name__, static_folder=None, static_url_path="/_static_disabled_")
+# 关键: 关掉 Flask 默认的 static catch-all 路由. 之前用 static_folder=DIST +
+# static_url_path="" 时, Flask 自动注册了 "/<path:filename>" 路由, 比我们的
+# @app.route("/<path:path>") serve_spa 先注册, 所有路径 (如 /review /strategist) 都被它
+# 截走到 dist 里找文件, 找不到返 404, 彻底破坏 React Router SPA fallback.
+# 修法: static_folder=None (不再 serve 静态), static_url_path 设成无意义前缀.
+# 我们自己的 serve_spa 会显式 send_from_directory(DIST, ...) 并加 cache 头.
 CORS(app)
 
 

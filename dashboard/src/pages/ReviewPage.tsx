@@ -39,6 +39,7 @@ export function ReviewPage() {
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState('');
   const [activeTab, setActiveTab] = useState('flow');
+  const [recomputing, setRecomputing] = useState(false);  // ⚠️ 必须放 top-level, 早 return 之前
 
   const fetchData = async (date?: string) => {
     setLoading(true);
@@ -64,17 +65,6 @@ export function ReviewPage() {
     fetchData(d);
   };
 
-  if (loading && !data) {
-    return (
-      <div>
-        <TabHeader title="复盘数据" subtitle="基于全市场日线数据的板块效应分析" />
-        <div className="px-4 py-12 text-center text-gray-400 text-sm">计算中...</div>
-      </div>
-    );
-  }
-
-  const [recomputing, setRecomputing] = useState(false);
-
   const handleRecompute = async () => {
     if (recomputing) return;
     if (!confirm('重算当前显示日期的复盘数据?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住')) return;
@@ -92,6 +82,15 @@ export function ReviewPage() {
       setRecomputing(false);
     }
   };
+
+  if (loading && !data) {
+    return (
+      <div>
+        <TabHeader title="复盘数据" subtitle="基于全市场日线数据的板块效应分析" />
+        <div className="px-4 py-12 text-center text-gray-400 text-sm">计算中...</div>
+      </div>
+    );
+  }
 
   return (
     <div>
