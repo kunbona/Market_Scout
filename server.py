@@ -293,17 +293,18 @@ _DM_KUN_EXTRA_ARGS: dict[str, list[str]] = {
 
 
 def _dm_kun_default_industries() -> list[str]:
-    """stock_recommender 默认行业: 从 industry_crowding cache 抽分位≥80% 的拥挤行业
+    """stock_recommender 默认行业: 从 industry_crowding cache 抽拥挤区 (3年分位≥80%) 行业
     (最多 5 个). 没 cache 就用 5 个常见行业兜底."""
     with _DM_KUN_LOCK:
         md = _DM_KUN_CACHE["industry_crowding"].get("markdown") or ""
-    # 抠 "🔴 拥挤区（分位≥80%...）**：" 后面那一行, 格式 "建筑材料(100%)、通信(98%)、医药生物(83%)"
+    # 抠 "🔴 拥挤区（3年分位≥80%...）**：" 后面那一行
+    # 行业名格式: 通信(1y:98% / 3y:100% / 5y:100%) 或 建筑材料(1y:100% / 3y:99% / 5y:96%)
     # 注意 markdown `）**：` 之间有 markdown 加粗标记 `**`, regex 用 \*+ 容忍
     import re as _re
-    m = _re.search(r"🔴\s*拥挤区（分位≥80%[^）]*）\s*\*+\s*[：:]\s*([^\n]+)", md)
+    m = _re.search(r"🔴\s*拥挤区（3年分位≥80%[^）]*）\s*\*+\s*[：:]\s*([^\n]+)", md)
     if m:
-        # 抠出 "XXX(NN%)" 里的 XXX
-        names = _re.findall(r"([^、，,\s()]+)\(\d+%\)", m.group(1))
+        # 抠出 "XXX(1y:NN% / ...)" 里的 XXX (注意里面有空格和冒号, 跟旧格式不一样)
+        names = _re.findall(r"([^、，,\s()]+)\(1y:", m.group(1))
         if names:
             return names[:5]
     return ["电子", "电力设备", "有色金属", "医药生物", "通信"]
