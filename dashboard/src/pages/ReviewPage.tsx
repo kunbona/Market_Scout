@@ -7,7 +7,17 @@ import { apiFetch } from '../lib/api';
 interface ReviewData {
   trade_date: string;
   computed_at: string;
-  overview: { total_amount_yi: number; main_net_yi: number; retail_net_yi: number; up_count: number; down_count: number; stock_count: number };
+  overview: {
+    total_amount_yi: number;
+    main_net_yi: number;
+    main_net_ma20?: number;
+    main_net_diff?: number;
+    main_net_ratio?: number | null;
+    retail_net_yi: number;
+    up_count: number;
+    down_count: number;
+    stock_count: number;
+  };
   sector_flow: Array<{ sector: string; main_net_yi: number; retail_net_yi: number; amount_yi: number; avg_change_pct: number; stock_count: number }>;
   limit_analysis: { limit_up_count: number; limit_down_count: number; limit_up_sectors: Array<{ sector: string; count: number }>; limit_down_sectors: Array<{ sector: string; count: number }>; limit_up_trend: Array<{ date: string; count: number }>; limit_down_trend: Array<{ date: string; count: number }> };
   market_cap_groups: Array<{ group: string; avg_change_pct: number; count: number; up_ratio: number; amount_yi: number }>;
@@ -130,16 +140,31 @@ export function ReviewPage() {
       {data && (
         <>
           {/* KPI 概览卡片 */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 px-4 mb-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 px-4 mb-4">
             {[
               { label: '全市场成交额', value: fmtYi(data.overview.total_amount_yi) },
-              { label: '主力净流入', value: fmtYi(data.overview.main_net_yi), extra: numColor(data.overview.main_net_yi) },
+              {
+                label: '主力净流入',
+                value: fmtYi(data.overview.main_net_yi),
+                extra: numColor(data.overview.main_net_yi),
+                sub: data.overview.main_net_ma20 != null ? (() => {
+                  const diff = data.overview.main_net_diff ?? 0;
+                  const ratio = data.overview.main_net_ratio;
+                  return {
+                    text: `MA20 ${diff >= 0 ? '+' : ''}${diff.toFixed(1)}亿${ratio != null ? ` · ${ratio}x` : ''}`,
+                    color: diff > 50 ? 'text-red-500' : diff > 0 ? 'text-red-400' : diff < -50 ? 'text-green-600' : diff < 0 ? 'text-green-500' : 'text-gray-400',
+                  };
+                })() : undefined,
+              },
               { label: '上涨家数', value: `${data.overview.up_count} 只`, extra: 'text-red-600' },
+              { label: '下跌家数', value: `${data.overview.down_count} 只`, extra: 'text-green-600' },
+              { label: '平盘家数', value: `${data.overview.stock_count - data.overview.up_count - data.overview.down_count} 只`, extra: 'text-gray-500' },
               { label: '抱团度', value: `${data.huddle.current}%`, extra: data.huddle.current > data.huddle.ma20 ? 'text-amber-600' : 'text-gray-500' },
             ].map(kpi => (
               <div key={kpi.label} className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
                 <div className="text-xs text-gray-400 mb-1">{kpi.label}</div>
                 <div className={`text-lg font-bold ${kpi.extra || 'text-gray-900'}`}>{kpi.value}</div>
+                {kpi.sub && <div className={`text-[10px] mt-0.5 font-mono ${kpi.sub.color}`}>{kpi.sub.text}</div>}
               </div>
             ))}
           </div>

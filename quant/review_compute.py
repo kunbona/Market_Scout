@@ -179,16 +179,45 @@ def _get_period_df(full: pd.DataFrame, days: int) -> pd.DataFrame:
 # ─── 分析函数 ─────────────────────────────────────────────────
 
 
-def _market_overview(latest: pd.DataFrame) -> dict:
+def _market_overview(latest: pd.DataFrame, full: pd.DataFrame | None = None) -> dict:
     total_amount = float(latest["成交额(亿)"].sum()) if "成交额(亿)" in latest.columns else 0.0
     main_net = float(latest["主力净流入(亿)"].sum()) if "主力净流入(亿)" in latest.columns else 0.0
     retail_net = float(latest["散户净流入(亿)"].sum()) if "散户净流入(亿)" in latest.columns else 0.0
     up_count = int((latest["涨跌幅"] > 0).sum()) if "涨跌幅" in latest.columns else 0
     down_count = int((latest["涨跌幅"] < 0).sum()) if "涨跌幅" in latest.columns else 0
     stock_count = len(latest)
+
+    # ── 主力净流入 MA20 + 差额/比值 ────────────────────────────
+    # 思路跟 amount_ma20 (daily_compute.py) 一致: 按交易日期 group 全市场
+    # 主力净流入, 取最近 20 个交易日 (不含当日) 的均值作为 MA20.
+    # 但主力净流入可正可负, ratio 语义跟成交额不同 ——
+    # 成交额 ratio: 1.5x = 放量大涨, 永远正数
+    # 主力 ratio: 正数=强于均值, 负数=弱于均值, 符号代表方向不是倍数
+    # 所以主指标用 diff (当日 - MA20), 符号直观: 正=流入强, 负=流出强.
+    main_net_ma20 = 0.0
+    main_net_diff = 0.0
+    main_net_ratio = 0.0
+    if full is not None and "主力净流入(亿)" in full.columns and not full.empty:
+        latest_date = latest["交易日期"].iloc[0] if not latest.empty else None
+        daily_main = full.groupby("交易日期")["主力净流入(亿)"].sum().sort_index()
+        # 排除当日, 取前 20 个交易日均值 (避免今日双重计入)
+        prev = daily_main[daily_main.index < latest_date] if latest_date is not None else daily_main
+        base = prev.iloc[-20:] if len(prev) >= 20 else prev
+        if not base.empty:
+            main_net_ma20 = float(base.mean())
+            main_net_diff = round(main_net - main_net_ma20, 2)
+            # ratio 仅在 MA20 > 0 时算 (常态市场); 熊市长期流出时返 None
+            if main_net_ma20 > 0:
+                main_net_ratio = round(main_net / main_net_ma20, 2)
+            else:
+                main_net_ratio = None  # 熊市口径, ratio 失效, 用 diff 即可
+
     return {
         "total_amount_yi": round(total_amount, 2),
         "main_net_yi": round(main_net, 2),
+        "main_net_ma20": round(main_net_ma20, 2),
+        "main_net_diff": main_net_diff,
+        "main_net_ratio": main_net_ratio,
         "retail_net_yi": round(retail_net, 2),
         "up_count": up_count,
         "down_count": down_count,
@@ -444,7 +473,7 @@ def compute_daily_analysis(target_date: str | None = None) -> dict | None:
     result = {
         "trade_date": actual_date,
         "computed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "overview": _market_overview(latest),
+        "overview": _market_overview(latest, full=full),
         "sector_flow": _sector_flow(latest),
         "limit_analysis": _limit_analysis(latest, period),
         "market_cap_groups": _market_cap_groups(latest),
