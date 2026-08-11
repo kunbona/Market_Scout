@@ -1894,6 +1894,9 @@ def api_review_data():
         trade_date = request.args.get("date", "").strip()
         if not trade_date:
             return _err("缺少 date 参数", 400)
+        # 兼容前端两种格式: '20260811' (compact) 或 '2026-08-11' (ISO) — DB 存 ISO
+        if len(trade_date) == 8 and trade_date.isdigit():
+            trade_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
         row = get_review_daily(trade_date)
         if row:
             return _ok(_json.loads(row["payload"]))

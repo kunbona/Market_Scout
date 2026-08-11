@@ -64,7 +64,8 @@ export function ReviewPage() {
     setLoading(true);
     setError('');
     try {
-      const url = date ? `/api/review/data?date=${date.replace(/-/g, '')}` : '/api/review/latest';
+      // 直接传 ISO 格式 (DB 存的就是 ISO) — 后端兼容 compact 格式做兜底
+      const url = date ? `/api/review/data?date=${date}` : '/api/review/latest';
       const d = await apiFetch<ReviewData>(url);
       setData(d);
     } catch (e: any) {
@@ -90,7 +91,7 @@ export function ReviewPage() {
     setRecomputing(true);
     setError('');
     try {
-      const targetDate = (selectedDate || data?.trade_date || '').replace(/-/g, '');
+      const targetDate = selectedDate || data?.trade_date || '';
       const url = `/api/review/data?date=${targetDate}&force=1`;
       await fetch(url);  // 后端 INSERT OR REPLACE
       // 重算完 reload
