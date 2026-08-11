@@ -158,20 +158,20 @@ const fmtPercent = (value: number | null | undefined): string => (
   value == null ? '--' : `${(value * 100).toFixed(1)}%`
 );
 
-// 10 日线上占比颜色：>70% 强势（绿）/ 30-70% 中性（灰）/ <30% 弱势（红）
-// 50% 是后端判定"MA10 强势行业"的阈值；这里加 >70 强、<30 弱的两档更直观
+// 10 日线上占比颜色：>70% 强势（红）/ 30-70% 中性（灰）/ <30% 弱势（绿）
+// A 股惯例: 红涨绿跌 — 强势=涨=红, 弱势=跌=绿
 const ratioColor = (ratio: number | null | undefined): string => {
   if (ratio == null) return 'text-gray-400';
-  if (ratio > 0.7) return 'text-emerald-600';
-  if (ratio < 0.3) return 'text-red-600';
+  if (ratio > 0.7) return 'text-red-600';
+  if (ratio < 0.3) return 'text-green-600';
   return 'text-gray-700';
 };
 
-// 差值颜色：正绿(今天比昨天强) / 负红(今天比昨天弱) / 0 灰
+// 差值颜色：正红(今天比昨天强) / 负绿(今天比昨天弱) / 0 灰
 const deltaColor = (delta: number | null | undefined): string => {
   if (delta == null) return 'text-gray-400';
-  if (delta > 0.05) return 'text-emerald-600';
-  if (delta < -0.05) return 'text-red-600';
+  if (delta > 0.05) return 'text-red-600';
+  if (delta < -0.05) return 'text-green-600';
   return 'text-gray-500';
 };
 
@@ -524,7 +524,7 @@ export function QmtDataPage() {
                   <span className="text-center">{row.sector || '--'}</span>
                   <span className="text-center">{fmtPrice(row.last_price)}</span>
                   <span className="text-center">{fmtPrice(row.last_close)}</span>
-                  <span className="text-center text-teal-600 font-medium">{fmtPrice(row.down_limit)}</span>
+                  <span className="text-center text-green-600 font-medium">{fmtPrice(row.down_limit)}</span>
                   <span className="text-center">{row.tags.join(' / ')}</span>
                 </div>
               ))}
@@ -621,9 +621,9 @@ export function QmtDataPage() {
               const deltaSign = delta > 0 ? '+' : '';
               const deltaStr = delta === 0 ? '±0' : `${deltaSign}${delta}`;
               const deltaCls = delta > 0
-                ? 'text-emerald-600'
+                ? 'text-red-600'
                 : delta < 0
-                  ? 'text-red-600'
+                  ? 'text-green-600'
                   : 'text-gray-400';
               return (
                 <div className="rounded-xl border border-gray-100 p-4" title="实时占比 >50% 的行业数，对比昨日。差值显示今日盘口强势行业的增减。">
