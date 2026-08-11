@@ -365,13 +365,23 @@ export function QmtDataPage() {
   const filteredMonitorRows = useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase();
     return (monitorData?.items ?? []).filter((row) => {
-      // 数据兜底: 表里可能有历史脏数据 (QMT tick 错位/停牌瞬间)
-      // 跌停定义 = 现价 ≈ 跌停价 (允许 1 分钱误差, 即 0.011 包含 ST 5% 的小数点)
-      // 跌穿跌停价 (last_price < down_limit) 或 现价远高于跌停价 都按非跌停过滤
+      // 数据兜底: 表里可能有历史脏数据 (QMT tick 错位/停牌瞬间/退市股)
+      // 跌停定义 = 现价 ≈ 跌停价, 用 ratio check 比 abs check 鲁棒
+      // 兼容 A 股新旧规则:
+      // - 主板普通股 10% 跌停: last_price / down_limit ≈ 1.0
+      // - 主板 ST 旧规则 5% 跌停: down_limit=0.95*lc, last_price≈0.95*lc, ratio≈1.0
+      //   但 fetch 用了新规 0.9 算法, 历史数据会落到 [0.94, 0.95] 区间
+      // - 主板 ST 新规则 10% 跌停 (2026-07-06): down_limit=0.9*lc, last_price≈0.9*lc, ratio≈1.0
+      // - 创业板/科创板 20% 跌停: ratio=1.0
+      // - 北交所 30% 跌停: ratio=1.0
+      // - 跌穿 (脏数据/退市股): ratio<0.9 → 挡
+      // - 没跌停 (现价 > 跌停价): ratio>1.01 → 挡
       if (
         row.last_price != null &&
         row.down_limit != null &&
-        Math.abs(row.last_price - row.down_limit) > 0.011
+        row.down_limit > 0 &&
+        (row.last_price / row.down_limit < 0.9 ||
+          row.last_price / row.down_limit > 1.01)
       ) {
         return false;
       }

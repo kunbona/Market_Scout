@@ -150,15 +150,21 @@ def cal_zdt_price(df):
         非ST股票 10%
         ST股票 5%
 
-        ---2020年8月24日至今
+        ---2020年8月24日 至 2026年7月5日
         普通非ST股票 10%
         普通ST股票 5%
-
         科创板（sh68） 20%（一直是20%，不受时间限制）
         创业板（sz3） 20%
         科创板和创业板即使ST，涨跌幅限制也是20%
 
+        ---2026年7月6日至今
+        主板（沪深 sh60/sz00）ST 跟普通股并轨，10%
+        创业板/科创板/北交所 ST 不受影响
         北交所（bj） 30%
+
+    ⚠️ TODO: 当前实现 L172-176 仍按 5% 计算主板 ST 跌停价,
+       需要按 trade_date 加时间分界, 2026-07-06 前用 0.95, 之后用 0.9
+       (跟 fetcher/xtquant_limit_down.py 对齐, dt_pool_v3 fetch 已切到 0.9)
 
     参数:
     df (DataFrame): 必须得是日线数据。必须包含的字段：前收盘价，开盘价，最高价，最低价
@@ -174,6 +180,14 @@ def cal_zdt_price(df):
     df["跌停价"] = df["前收盘价"] * 0.9
     df.loc[cond, "涨停价"] = df["前收盘价"] * 1.05
     df.loc[cond, "跌停价"] = df["前收盘价"] * 0.95
+
+    # 主板 ST 2026-07-06 起跟普通股并轨 (新规 5% → 10%)
+    # 仅对沪深主板 (60xxxx.SH / 00xxxx.SZ) 生效, 创业板/科创板/北交所 ST 不变
+    # 注: 这里的"股票代码"是东方财富格式 .SH/.SZ (不是 xtquant 的 sh/sz 前缀)
+    cond_main = df["股票代码"].str.match(r"^(60|00)\d{4}\.(SH|SZ)$")
+    cond_st_after = cond & cond_main & (df["交易日期"] >= pd.to_datetime("2026-07-06"))
+    df.loc[cond_st_after, "涨停价"] = df["前收盘价"] * 1.1
+    df.loc[cond_st_after, "跌停价"] = df["前收盘价"] * 0.9
 
     # 计算科创板和新规后的创业板的涨停价和跌停价
     rule_kcb = df["股票代码"].str.contains("sh68")  # 科创板

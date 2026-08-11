@@ -333,10 +333,17 @@ def fetch_dt_pool_v3(target_trade_date: str | None = None) -> None:
             stock_name = meta["stock_name"]
             sector = meta["sector"]
             down_limit = compute_down_limit(code, stock_name, last_close, trade_date)
-            if down_limit is None:
+            if down_limit is None or down_limit <= 0:
                 continue
-            if abs(last_price - down_limit) > 0.011:
-                continue  # 既不是真跌停 (last_price > down_limit) 也不是跌穿 (last_price < down_limit) — 脏数据丢掉
+            # ratio check (兼容新旧规则 + 抗脏数据):
+            # - 主板普通股 10% 跌停: last_price / down_limit ≈ 1.0
+            # - 主板 ST 旧规则 5% 跌停: down_limit = 0.95*lc, last_price ≈ 0.95*lc, ratio ≈ 1.0
+            # - 主板 ST 新规则 10% 跌停 (2026-07-06): down_limit = 0.9*lc, last_price ≈ 0.9*lc, ratio ≈ 1.0
+            # - 跌穿 (脏数据/异常): ratio < 0.9 → 挡
+            # - 没跌停 (现价 > 跌停价): ratio > 1.01 → 挡
+            ratio = last_price / down_limit
+            if ratio < 0.9 or ratio > 1.01:
+                continue  # 不是真跌停, 脏数据丢掉
             rows_to_replace.append(
                 {
                     "stock_code": code,
