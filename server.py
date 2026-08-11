@@ -44,6 +44,9 @@ logging.basicConfig(
     stream=sys.stdout,
     force=True,
 )
+logger = logging.getLogger(__name__)
+# 复盘重算进度跟踪 (默认 WARNING 看不到 INFO)
+logging.getLogger("quant.review_compute").setLevel(logging.INFO)
 # Flask 启动/请求日志保留 WARNING，apscheduler 完全静默
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
@@ -1891,22 +1894,29 @@ def api_review_dates():
 @app.route("/api/review/data")
 def api_review_data():
     try:
+        import time as _time
         trade_date = request.args.get("date", "").strip()
+        force = request.args.get("force", "").strip() in ("1", "true", "yes")
         if not trade_date:
             return _err("缺少 date 参数", 400)
         # 兼容前端两种格式: '20260811' (compact) 或 '2026-08-11' (ISO) — DB 存 ISO
         if len(trade_date) == 8 and trade_date.isdigit():
             trade_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
         row = get_review_daily(trade_date)
-        if row:
+        if row and not force:
             return _ok(_json.loads(row["payload"]))
-        # 如果没找到，尝试计算
+        # force=1 或 没找到 → 同步重算 (1-2 分钟, 期间 HTTP 不返, 前端按钮转圈等)
         from quant.review_compute import compute_daily_analysis
+        logger.info("[review] 重算开始 trade_date=%s force=%s (cache_hit=%s)", trade_date, force, bool(row))
+        t0 = _time.time()
         data = compute_daily_analysis(trade_date)
+        elapsed = round(_time.time() - t0, 1)
         if data:
             payload = _json.dumps(data, ensure_ascii=False, default=str)
             insert_review_daily(data["trade_date"], payload)
-            return _ok(data)
+            logger.info("[review] 重算完成 trade_date=%s 耗时=%ss", data["trade_date"], elapsed)
+            return _ok({**data, "_recompute": True, "_elapsed_sec": elapsed})
+        logger.warning("[review] 重算未返回数据 trade_date=%s 耗时=%ss", trade_date, elapsed)
         return _ok(None)
     except Exception as exc:
         return _err(exc)

@@ -93,7 +93,11 @@ export function ReviewPage() {
     try {
       const targetDate = selectedDate || data?.trade_date || '';
       const url = `/api/review/data?date=${targetDate}&force=1`;
-      await fetch(url);  // 后端 INSERT OR REPLACE
+      const r = await fetch(url);
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ message: r.statusText }));
+        throw new Error(err.message || err.error || `HTTP ${r.status}`);
+      }
       // 重算完 reload
       await fetchData();
     } catch (e: any) {
