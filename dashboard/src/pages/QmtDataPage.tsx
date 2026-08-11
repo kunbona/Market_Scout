@@ -365,6 +365,16 @@ export function QmtDataPage() {
   const filteredMonitorRows = useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase();
     return (monitorData?.items ?? []).filter((row) => {
+      // 数据兜底: 表里可能有历史脏数据 (QMT tick 错位/停牌瞬间)
+      // 跌停定义 = 现价 ≈ 跌停价 (允许 1 分钱误差, 即 0.011 包含 ST 5% 的小数点)
+      // 跌穿跌停价 (last_price < down_limit) 或 现价远高于跌停价 都按非跌停过滤
+      if (
+        row.last_price != null &&
+        row.down_limit != null &&
+        Math.abs(row.last_price - row.down_limit) > 0.011
+      ) {
+        return false;
+      }
       if (stOnly && !row.is_st) {
         return false;
       }

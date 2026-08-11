@@ -321,6 +321,9 @@ def fetch_dt_pool_v3(target_trade_date: str | None = None) -> None:
             return
 
         # 第二遍：只对候选股（通常 0-几十只）调 get_security_meta 拿名字/行业
+        # 精筛条件改为 abs(last_price - down_limit) ≤ 0.011（允许 1 分钱误差）
+        # 修复前: 只过滤 last_price > down_limit 的, 会漏掉 last_price < down_limit 的
+        # 跌穿跌停价 (按 A 股规则不存在) — 大概率是 QMT tick 脏数据 / 昨收错位 / 停牌瞬间
         rows_to_replace: list[dict] = []
         for code in candidates:
             tick = ticks.get(code, {})
@@ -330,8 +333,10 @@ def fetch_dt_pool_v3(target_trade_date: str | None = None) -> None:
             stock_name = meta["stock_name"]
             sector = meta["sector"]
             down_limit = compute_down_limit(code, stock_name, last_close, trade_date)
-            if down_limit is None or last_price > down_limit:
+            if down_limit is None:
                 continue
+            if abs(last_price - down_limit) > 0.011:
+                continue  # 既不是真跌停 (last_price > down_limit) 也不是跌穿 (last_price < down_limit) — 脏数据丢掉
             rows_to_replace.append(
                 {
                     "stock_code": code,

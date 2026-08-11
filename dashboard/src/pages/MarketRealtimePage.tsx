@@ -344,7 +344,7 @@ export function MarketRealtimePage() {
 
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
           <div className="text-xs text-gray-400 mb-2">实验跌停</div>
-          <div className="text-2xl font-bold text-emerald-600">{dtV2.length}</div>
+          <div className="text-2xl font-bold text-green-600">{dtV2.length}</div>
           <div className="text-xs text-gray-500 mt-1.5">
             对照旧版 <b className="text-gray-700">{dt.length}</b>
           </div>
@@ -352,7 +352,7 @@ export function MarketRealtimePage() {
 
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
           <div className="text-xs text-gray-400 mb-2">QMT跌停</div>
-          <div className="text-2xl font-bold text-teal-600">{dtV3.length}</div>
+          <div className="text-2xl font-bold text-green-600">{dtV3.length}</div>
           <div className="text-xs text-gray-500 mt-1.5">
             对照实验 <b className="text-gray-700">{dtV2.length}</b>
           </div>
