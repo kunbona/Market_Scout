@@ -28,7 +28,7 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
-from allowlist import ALLOWED_METHODS, is_allowed
+from allowlist import TRADING_BLACKLIST, is_allowed
 
 # ─── 日志 ─────────────────────────────────────────────────────────────────────
 
@@ -172,8 +172,10 @@ def methods():
     if not _check_auth():
         return _err("未授权：请在 Authorization 头提供 Bearer token", 401)
     return _ok({
-        "allowed": sorted(ALLOWED_METHODS),
-        "count": len(ALLOWED_METHODS),
+        "mode": "open_with_trading_blacklist",
+        "description": "xtdata 行情类方法全放行（无需登记），仅禁止交易类（xttrader 下单/撤单/账户）",
+        "blacklist": sorted(TRADING_BLACKLIST),
+        "blacklist_count": len(TRADING_BLACKLIST),
     })
 
 
@@ -212,7 +214,8 @@ def call():
 
     if not is_allowed(method):
         return _err(
-            f"方法「{method}」不在白名单内。可调方法见 GET /qmt/methods",
+            f"方法「{method}」在交易黑名单内（下单/撤单/账户类），禁止通过 bridge 调用。"
+            f"完整黑名单见 GET /qmt/methods",
             403,
         )
 
@@ -277,7 +280,7 @@ def main() -> None:
         logger.warning("  bridge 仍会启动（健康检查可通），但 /qmt/call 和 /qmt/connect 会返回 503。")
 
     logger.info("启动 QMT Bridge：%s:%d", args.host, args.port)
-    logger.info("白名单方法数：%d", len(ALLOWED_METHODS))
+    logger.info("xtdata 全开放，xttrader 黑名单方法数：%d", len(TRADING_BLACKLIST))
     # 用 waitress 跟主项目保持一致（生产可用）；没装就退化到 Flask 自带
     try:
         from waitress import serve
