@@ -76,8 +76,16 @@ export function ReviewPage() {
   };
 
   useEffect(() => {
-    apiFetch<string[]>('/api/review/dates').then(setDates).catch(() => {});
-    fetchData();
+    // 刷新默认跳到最新日期 (dates[0]) — 不要保留上次选中的旧值
+    apiFetch<string[]>('/api/review/dates').then(d => {
+      setDates(d);
+      if (d.length > 0) {
+        setSelectedDate(d[0]);
+        fetchData(d[0]);
+      } else {
+        fetchData();
+      }
+    }).catch(() => fetchData());
   }, []);
 
   const handleDateChange = (d: string) => {
@@ -129,7 +137,6 @@ export function ReviewPage() {
             onChange={e => handleDateChange(e.target.value)}
             className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 text-gray-700"
           >
-            <option value="">最新</option>
             {dates.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
           <button
