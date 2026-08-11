@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>行业统计 · 端到端数据流程与体检报告</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f5f0;
+    --card: #ffffff;
+    --line: #e9e3d6;
+    --line-soft: #f0eadf;
+    --ink: #14171e;
+    --ink-2: #3a4256;
+    --muted: #7c7a72;
+    --primary: #2f6f5e;
+    --primary-soft: rgba(47, 111, 94, 0.08);
+    --warn: #b06367;
+    --warn-soft: rgba(176, 99, 103, 0.1);
+    --amber: #c97b3f;
+    --amber-soft: rgba(201, 123, 63, 0.1);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--ink); }
+  body {
+    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 14.5px; line-height: 1.6; margin: 0;
+    background-image:
+      radial-gradient(circle at 0% 0%, rgba(47, 111, 94, 0.04) 0%, transparent 50%),
+      radial-gradient(circle at 100% 100%, rgba(201, 123, 63, 0.04) 0%, transparent 50%);
+  }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 56px 32px 80px; }
+  .eyebrow { font-size: 12px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; }
+  h1 { font-family: 'DM Serif Display', serif; font-size: 38px; font-weight: 400; line-height: 1.15; margin: 0 0 16px; letter-spacing: -0.005em; }
+  h1 .accent { color: var(--primary); }
+  .lede { font-size: 15.5px; color: var(--ink-2); max-width: 720px; margin: 0 0 48px; }
+
+  section { margin-bottom: 56px; }
+  h2 { font-family: 'DM Serif Display', serif; font-size: 26px; font-weight: 400; margin: 0 0 8px; }
+  h2 .num { color: var(--primary); font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 16px; margin-right: 12px; vertical-align: middle; }
+  .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 20px; }
+
+  /* ── Flow lanes ────────────────────────────────────────── */
+  .lane-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    overflow: hidden;
+  }
+  .lane {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 16px;
+    padding: 18px 22px;
+    border-bottom: 1px dashed var(--line-soft);
+    align-items: start;
+  }
+  .lane:last-child { border-bottom: none; }
+  .lane-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding-top: 4px;
+  }
+  .lane-label .badge {
+    display: inline-block;
+    background: var(--primary-soft);
+    color: var(--primary);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-weight: 600;
+    font-size: 10px;
+    margin-top: 6px;
+  }
+  .lane-label .badge.backend { background: rgba(58, 66, 86, 0.08); color: var(--ink-2); }
+  .lane-label .badge.cache { background: var(--amber-soft); color: var(--amber); }
+  .lane-label .badge.api { background: rgba(99, 102, 241, 0.1); color: #4f46e5; }
+  .lane-label .badge.frontend { background: rgba(244, 63, 94, 0.1); color: #f43f5e; }
+  .lane-body { display: flex; flex-direction: column; gap: 8px; }
+  .lane-title { font-weight: 600; font-size: 14.5px; color: var(--ink); }
+  .lane-detail { font-size: 13px; color: var(--ink-2); line-height: 1.55; }
+  .lane-detail code { font-family: 'JetBrains Mono', monospace; font-size: 12px; background: var(--line-soft); padding: 1px 6px; border-radius: 4px; color: var(--ink); }
+  .arrow { display: flex; align-items: center; justify-content: center; padding: 4px 0 4px 80px; color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 14px; }
+  .arrow svg { opacity: 0.4; }
+
+  /* ── Data shape boxes ─────────────────────────────────── */
+  .shape-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  .shape-box {
+    background: var(--line-soft);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+  .shape-box .field { color: var(--primary); }
+  .shape-box .new { color: var(--amber); font-weight: 600; }
+
+  /* ── Problem cards ────────────────────────────────────── */
+  .prob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .prob {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px 18px;
+    border-left: 3px solid var(--warn);
+  }
+  .prob.warn { border-left-color: var(--warn); background: linear-gradient(90deg, var(--warn-soft) 0%, var(--card) 30%); }
+  .prob.amber { border-left-color: var(--amber); background: linear-gradient(90deg, var(--amber-soft) 0%, var(--card) 30%); }
+  .prob-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .prob-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .prob.warn .prob-tag { background: var(--warn-soft); color: var(--warn); }
+  .prob.amber .prob-tag { background: var(--amber-soft); color: var(--amber); }
+  .prob-title { font-weight: 600; font-size: 14px; color: var(--ink); }
+  .prob-body { font-size: 13px; color: var(--ink-2); line-height: 1.55; }
+  .prob-body code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; background: var(--line-soft); padding: 1px 5px; border-radius: 3px; }
+
+  /* ── Sequence-style timing diagram ────────────────────── */
+  .timing {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .time-rail {
+    grid-column: 2;
+    position: relative;
+    height: 4px;
+    background: var(--line);
+    border-radius: 2px;
+  }
+  .time-rail::before, .time-rail::after { content: ""; position: absolute; top: -3px; width: 10px; height: 10px; background: var(--primary); border-radius: 50%; }
+  .time-rail::before { left: 0; }
+  .time-rail::after { right: 0; background: var(--ink-2); }
+  .time-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .time-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); }
+  .time-bar {
+    position: relative;
+    height: 18px;
+    background: var(--line-soft);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .time-bar .seg { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding: 0 6px; font-size: 10.5px; color: white; font-weight: 500; font-family: 'JetBrains Mono', monospace; }
+  .time-bar .ok { background: var(--primary); }
+  .time-bar .miss { background: var(--warn); }
+  .time-bar .sched { background: var(--ink-2); }
+
+  /* ── Bench comparison ─────────────────────────────────── */
+  .bench { display: grid; grid-template-columns: 200px 1fr 60px; gap: 14px; align-items: center; padding: 6px 0; font-size: 13px; }
+  .bench-label { color: var(--ink-2); }
+  .bench-track { height: 14px; background: var(--line-soft); border-radius: 5px; overflow: hidden; }
+  .bench-fill { height: 100%; background: var(--primary); border-radius: 5px; }
+  .bench-fill.amber { background: var(--amber); }
+  .bench-fill.warn { background: var(--warn); }
+  .bench-val { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--ink-2); text-align: right; }
+
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 64px; padding-top: 24px; border-top: 1px dashed var(--line); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Market Scout · 架构体检 · 2026-08-11</div>
+  <h1>行业统计榜 · 端到端<span class="accent">数据流程</span></h1>
+  <p class="lede">
+    从 QMT 实时 tick 走到前端表格的 6 段流水线。重点不是画清楚, 是**抓出 11 个潜在 bug/设计 smell**——
+    包括 cache 永不过期、KPI 卡跟 industry tab 数据源不同源、stale 时间戳误导等等。
+  </p>
+
+  <!-- ════════════ 数据流 6 段 ════════════ -->
+  <section>
+    <h2><span class="num">01</span>数据流: 5 源 → 6 段 → 1 表</h2>
+    <p class="sub">每一段都是一个潜在的故障点。颜色 = 角色 (绿=后端计算 / 橙=cache / 紫=API / 红=前端)。</p>
+
+    <div class="lane-grid">
+
+      <!-- L0 数据源 -->
+      <div class="lane">
+        <div class="lane-label">
+          L0<br>数据源
+        </div>
+        <div class="lane-body">
+          <div class="lane-title">5 个异构源</div>
+          <div class="lane-detail">
+            <strong>① QMT tick</strong> <code>get_full_tick_snapshot(5208 只)</code> — last_price / last_close / open / high / low<br>
+            <strong>② 本地 CSV</strong> <code>get_trading_data(.)</code> × 5208 — name / industry_l1 / close / inst_buy/sell / big_buy/sell<br>
+            <strong>③ 涨跌停价</strong> <code>compute_up_limit / compute_down_limit</code> — 按板块 + ST 状态<br>
+            <strong>④ 当前交易日</strong> <code>get_current_qmt_trade_date(today)</code> — 8/11<br>
+            <strong>⑤ 沪深 A 股列表</strong> <code>list_a_shares()</code> — 5208 codes
+          </div>
+        </div>
+      </div>
+      <div class="arrow">↓</div>
+
+      <!-- L1 后端 source rows -->
+      <div class="lane">
+        <div class="lane-label">
+          L1<br>
+          <span class="badge backend">backend</span>
+        </div>
+        <div class="lane-body">
+          <div class="lane-title">
+            <code>build_qmt_industry_stats_source_rows(target_trade_date)</code>
+            <span style="color:var(--muted); font-weight:400; font-size:12.5px; margin-left:6px;">fetcher/qmt_monitors.py:289</span>
+          </div>
+          <div class="lane-detail">
+            阶段 1: <code>list_a_shares()</code> 拿 5208 codes<br>
+            阶段 2: <strong>ThreadPool(32)</strong> 并发读 CSV (~40s → ~1min)<br>
+            阶段 3: <code>get_full_tick_snapshot(codes)</code> 一次拿全市场<br>
+            阶段 4: 循环每只, 字段提取 → <code>row</code><br>
+            阶段 5: 过滤: sector 空 / up_limit None / 跨日数据缺失 → 跳过
+          </div>
+          <div class="shape-grid">
+            <div class="shape-box">
+              <span class="field">stock_code</span>, <span class="field">stock_name</span>, <span class="field">sector</span><br>
+              <span class="field">last_price</span>, <span class="field">last_close</span><br>
+              <span class="field">ma10_csv</span>, <span class="field">ma10_realtime</span><br>
+              <span class="field">up_limit</span>, <span class="field">down_limit</span><br>
+              <span class="field">yesterday_main_inflow</span><br>
+              <span class="field">today_main_inflow</span>
+            </div>
+            <div class="shape-box">
+              <span style="color:var(--muted);">⚠ change_pct 这层还没有,</span><br>
+              <span style="color:var(--muted);">  在 L2 normalize 才算</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="arrow">↓</div>
+
+      <!-- L2 normalize -->
+      <div class="lane">
+        <div class="lane-label">
+          L2<br>
+          <span class="badge backend">backend</span>
+        </div>
+        <div class="lane-body">
+          <div class="lane-title">
+            <code>normalize_industry_stats_row(row)</code>
+            <span style="color:var(--muted); font-weight:400; font-size:12.5px; margin-left:6px;">fetcher/qmt_monitors.py:111</span>
+          </div>
+          <div class="lane-detail">
+            类型转换 + <code>change_pct = (last_price / last_close - 1) * 100</code> (8/11 vs 8/10)<br>
+            <strong>涨跌判定</strong>: <code>is_meat = ≥5</code> · <span class="new">is_big_loss = ≤-5</span> · <code>is_limit_up / is_limit_down</code><br>
+            <code>above_ma10 = last_price > ma10_realtime</code> · <code>above_ma10_csv = last_close > ma10_csv</code>
+          </div>
+        </div>
+      </div>
+      <div class="arrow">↓</div>
+
+      <!-- L3 payload -->
+      <div class="lane">
+        <div class="lane-label">
+          L3<br>
+          <span class="badge backend">backend</span>
+        </div>
+        <div class="lane-body">
+          <div class="lane-title">
+            <code>build_qmt_industry_stats_payload(rows)</code>
+            <span style="color:var(--muted); font-weight:400; font-size:12.5px; margin-left:6px;">fetcher/qmt_monitors.py:165</span>
+          </div>
+          <div class="lane-detail">
+            <code>groupby(sector)</code> → 31 行业<br>
+            累加: <strong>meat_count</strong> · <span class="new">big_loss_count</span> · limit_up_count · limit_down_count · above_ma10 · main_inflow<br>
+            算 ratio: realtime / csv / delta (pp)<br>
+            排序: <code>-today_main_inflow, -meat_count, sector</code>
+          </div>
+        </div>
+      </div>
+      <div class="arrow">↓</div>
+
+      <!-- L4 cache -->
+      <div class="lane">
+        <div class="lane-label">
+          L4<br>
+          <span class="badge cache">cache</span>
+        </div>
+        <div class="lane-body">
+          <div class="lane-title">
+            <code>_qmt_industry_stats_cache</code> (in-process dict, lock-protected)
+          </div>
+          <div class="lane-detail">
+            <strong>Warmup</strong>: server 启动后台线程算一次, 等 90s (<code>_wait_for_industry_stats_cache</code>)<br>
+            <strong>Refresh</strong>: scheduler 每 5 min 调 <code>_warm_industry_stats</code><br>
+            <strong>Hint 1</strong>: <code>target_trade_date</code> 跟 cache <code>trade_date</code> 一致才返回 cache<br>
+            <strong>Hint 2</strong>: cache 命中失败 → <strong>同步重算</strong> (5208 只 1min, 阻塞 HTTP)
+          </div>
+        </div>
+      </div>
+      <div class="arrow">↓</div>
+
+      <!-- L5 API -->
+      <div class="lane">
+        <div class="lane-label">
+          L5<br>
+          <span class="badge api">api</span>
+        </div>
+        <div class="lane-body">
+          <div class="lane-title">
+            <code>GET /api/qmt-industry-stats</code>
+            <span style="color:var(--muted); font-weight:400; font-size:12.5px; margin-left:6px;">server.py:935</span>
+          </div>
+          <div class="lane-detail">
+            <code>status = _read_qmt_runtime_status()</code> → 查 <code>QMT_ENABLED</code> env + bridge 连通性<br>
+            <code>_get_qmt_industry_stats_payload(status)</code> → <strong>enabled=False 直接返回空 payload</strong> (31 行业消失)<br>
+            加 status / snapshot (fetch_time / source / market) → 返回
+          </div>
+        </div>
+      </div>
+      <div class="arrow">↓</div>
+
+      <!-- L6 前端 -->
+      <div class="lane">
+        <div class="lane-label">
+          L6<br>
+          <span class="badge frontend">frontend</span>
+        </div>
+        <div class="lane-body">
+          <div class="lane-title">
+            <code>QmtDataPage</code> industry tab
+            <span style="color:var(--muted); font-weight:400; font-size:12.5px; margin-left:6px;">QmtDataPage.tsx:609</span>
+          </div>
+          <div class="lane-detail">
+            KPI 卡区 (5 卡, 不含大面/大肉) + Staleness 提示 (T+1 vs 实时)<br>
+            MA10 强势 KPI (real vs yesterday, 27/29 Δ-2)<br>
+            <strong>行业统计榜</strong>: header <code>grid-cols-10</code> + row <code>grid-cols-10</code><br>
+            列: 行业/个股数/ma10实时/ma10 CSV/差值/<strong>大肉</strong>/涨停/<strong>大面</strong>/跌停/主力<br>
+            Sort 切换: sector asc / 数值列 desc
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ════════════ 时序: 实际跑过的时间线 ════════════ -->
+  <section>
+    <h2><span class="num">02</span>时序实测: 18:27 → 22:32 server 干了啥</h2>
+    <p class="sub">直接看 /tmp/server.log 截取的真实事件。Scheduler 反复 <code style="color:var(--warn);">missed by 1-5 min</code> = cache 永不过期。</p>
+
+    <div class="time-row">
+      <div class="time-label">18:27</div>
+      <div class="time-bar">
+        <div class="seg ok" style="left:0; width:18%;">server 启动</div>
+        <div class="seg ok" style="left:18%; width:14%;">warmup 31 行业</div>
+        <div class="seg ok" style="left:32%; width:18%;">6 dm_kun prewarm</div>
+      </div>
+    </div>
+    <div class="time-row">
+      <div class="time-label">18:28</div>
+      <div class="time-bar">
+        <div class="seg miss" style="left:0; width:8%;">missed</div>
+        <div class="seg sched" style="left:8%; width:92%;">5min 后再试</div>
+      </div>
+    </div>
+    <div class="time-row">
+      <div class="time-label">19:00</div>
+      <div class="time-bar">
+        <div class="seg miss" style="left:0; width:18%;">missed 1m57s</div>
+        <div class="seg sched" style="left:18%; width:82%;">下次 19:08</div>
+      </div>
+    </div>
+    <div class="time-row">
+      <div class="time-label">19:30</div>
+      <div class="time-bar">
+        <div class="seg miss" style="left:0; width:30%;">missed 3m15s</div>
+        <div class="seg sched" style="left:30%; width:70%;">...</div>
+      </div>
+    </div>
+    <div class="time-row">
+      <div class="time-label">20:00</div>
+      <div class="time-bar">
+        <div class="seg miss" style="left:0; width:38%;">missed 4m58s</div>
+      </div>
+    </div>
+    <div class="time-row">
+      <div class="time-label">21:00</div>
+      <div class="time-bar">
+        <div class="seg miss" style="left:0; width:55%;">missed 4m27s</div>
+        <div class="seg miss" style="left:55%; width:45%;">连续 2 次</div>
+      </div>
+    </div>
+    <div class="time-row">
+      <div class="time-label">22:18</div>
+      <div class="time-bar">
+        <div class="seg ok" style="left:0; width:48%;">手动调 _refresh 强制重算</div>
+        <div class="seg ok" style="left:48%; width:52%;">cache 写回 8/11 31 行业</div>
+      </div>
+    </div>
+
+    <p style="font-size:13px; color:var(--muted); margin-top:12px;">
+      ↑ <code>misfire_grace_time=60s</code> 配的, 但实际 missed 1-5 min。industry_stats 永远拿 warmup 那一刻 (8/10 截面) 的数据, 8/11 盘中不会自动更新。
+    </p>
+  </section>
+
+  <!-- ════════════ 11 个问题 ════════════ -->
+  <section>
+    <h2><span class="num">03</span>11 个潜在问题</h2>
+    <p class="sub">按"严重程度 + 改起来便宜"排序。前 3 个是真 bug, 后 8 个是设计 smell。</p>
+
+    <div class="prob-grid">
+
+      <div class="prob warn">
+        <div class="prob-head">
+          <span class="prob-tag">BUG · P0</span>
+          <div class="prob-title">Scheduler 反复 missed, cache 永不过期</div>
+        </div>
+        <div class="prob-body">
+          现象: 22:00 后大面 105 还停在 18:27 warmup 时算的 8/10 截面, 8/11 盘中数据没人触发重算<br>
+          证据: <code>/tmp/server.log</code> 18:30 起 20+ 条 <code>missed by 0:01-5min</code><br>
+          修复: <code>core/scheduler.py:94</code> <code>misfire_grace_time=60</code> 太小, 提到 600s; 或 scheduler.executors.default pool size 加大
+        </div>
+      </div>
+
+      <div class="prob warn">
+        <div class="prob-head">
+          <span class="prob-tag">BUG · P0</span>
+          <div class="prob-title">KPI 卡 vs industry tab 数据源不同源</div>
+        </div>
+        <div class="prob-body">
+          KPI 卡 (1586↑/3483↓/139平): 走 <code>market_breadth</code> 表 (xtquant_breadth.fetch 写)<br>
+          industry tab 大面/大肉: 走 <code>industry_stats</code> in-process cache (qmt_monitors 算)<br>
+          风险: 一个 stale, 另一个新鲜, 用户对不上
+        </div>
+      </div>
+
+      <div class="prob warn">
+        <div class="prob-head">
+          <span class="prob-tag">BUG · P1</span>
+          <div class="prob-title">Staleness 时间戳误导</div>
+        </div>
+        <div class="prob-body">
+          <code>summary.data_date=2026-08-10</code> (CSV 截面) + <code>realtime_data_date=2026-08-11</code><br>
+          顶部 "T+1 数据 2026-08-10 · 实时 2026-08-11" 显示 OK, 但**大面/涨跌实际是 8/11 实时** vs **主力是 8/10 截面** — 一行字"涨跌/大肉来自 QMT tick, 实时" 容易被忽略
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P2</span>
+          <div class="prob-title">大面数包含跌停数 (重复)</div>
+        </div>
+        <div class="prob-body">
+          <code>is_big_loss = change_pct ≤ -5</code>, 跌停 (≤-10) 一定满足<br>
+          例: 银行 -10% → 算大面 + 跌停 (各 1)<br>
+          看电力设备 8 大面 1 跌停, 大面数实际是 "非跌停但 ≤-5%" + "跌停" 的和 → 概念不清<br>
+          可选: 大面分两层: <code>big_loss_ex_dt = 跌穿未跌停</code>
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P2</span>
+          <div class="prob-title">MA10 实时 vs CSV 算法不一致</div>
+        </div>
+        <div class="prob-body">
+          <code>ma10_csv</code>: close 10 天算术平均<br>
+          <code>ma10_realtime</code>: <strong>前 9 天 close + today tick</strong> ÷ 10 (顶替最后一天)<br>
+          两个均值定义不同, 行业 ma10_realtime 跟个股 ma10_realtime 不严格可比
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P2</span>
+          <div class="prob-title">大面列没颜色 / 视觉权重低</div>
+        </div>
+        <div class="prob-body">
+          现有列: ma10_ratio 红色, 差值 pp delta, 涨停数/跌停数纯数字<br>
+          <strong>大面数</strong>: 跟"涨停数/跌停数" 同等样式纯数字, 但 28 (有色金属) 跟 0 (银行) 视觉差异不够强<br>
+          建议: 极值加 mini-bar / 文字色 (≥10 红 / ≥3 橙 / 0 灰)
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P2</span>
+          <div class="prob-title">Cache miss 时同步重算阻塞 HTTP</div>
+        </div>
+        <div class="prob-body">
+          <code>_get_qmt_industry_stats_payload</code> 缓存未命中 → <strong>同步调用 build_qmt_industry_stats_payload</strong> (5208 只 ~1min)<br>
+          这一刻 HTTP 会卡 60s, 前端白屏, 浏览器超时<br>
+          建议: cache miss 时直接返回 stale + 异步刷新
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P2</span>
+          <div class="prob-title">Sort 切换时大面 / 主力 sort 行为不一致</div>
+        </div>
+        <div class="prob-body">
+          <code>toggleStatsSort</code> 默认 desc 数值, asc 字符串。点"大面数"列, 应该按大面降序<br>
+          但点"主力·T+1"列按 today_main_inflow 降序 — OK<br>
+          点"个股数"按 stock_count 降序 — OK<br>
+          一致性没问题, 但**没有 secondary sort** (大面 0 的行业按 sector 字母)
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P3</span>
+          <div class="prob-title">QMT 断连 → 整个 industry tab 消失</div>
+        </div>
+        <div class="prob-body">
+          <code>_get_qmt_industry_stats_payload</code> L615: <code>if not enabled or not connected: return _empty_qmt_industry_stats_payload()</code><br>
+          现象: QMT bridge 临时不通, 整页 31 行业消失, 显示"暂无行业统计数据" — 用户以为服务挂了<br>
+          建议: 返回 stale cache + 顶部 warning banner
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P3</span>
+          <div class="prob-title">CSV 缺 2 只票 (sz301655 / sz301717)</div>
+        </div>
+        <div class="prob-body">
+          <code>quant.loader</code> 日志 18:27:50 警告: 这 2 个 code CSV 不存在<br>
+          5208 - 2 = 5206 只进 cache<br>
+          微小偏差, 但 industry_stats_count=31 是从 groupby 后算的, 不会显式说"少 2 只"
+        </div>
+      </div>
+
+      <div class="prob amber">
+        <div class="prob-head">
+          <span class="prob-tag">SMELL · P3</span>
+          <div class="prob-title">首页 KPI 大面数缺失</div>
+        </div>
+        <div class="prob-body">
+          QmtDataPage 顶部 5 个 KPI 卡: 跌停/上涨/下跌/平盘/成交额<br>
+          **没大面/大肉** (需要后端改 market_breadth 表 schema)<br>
+          user 上一轮明确说"不要加在 KPI 卡" — 标记为 deferred
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ════════════ Top 5 行业 8/11 ════════════ -->
+  <section>
+    <h2><span class="num">04</span>当前行业分布 (8/11 实时)</h2>
+    <p class="sub">直接拿 API 跑出来的大面/大肉/涨跌 分布。前 8 行业 (按主力降序)。</p>
+
+    <div class="bench"><span class="bench-label">电力设备 (377 只)</span><div class="bench-track"><div class="bench-fill" style="width:30%;"></div></div><span class="bench-val">大面 8</span></div>
+    <div class="bench"><span class="bench-label">有色金属 (140 只)</span><div class="bench-track"><div class="bench-fill warn" style="width:100%;"></div></div><span class="bench-val">大面 28 ⚠</span></div>
+    <div class="bench"><span class="bench-label">国防军工 (138 只)</span><div class="bench-track"><div class="bench-fill warn" style="width:50%;"></div></div><span class="bench-val">大面 14</span></div>
+    <div class="bench"><span class="bench-label">电子 (491 只)</span><div class="bench-track"><div class="bench-fill warn" style="width:39%;"></div></div><span class="bench-val">大面 11</span></div>
+    <div class="bench"><span class="bench-label">汽车 (289 只)</span><div class="bench-track"><div class="bench-fill" style="width:29%;"></div></div><span class="bench-val">大面 8</span></div>
+    <div class="bench"><span class="bench-label">基础化工 (410 只)</span><div class="bench-track"><div class="bench-fill" style="width:21%;"></div></div><span class="bench-val">大面 6</span></div>
+    <div class="bench"><span class="bench-label">医药生物 (478 只)</span><div class="bench-track"><div class="bench-fill" style="width:7%;"></div></div><span class="bench-val">大面 2</span></div>
+    <div class="bench"><span class="bench-label">银行 (42 只)</span><div class="bench-track"><div class="bench-fill amber" style="width:2%; background: var(--line);"></div></div><span class="bench-val">大面 0 ✓</span></div>
+  </section>
+
+  <footer>
+    流程图基于代码 + server log + API 实测 · 2026-08-11 22:32 · 11 个问题按 P0/P1/P2/P3 排序
+  </footer>
+
+</div>
+</body>
+</html>
