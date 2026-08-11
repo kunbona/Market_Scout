@@ -119,6 +119,7 @@ interface QmtIndustryStats {
     ma10_realtime: number;  // 组内个股 ma10_realtime 算术平均（参考值）
     ma10_csv: number;       // 组内个股 ma10_csv 算术平均（参考值）
     meat_count: number;
+    big_loss_count: number;
     limit_up_count: number;
     limit_down_count: number;
     yesterday_main_inflow: number;
@@ -694,6 +695,7 @@ export function QmtDataPage() {
                 ],
                 ['大肉数', 'meat_count'],
                 ['涨停数', 'limit_up_count'],
+                ['大面数', 'big_loss_count'],
                 ['跌停数', 'limit_down_count'],
                 [
                   `主力·T+1 (${csvDateShort})`,
@@ -725,7 +727,7 @@ export function QmtDataPage() {
           ) : (
             <div className="divide-y divide-gray-50 border-x border-b border-gray-100 rounded-b-xl">
               {sortedIndustryStats.map((row) => (
-                <div key={row.sector} className="grid grid-cols-9 px-4 py-3 text-xs text-gray-700 hover:bg-gray-50">
+                <div key={row.sector} className="grid grid-cols-10 px-4 py-3 text-xs text-gray-700 hover:bg-gray-50">
                   <span>{row.sector}</span>
                   <span className="text-center">{row.stock_count}</span>
                   <span className={`text-center font-semibold ${ratioColor(row.above_ma10_ratio_realtime)}`}>
@@ -739,6 +741,7 @@ export function QmtDataPage() {
                   </span>
                   <span className="text-center">{row.meat_count}</span>
                   <span className="text-center">{row.limit_up_count}</span>
+                  <span className="text-center">{row.big_loss_count}</span>
                   <span className="text-center">{row.limit_down_count}</span>
                   <span className="text-center">{fmtAmountYi(row.today_main_inflow)}</span>
                 </div>

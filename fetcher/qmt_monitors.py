@@ -154,6 +154,7 @@ def normalize_industry_stats_row(row: dict) -> dict | None:
         "above_ma10": last_price > ma10_realtime,
         "above_ma10_csv": last_close > ma10_csv,
         "is_meat": change_pct is not None and change_pct >= 5,
+        "is_big_loss": change_pct is not None and change_pct <= -5,
         "is_limit_up": last_price >= up_limit,
         "is_limit_down": last_price <= down_limit,
         "yesterday_main_inflow": yesterday_main_inflow,
@@ -179,6 +180,7 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
         above_ma10_count = sum(1 for item in group if item["above_ma10"])
         above_ma10_count_csv = sum(1 for item in group if item["above_ma10_csv"])
         meat_count = sum(1 for item in group if item["is_meat"])
+        big_loss_count = sum(1 for item in group if item["is_big_loss"])
         limit_up_count = sum(1 for item in group if item["is_limit_up"])
         limit_down_count = sum(1 for item in group if item["is_limit_down"])
         yesterday_main_inflow = sum(item["yesterday_main_inflow"] for item in group)
@@ -214,6 +216,7 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
                     sum(item["ma10_csv"] for item in group) / stock_count if stock_count else 0.0
                 ),
                 "meat_count": meat_count,
+                "big_loss_count": big_loss_count,
                 "limit_up_count": limit_up_count,
                 "limit_down_count": limit_down_count,
                 "yesterday_main_inflow": yesterday_main_inflow,
