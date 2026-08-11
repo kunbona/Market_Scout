@@ -671,7 +671,7 @@ export function QmtDataPage() {
             ))}
           </div>
 
-          <div className="grid grid-cols-9 px-4 py-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-t-xl">
+          <div className="grid grid-cols-10 px-4 py-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-t-xl">
             {(() => {
               const csvDate = industryStatsData?.summary.data_date;
               const csvDateShort = csvDate ? csvDate.slice(5) : '昨';
