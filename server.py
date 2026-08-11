@@ -1898,7 +1898,12 @@ def api_review_data():
         trade_date = request.args.get("date", "").strip()
         force = request.args.get("force", "").strip() in ("1", "true", "yes")
         if not trade_date:
-            return _err("缺少 date 参数", 400)
+            if not force:
+                return _err("缺少 date 参数", 400)
+            # force=1 无 date → 自动用本地 CSV 最新交易日 (解决"DB 还没新日期"鸡生蛋)
+            from quant.review_compute import _latest_trade_date
+            trade_date = _latest_trade_date()
+            logger.info("[review] force=1 无 date, 自动用 CSV 最新: %s", trade_date)
         # 兼容前端两种格式: '20260811' (compact) 或 '2026-08-11' (ISO) — DB 存 ISO
         if len(trade_date) == 8 and trade_date.isdigit():
             trade_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"

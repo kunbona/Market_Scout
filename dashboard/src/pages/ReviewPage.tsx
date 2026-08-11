@@ -95,19 +95,34 @@ export function ReviewPage() {
 
   const handleRecompute = async () => {
     if (recomputing) return;
-    if (!confirm('重算当前显示日期的复盘数据?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住')) return;
+    // 选中的就是 dates[0] (最新) → 不传 date, 让后端自动找 CSV 最新交易日
+    // (避免 "DB 没新日期 → 列表没新日期 → 没法选新日期" 鸡生蛋)
+    const targetDate = selectedDate || data?.trade_date || '';
+    const isLatest = targetDate === dates[0];
+    const confirmMsg = isLatest
+      ? `重算最新交易日 (自动用本地 CSV 最新日期)?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住`
+      : `重算 ${targetDate} 的复盘数据?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住`;
+    if (!confirm(confirmMsg)) return;
     setRecomputing(true);
     setError('');
     try {
-      const targetDate = selectedDate || data?.trade_date || '';
-      const url = `/api/review/data?date=${targetDate}&force=1`;
+      const url = isLatest
+        ? `/api/review/data?force=1`  // 后端自动找 CSV 最新 (可能算出比 DB dates[0] 更新的日期)
+        : `/api/review/data?date=${targetDate}&force=1`;
       const r = await fetch(url);
       if (!r.ok) {
         const err = await r.json().catch(() => ({ message: r.statusText }));
         throw new Error(err.message || err.error || `HTTP ${r.status}`);
       }
-      // 重算完 reload
-      await fetchData();
+      // 重算完: 重新拉 dates (新日期入库后会进列表) + 跳到新最新 + 重载数据
+      const newDates = await apiFetch<string[]>('/api/review/dates');
+      setDates(newDates);
+      if (newDates.length > 0) {
+        setSelectedDate(newDates[0]);
+        await fetchData(newDates[0]);
+      } else {
+        await fetchData();
+      }
     } catch (e: any) {
       setError(e.message || '重算失败');
     } finally {
