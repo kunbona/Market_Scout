@@ -126,6 +126,16 @@ def normalize_industry_stats_row(row: dict) -> dict | None:
     except (TypeError, ValueError):
         return None
 
+    # QMT 备选 ma10: 阶段 1.5 拉到的 QMT 14 天 K 线平均, None 表示拉不到
+    # KPI 卡 ma10_qmt_count 用这个字段统计"VM 断了能 fallback 多少票"
+    ma10_qmt_raw = row.get("ma10_qmt")
+    ma10_qmt: float | None = None
+    if ma10_qmt_raw is not None:
+        try:
+            ma10_qmt = float(ma10_qmt_raw)
+        except (TypeError, ValueError):
+            ma10_qmt = None
+
     try:
         ma10_realtime = float(row.get("ma10_realtime") or ma10_csv)
     except (TypeError, ValueError):
@@ -165,6 +175,7 @@ def normalize_industry_stats_row(row: dict) -> dict | None:
         "today_main_inflow": today_main_inflow,
         "data_date": str(row.get("data_date") or "").strip(),
         "ma10_source": str(row.get("ma10_source") or "CSV").strip(),
+        "ma10_qmt": ma10_qmt,  # 透传, KPI 卡 count 这个 (QMT 备选可用度)
     }
 
 
@@ -230,8 +241,8 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
                 # ma10 QMT 实时覆盖度: 该行业 N 只股票里 ma10 走 QMT 实时 K 线的占比 (0~1)
                 # 0 = 全部降级 CSV+tick（白名单未生效 / VM 不通 / xtquant 缓存空）
                 # 1 = 全部 QMT 实时（最理想态, 含 8/11 当日数据, 解决 CSV T+1 滞后）
-                "ma10_qmt_ratio": sum(1 for item in group if item["ma10_source"] == "QMT") / stock_count if stock_count else 0.0,
-                "ma10_qmt_count": sum(1 for item in group if item["ma10_source"] == "QMT"),
+                "ma10_qmt_ratio": sum(1 for item in group if item.get("ma10_qmt") is not None) / stock_count if stock_count else 0.0,
+                "ma10_qmt_count": sum(1 for item in group if item.get("ma10_qmt") is not None),
             }
         )
 
@@ -380,21 +391,28 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
         # 1) ma10_qmt (理想态): QMT 10 天 K 线平均 (留空, 走 2 兜底)
         # 2) ma10_realtime (实际态): CSV 9 天 + lastPrice 平均
         #    - lastPrice 来自 QMT get_full_tick (= 今日 QMT 收盘 tick 价)
-        #    - 跟 QMT K 线 close 收盘价等价, 已含 8/11 当日
-        # 3) ma10_csv (兜底): CSV 纯 10 天平均 (T+1 滞后, 缺今日)
-        # 标 ma10_source = "QMT+tick" (实际就是用了 QMT 实时 tick 价, 跟原意一致)
+        # MA10 三档降级链 (CSV 默认 + QMT 备选):
+        # 1) ma10_csv (默认): 本地 CSV 10 天 close 平均 — 数据稳定确定, 盘后入库含当日
+        # 2) ma10_qmt (备选): QMT 14 天 K 线平均 — VM 端 cache 命中秒返, 用于 CSV 异常时降级
+        # 3) ma10_realtime (兜底): CSV 9 天 + lastPrice 平均 — 老逻辑, CSV 缺/异常 + QMT 不可用
+        # 设计取舍: 本地数据优先 (稳定, 不依赖 VM 桥), QMT 是双保险
+        # 8/12 盘后 15:30 之后, CSV 入库 8/11, ma10_csv 跟 QMT 几乎一致
+        # 凌晨 (CSV 截面 = 前一天), ma10_csv 缺今日, KPI 卡用 ma10_qmt_count 显示 QMT 备选可用度
         ma10_qmt = ma10_qmt_map.get(stock_code)
-        if ma10_qmt is not None:
+        if ma10_csv == ma10_csv and ma10_csv > 0:  # ma10_csv == ma10_csv 排除 NaN
+            # 1) CSV 默认路径
+            ma10_realtime = ma10_csv
+            ma10_source = "CSV"
+        elif ma10_qmt is not None:
+            # 2) QMT 备选
             ma10_realtime = ma10_qmt
-            ma10_source = "QMT"
+            ma10_source = "QMT(备选)"
         else:
-            # 实时 MA10：用今天盘中 tick 价顶替 CSV 最后一天 close
-            # 实质等价于 QMT 10 天 K 线平均 (前 9 天 CSV = QMT K 线 close, 第 10 天 = QMT tick 价)
+            # 3) 老逻辑兜底: CSV 9 天 + lastPrice
             try:
                 close_9d = close_window.head(9).astype(float).tolist()
                 ma10_realtime = (sum(close_9d) + float(last_price)) / 10
-                # 标 "QMT+tick" — 因为 lastPrice 是 QMT 实时 tick 价, 实质等同 QMT 10 天 close 平均
-                ma10_source = "QMT+tick"
+                ma10_source = "CSV+tick"
             except (TypeError, ValueError):
                 ma10_realtime = ma10_csv
                 ma10_source = "CSV"
@@ -456,6 +474,9 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
                 "down_limit": down_limit,
                 "yesterday_main_inflow": yesterday_main_inflow,
                 "today_main_inflow": today_main_inflow,
+                # QMT 备选 ma10: 阶段 1.5 拉到的 QMT 14 天 K 线平均, None 表示拉不到 (VM 桥不通/缺数据)
+                # KPI 卡 ma10_qmt_count 用这个字段统计"VM 断了能 fallback 多少票"
+                "ma10_qmt": ma10_qmt_map.get(stock_code),
                 # 数据截面日期（CSV 最后一行的 trade_date），用于 staleness 计算
                 # 注意：CSV 是 T+1 截面，所以 data_date 通常 = 上一交易日
                 "data_date": str(latest_date)[:10] if latest_date is not None else "",

@@ -675,8 +675,8 @@ export function QmtDataPage() {
                   : 'text-gray-400';
               return (
                 <div className="rounded-xl border border-gray-100 p-4"
-                  title="ma10 走 QMT 实时 K 线的股票占比。100% = 全市场 ma10 含当日 tick 价（无 T+1 滞后）；0% = 全部降级 CSV+tick（VM 端白名单未生效或 xtquant 缓存空）。需要 VM 端 qmt-bridge 加载新 allowlist + 重启。">
-                  <div className="text-xs text-gray-400">QMT 实时 ma10 覆盖</div>
+                  title="QMT 备选 ma10 可用度: VM 端 xtquant 拉到 14 天日 K 的股票占比 (作为 CSV 缺数据/异常时的降级备选)。100% = 全市场 QMT 备选可用 (VM 桥断了能 fallback 多少票); 0% = 全部 QMT 拉不到 (VM 桥不通 / xtquant 缓存空)。ma10_realtime 默认走 CSV, 正常情况不影响主路径。">
+                  <div className="text-xs text-gray-400">QMT 备选 ma10 可用</div>
                   <div className="mt-2 text-2xl font-semibold text-gray-900">
                     {ratioPct}<span className="text-base font-normal text-gray-400">%</span>
                   </div>
