@@ -213,6 +213,88 @@ def get_market_bars(
     ) or {}
 
 
+def download_history_data_bars(
+    codes: list[str],
+    period: str = "1d",
+    days_back: int = 30,
+    end_offset_days: int = 1,
+) -> dict[str, list[float]]:
+    """
+    同步下载 K 线 + 拉每只 stock 的 close 列表（用于算 MA10 等指标）。
+
+    设计：
+    1. 先 download_history_data 同步 K 线到 VM 本地缓存（首次冷启动慢，30-60s 估；
+       后续每天盘后 xtquant 自动续上，秒返）
+    2. 再 get_market_data 拿 count 天 close 数组
+
+    任何失败（白名单/网络/VM 不可用）→ 返 {}，调用方降级到 CSV。
+    不会抛异常，不污染调用方。
+
+    Args:
+        codes: 股票代码列表（sh600519.SH / sz000001.SZ 格式）
+        period: K 线周期（默认 1d）
+        days_back: 拉多少天的窗口（默认 30 天，覆盖 ma10 + 周末缺口 + 节假日）
+        end_offset_days: 结束日期相对今天的天数（默认 1 = 昨天；盘中今天数据不全）
+
+    Returns:
+        {code: [close_day_N, close_day_N-1, ..., close_day_1]} 升序（最新在末尾）
+        失败 → {}
+    """
+    if not codes:
+        return {}
+    if not _use_bridge() and (xtdata is None or not qmt_connect()):
+        return {}
+
+    from datetime import datetime, timedelta
+
+    end_date = (datetime.now() - timedelta(days=end_offset_days)).strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+    count = days_back
+
+    # 阶段 1：同步 K 线到 VM 本地缓存（失败也不抛，get_market_data 会自己返空）
+    try:
+        _xt(
+            "download_history_data",
+            stock_code=codes,
+            period=period,
+            start_time=start_date,
+            end_time=end_date,
+        )
+    except Exception as exc:
+        logger.debug("[qmt] download_history_data 失败: %s", exc)
+
+    # 阶段 2：拉 K 线 (count=days_back 防止节假日缺口导致数据不足)
+    raw = get_market_bars(
+        codes=codes,
+        period=period,
+        count=count,
+        dividend_type="none",
+        fields=["time", "close"],
+    )
+    if not raw:
+        return {}
+
+    # 阶段 3：转 {code: [close_asc]} 格式
+    result: dict[str, list[float]] = {}
+    for code, bar_list in raw.items():
+        if not bar_list:
+            continue
+        # xtquant 返回的 bar 顺序按文档是降序（最新在前），但实测可能升序
+        # 这里统一按时间升序：parse time 字段排序
+        try:
+            sorted_bars = sorted(bar_list, key=lambda b: int(b.get("time", 0)))
+        except (TypeError, ValueError):
+            sorted_bars = bar_list
+        closes: list[float] = []
+        for bar in sorted_bars:
+            c = _to_float(bar.get("close"))
+            if c > 0:
+                closes.append(c)
+        if closes:
+            result[code] = closes
+    return result
+
+
 def get_security_detail_fallback(code: str) -> dict[str, Any]:
     if not code:
         return {}

@@ -31,13 +31,12 @@ ALLOWED_METHODS: set[str] = {
     "get_market_data_ex",         # 增强版快照
 
     # ─── 历史 K 线 ─────────────────────────────────────────
-    "get_market_data",            # 主力 K 线接口
-    "get_market_data_field",      # 单字段拉取
+    "get_market_data",            # 主力 K 线接口（需要先 download_history_data 同步本地缓存）
+    "download_history_data",      # 同步下载 K 线到本地缓存（首次慢, 后续秒返）
 
     # ─── 财务 / 基础信息 ───────────────────────────────────
     "get_instrument_detail",      # 单只证券基础信息
     "get_financial_data",         # 财务数据
-    "get_quote_history",          # 行情历史
 
     # ─── 订阅类（持续推送，无返回值；需要后续 WS 化） ─────
     # 当前 bridge 同步返回空 dict，订阅在 bridge 端维护状态。

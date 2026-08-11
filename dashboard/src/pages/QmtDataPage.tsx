@@ -106,6 +106,8 @@ interface QmtIndustryStats {
     data_date: string | null;
     data_lag_days: number | null;
     realtime_data_date: string | null;
+    ma10_qmt_total_count?: number;   // 全市场 ma10 走 QMT 实时的个股数
+    ma10_qmt_total_stocks?: number;  // 全市场总个股数
   };
   items: Array<{
     sector: string;
@@ -125,6 +127,8 @@ interface QmtIndustryStats {
     yesterday_main_inflow: number;
     today_main_inflow: number;
     data_date: string;
+    ma10_qmt_count?: number;    // 该行业里走 QMT 实时 ma10 的个股数 (0 = 全部 CSV+tick 降级)
+    ma10_qmt_ratio?: number;    // 同上, 占比 0~1
   }>;
 }
 
@@ -655,6 +659,29 @@ export function QmtDataPage() {
                   </div>
                   <div className={`text-xs mt-1 ${deltaCls}`}>
                     今日 {deltaStr} 个
+                  </div>
+                </div>
+              );
+            })()}
+            {(() => {
+              const qmtCnt = industryStatsData?.summary.ma10_qmt_total_count ?? 0;
+              const totalCnt = industryStatsData?.summary.ma10_qmt_total_stocks ?? 0;
+              const ratio = totalCnt > 0 ? qmtCnt / totalCnt : 0;
+              const ratioPct = (ratio * 100).toFixed(1);
+              const ratioCls = ratio >= 0.95
+                ? 'text-emerald-600'
+                : ratio >= 0.5
+                  ? 'text-amber-600'
+                  : 'text-gray-400';
+              return (
+                <div className="rounded-xl border border-gray-100 p-4"
+                  title="ma10 走 QMT 实时 K 线的股票占比。100% = 全市场 ma10 含当日 tick 价（无 T+1 滞后）；0% = 全部降级 CSV+tick（VM 端白名单未生效或 xtquant 缓存空）。需要 VM 端 qmt-bridge 加载新 allowlist + 重启。">
+                  <div className="text-xs text-gray-400">QMT 实时 ma10 覆盖</div>
+                  <div className="mt-2 text-2xl font-semibold text-gray-900">
+                    {ratioPct}<span className="text-base font-normal text-gray-400">%</span>
+                  </div>
+                  <div className={`text-xs mt-1 ${ratioCls}`}>
+                    {qmtCnt.toLocaleString()} / {totalCnt.toLocaleString()} 只
                   </div>
                 </div>
               );

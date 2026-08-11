@@ -5,7 +5,11 @@ from datetime import date
 
 import pandas as pd
 
-from fetcher.qmt_data_api import get_full_tick_snapshot, list_a_shares
+from fetcher.qmt_data_api import (
+    download_history_data_bars,
+    get_full_tick_snapshot,
+    list_a_shares,
+)
 from fetcher.xtquant_limit_down import compute_down_limit, compute_up_limit
 from quant.loader import get_trading_data
 
@@ -160,6 +164,7 @@ def normalize_industry_stats_row(row: dict) -> dict | None:
         "yesterday_main_inflow": yesterday_main_inflow,
         "today_main_inflow": today_main_inflow,
         "data_date": str(row.get("data_date") or "").strip(),
+        "ma10_source": str(row.get("ma10_source") or "CSV").strip(),
     }
 
 
@@ -222,6 +227,11 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
                 "yesterday_main_inflow": yesterday_main_inflow,
                 "today_main_inflow": today_main_inflow,
                 "data_date": sector_data_date,
+                # ma10 QMT 实时覆盖度: 该行业 N 只股票里 ma10 走 QMT 实时 K 线的占比 (0~1)
+                # 0 = 全部降级 CSV+tick（白名单未生效 / VM 不通 / xtquant 缓存空）
+                # 1 = 全部 QMT 实时（最理想态, 含 8/11 当日数据, 解决 CSV T+1 滞后）
+                "ma10_qmt_ratio": sum(1 for item in group if item["ma10_source"] == "QMT") / stock_count if stock_count else 0.0,
+                "ma10_qmt_count": sum(1 for item in group if item["ma10_source"] == "QMT"),
             }
         )
 
@@ -260,6 +270,11 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
             "data_lag_days": summary_data_lag_days,
             # 实时数据日期 = 今天（即使 19:00 之后，盘中价反映的是今天）
             "realtime_data_date": date.today().isoformat(),
+            # 全市场 ma10 QMT 实时覆盖度（行业表所有股票的累加）
+            # 0/0 = 全部降级 CSV+tick（VM 端白名单未生效 / xtquant 缓存空 / 网络不通）
+            # N/M = 正常 QMT 实时（最理想态, 含 8/11 当日数据, 解决 CSV T+1 滞后）
+            "ma10_qmt_total_count": sum(int(item.get("ma10_qmt_count", 0)) for item in items),
+            "ma10_qmt_total_stocks": sum(int(item.get("stock_count", 0)) for item in items),
         },
         "items": items,
     }
@@ -312,6 +327,28 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
             except Exception:
                 continue
 
+    # 阶段 1.5：QMT 实时 K 线（10 天 close）— 解决 CSV T+1 滞后缺 8/11 当日数据
+    # 数据源：xtquant 本地缓存（VM 端日 K 线）。需要先 download_history_data 同步本地缓存，
+    # 首次冷启动慢（30-60s 估 5200 只 10 天），后续每天盘后自动续，秒返。
+    # 失败（白名单阻挡 / VM 不通 / 超时）→ 降级 CSV ma10（ma10_realtime 字段用 CSV 9 天 + lastPrice 混合）。
+    ma10_qmt_map: dict[str, float] = {}
+    ma10_source_map: dict[str, str] = {}
+    try:
+        # 拿 10 天 close（够算 ma10 + 覆盖周末/节假日缺口）
+        close_map = download_history_data_bars(
+            codes=stock_codes,
+            period="1d",
+            days_back=10,
+            end_offset_days=1,  # 用昨天收盘数据（今天盘中 close 不全）
+        )
+        for code, closes in close_map.items():
+            if len(closes) >= 5:  # 至少 5 天数据（节假日/新股容忍）
+                ma10_qmt_map[code] = sum(closes[-10:]) / min(len(closes), 10)
+                ma10_source_map[code] = "QMT"
+    except Exception:
+        # 全部失败 → ma10_qmt_map 留空，阶段 2 自动降级 CSV
+        pass
+
     # 阶段 2：一次性拿全市场 tick（QMT bridge 一次 5207 只）
     ticks = get_full_tick_snapshot(stock_codes)
     trade_day = str(target_trade_date or "").replace("-", "")
@@ -341,13 +378,24 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
         except (TypeError, ValueError):
             continue
 
-        # 实时 MA10：用今天盘中 tick 价顶替 CSV 最后一天 close，参与 10 日均线计算
-        # 这样"今天"对 MA10 的影响能被实时看到（前 9 天 = CSV 收盘，今天 = last_price）
-        try:
-            close_9d = close_window.head(9).astype(float).tolist()
-            ma10_realtime = (sum(close_9d) + float(last_price)) / 10
-        except (TypeError, ValueError):
-            ma10_realtime = ma10_csv
+        # MA10 三档降级链：
+        # 1) ma10_qmt (最优): QMT 实时 K 线 10 天 close 平均（含 8/11 当日）— 需要 VM 端 bridge 白名单+xtquant 缓存
+        # 2) ma10_realtime (兜底1): CSV 9 天 + lastPrice 混合（缺 8/11 当日但含今天 tick 价）
+        # 3) ma10_csv (兜底2): CSV 纯 10 天 close 平均（最旧, 缺 8/11 当日）
+        ma10_qmt = ma10_qmt_map.get(stock_code)
+        if ma10_qmt is not None:
+            ma10_realtime = ma10_qmt
+            ma10_source = "QMT"
+        else:
+            # 实时 MA10：用今天盘中 tick 价顶替 CSV 最后一天 close，参与 10 日均线计算
+            # 这样"今天"对 MA10 的影响能被实时看到（前 9 天 = CSV 收盘，今天 = last_price）
+            try:
+                close_9d = close_window.head(9).astype(float).tolist()
+                ma10_realtime = (sum(close_9d) + float(last_price)) / 10
+                ma10_source = "CSV+tick"
+            except (TypeError, ValueError):
+                ma10_realtime = ma10_csv
+                ma10_source = "CSV"
 
         latest_row = history.iloc[-1]
         stock_name = str(latest_row.get("name", "") or "").strip()
@@ -401,6 +449,7 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
                 "last_close": float(last_close),
                 "ma10_csv": ma10_csv,
                 "ma10_realtime": ma10_realtime,
+                "ma10_source": ma10_source,
                 "up_limit": up_limit,
                 "down_limit": down_limit,
                 "yesterday_main_inflow": yesterday_main_inflow,
