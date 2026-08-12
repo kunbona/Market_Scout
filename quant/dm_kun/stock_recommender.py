@@ -294,6 +294,19 @@ def main():
     files = list(Path(STOCK_PATH).glob('*.csv'))
     print(f"📂 共 {len(files)} 个股票文件，筛选目标行业...")
 
+    # 复用 sentiment_cycle 同一份 lookback 逻辑: 凌晨 02:50 跑应该用 8/12 而不是 8/13
+    # pd.Timestamp.now() 会显示当天 — CSV 8/13 还没开盘实际数据是 8/12
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # 让 import quant.loader 找得到
+    try:
+        from quant.loader import get_latest_trade_date as _gltd
+        _analysis_date = _gltd() or pd.Timestamp.now().strftime('%Y-%m-%d')
+    except Exception:
+        _analysis_date = pd.Timestamp.now().strftime('%Y-%m-%d')
+
+    def _resolve_analysis_date() -> str:
+        return _analysis_date
+
     # 并行读取
     max_workers = max(1, min(12, (os.cpu_count() or 4) - 2))
     results = []
@@ -330,7 +343,7 @@ def main():
 
     # 按行业分组输出
     lines = []
-    lines.append(f"# 强势行业个股推荐（{pd.Timestamp.now().strftime('%Y-%m-%d')}）\n")
+    lines.append(f"# 强势行业个股推荐（{_resolve_analysis_date()}）\n")
 
     for ind in args.industries:
         ind_scores = scores[scores['industry'] == ind].head(args.top)

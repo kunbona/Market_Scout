@@ -432,7 +432,26 @@ def _run_analysis(analysis_date=None):
         pass
 
     if analysis_date is None:
-        analysis_date = datetime.now().strftime('%Y-%m-%d')
+        # 不要用 datetime.now() — 凌晨 02:50 跑会显示当天 (8/13 实际还没开盘, 数据是 8/12 的)
+        # 改成 quant.loader.get_latest_trade_date() (扫 sh6*.csv 末行取 max)
+        try:
+            from quant.loader import get_latest_trade_date
+            analysis_date = get_latest_trade_date()
+        except Exception:
+            pass
+        if not analysis_date:
+            # 兜底: 扫当前目录 STOCK_PATH 找任意 csv 末行日期
+            for fname in sorted(os.listdir(STOCK_PATH)):
+                if fname.lower().startswith(('sh', 'sz', 'bj')) and fname.endswith('.csv'):
+                    try:
+                        df = pd.read_csv(os.path.join(STOCK_PATH, fname), encoding="gbk", skiprows=1, nrows=5)
+                        if "交易日期" in df.columns and not df.empty:
+                            analysis_date = str(df["交易日期"].iloc[-1])[:10]
+                            break
+                    except Exception:
+                        continue
+        if not analysis_date:
+            analysis_date = datetime.now().strftime('%Y-%m-%d')
 
     print(f"\n## 短线情绪周期分析 ({analysis_date})\n")
 

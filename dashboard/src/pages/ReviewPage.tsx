@@ -95,21 +95,13 @@ export function ReviewPage() {
 
   const handleRecompute = async () => {
     if (recomputing) return;
-    // 选中的就是 dates[0] (最新) → 不传 date, 让后端自动找 CSV 最新交易日
-    // (避免 "DB 没新日期 → 列表没新日期 → 没法选新日期" 鸡生蛋)
-    const targetDate = selectedDate || data?.trade_date || '';
-    const isLatest = targetDate === dates[0];
-    const confirmMsg = isLatest
-      ? `重算最新交易日 (自动用本地 CSV 最新日期)?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住`
-      : `重算 ${targetDate} 的复盘数据?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住`;
-    if (!confirm(confirmMsg)) return;
+    // 永远让后端扫本地 CSV 找最新交易日 (force=1 无 date) — 不依赖 selectedDate
+    // 这样不管 dates 列表有没有新日期, 不管用户选中什么, 都能算出最新
+    if (!confirm('重算本地 CSV 最新交易日 (自动扫描 stock-trading-data-pro)?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住')) return;
     setRecomputing(true);
     setError('');
     try {
-      const url = isLatest
-        ? `/api/review/data?force=1`  // 后端自动找 CSV 最新 (可能算出比 DB dates[0] 更新的日期)
-        : `/api/review/data?date=${targetDate}&force=1`;
-      const r = await fetch(url);
+      const r = await fetch(`/api/review/data?force=1`);
       if (!r.ok) {
         const err = await r.json().catch(() => ({ message: r.statusText }));
         throw new Error(err.message || err.error || `HTTP ${r.status}`);
@@ -123,6 +115,28 @@ export function ReviewPage() {
       } else {
         await fetchData();
       }
+    } catch (e: any) {
+      setError(e.message || '重算失败');
+    } finally {
+      setRecomputing(false);
+    }
+  };
+
+  const handleRecomputeSelected = async () => {
+    if (recomputing) return;
+    // 重算当前选中的日期 (而不是 CSV 最新)
+    const targetDate = selectedDate || data?.trade_date || '';
+    if (!targetDate) return;
+    if (!confirm(`重算 ${targetDate} 的复盘数据?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住`)) return;
+    setRecomputing(true);
+    setError('');
+    try {
+      const r = await fetch(`/api/review/data?date=${targetDate}&force=1`);
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ message: r.statusText }));
+        throw new Error(err.message || err.error || `HTTP ${r.status}`);
+      }
+      await fetchData(targetDate);
     } catch (e: any) {
       setError(e.message || '重算失败');
     } finally {
@@ -157,9 +171,18 @@ export function ReviewPage() {
           <button
             onClick={handleRecompute}
             disabled={recomputing || loading}
-            className="ml-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+            className="ml-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-500 text-white border border-amber-600 hover:bg-amber-600 disabled:opacity-50"
+            title="重算本地 CSV 最新交易日 — 永远扫 stock-trading-data-pro 找最新, 不依赖 dates 列表"
           >
-            {recomputing ? '⏳ 重算中…' : '🔄 重算'}
+            {recomputing ? '⏳ 重算中…' : '📥 读 CSV 最新重算'}
+          </button>
+          <button
+            onClick={handleRecomputeSelected}
+            disabled={recomputing || loading}
+            className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+            title="重算当前选中的日期 (上面 select 选哪个, 就重算哪个)"
+          >
+            🔁 重算当前
           </button>
           {loading && <span className="text-xs text-amber-500">加载中...</span>}
           {error && <span className="text-xs text-red-500">{error}</span>}
@@ -2936,6 +2959,7 @@ function SentPositionBars({ rows, total }: { rows: SentPosition[]; total: SentPo
 interface DmCache {
   markdown: string | null;
   computed_at: string | null;
+  data_date?: string | null;  // 数据时间 (从 markdown 标题 parse), 跟 computed_at (重算时间) 区分
   loading: boolean;
   error: string | null;
 }
@@ -2989,12 +3013,15 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-gray-900 mb-1">{title}</div>
           <div className="flex items-center gap-2 text-gray-400">
-            {cache?.computed_at ? (
-              <span>📅 {cache.computed_at} 计算</span>
+            {cache?.data_date ? (
+              <span className="text-gray-700">📅 {cache.data_date} 数据</span>
             ) : cache?.loading ? (
               <span className="text-amber-500">⟳ 加载中...</span>
             ) : (
               <span>未计算</span>
+            )}
+            {cache?.computed_at && (
+              <span className="text-gray-300" title="脚本重算时间 (非数据时间)">· 重算于 {cache.computed_at}</span>
             )}
             {recomputing && <span className="text-blue-500">⟳ 重算中...</span>}
             <span className="text-gray-300">·</span>

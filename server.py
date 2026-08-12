@@ -266,9 +266,41 @@ def _dm_kun_run_one(name: str, script_module: str, extra_args: list[str] | None 
         text = result.stdout or ""
         if result.returncode != 0 and not text:
             text = (result.stderr or "")[:4000]
+        # 从 markdown 标题 parse 数据时间 (e.g. '## ... (2026-08-12)') —
+        # 跟 computed_at (重算时间) 区分, 前端显示应该用数据时间
+        # 兼容: 大部分脚本标题里有 (YYYY-MM-DD), 但 industry_enhanced/theme_ladder 等
+        # 用 CSV 自身日期, 没在标题里 — 放宽到前 30 行内第一个 YYYY-MM-DD
+        import re as _re
+        data_date = None
+        for line in text.split("\n")[:30]:
+            m = _re.search(r"\((\d{4}-\d{2}-\d{2})\)", line)
+            if m:
+                data_date = m.group(1)
+                break
+            # 也匹配 '日期: 2026-08-11' / '数据日期: 2026-08-11' / '数据 2026-08-12' 等
+            m = _re.search(r"(?:日期|data|数据)[：:]\s*(\d{4}-\d{2}-\d{2})", line, _re.IGNORECASE)
+            if m:
+                data_date = m.group(1)
+                break
+        # 兜底: 找 markdown 里第一个 YYYY-MM-DD (排除时间部分, 不含冒号)
+        if data_date is None:
+            for line in text.split("\n")[:50]:
+                m = _re.search(r"\b(\d{4}-\d{2}-\d{2})\b", line)
+                if m:
+                    data_date = m.group(1)
+                    break
+        # 终极兜底: 用 CSV 最新交易日 (industry_enhanced / theme_ladder 等脚本
+        # markdown 里没标日期, 但实际是基于最新 CSV 算的)
+        if data_date is None:
+            try:
+                from quant.loader import get_latest_trade_date
+                data_date = get_latest_trade_date() or None
+            except Exception:
+                pass
         with _DM_KUN_LOCK:
             _DM_KUN_CACHE[name]["markdown"] = text
             _DM_KUN_CACHE[name]["computed_at"] = datetime.now().isoformat(timespec="seconds")
+            _DM_KUN_CACHE[name]["data_date"] = data_date
             if result.returncode != 0:
                 _DM_KUN_CACHE[name]["error"] = f"exit {result.returncode}"
     except _sp.TimeoutExpired:
