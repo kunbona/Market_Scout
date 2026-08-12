@@ -7,6 +7,7 @@
 #   1. 已在运行则直接报告，不重复启动
 #   2. 启动 colima 虚拟机 + RSSHub 容器（没装则自动跳过）
 #   3. 清理抢占 20026 端口的残留 dev server（vite/npm）
+#   3.5 增量 build dashboard dist (src 有改动才 build, 浏览器不会跑老代码)
 #   4. 后台启动 server.py 并等待自检通过
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -32,6 +33,37 @@ fi
 echo "=============================="
 echo " Market Radar 一键启动"
 echo "=============================="
+
+# ---------- 0. 同步构建 dashboard dist ----------
+# dist/ 在 .gitignore 不入 git, Flask serve dist, 不 build 的话浏览器永远跑老代码
+# (历史上 8/12 → 8/13 复盘页"重算按钮点了没用"就是 src 改了但没 build)
+build_dashboard_dist() {
+    if [ ! -f "$SCRIPT_DIR/dashboard/package.json" ]; then
+        return 0  # 没 dashboard 目录, 跳过
+    fi
+    if [ ! -d "$SCRIPT_DIR/dashboard/node_modules" ]; then
+        echo "[!] dashboard/node_modules 不存在, 跳过 build (请先 cd dashboard && npm install)"
+        return 0
+    fi
+    # 增量 build: src 新于 dist 才 build (避免每次启动多等 5-30s)
+    DIST_INDEX="$SCRIPT_DIR/dashboard/dist/index.html"
+    SRC_NEWEST=$(find "$SCRIPT_DIR/dashboard/src" \( -name "*.tsx" -o -name "*.ts" \) -print 2>/dev/null \
+        | xargs stat -f %m 2>/dev/null | sort -nr | head -1)
+    if [ -z "$SRC_NEWEST" ]; then
+        return 0
+    fi
+    if [ -f "$DIST_INDEX" ] && [ "$SRC_NEWEST" -le "$(stat -f %m "$DIST_INDEX" 2>/dev/null || echo 0)" ]; then
+        echo "[✓] dashboard dist 最新, 跳过 build"
+        return 0
+    fi
+    echo "[…] build dashboard dist (src 有新改动)..."
+    if (cd "$SCRIPT_DIR/dashboard" && npm run build) 2>&1 | tail -8; then
+        echo "[✓] dashboard build 完成"
+    else
+        echo "[!] dashboard build 失败, 继续启动 (用旧 dist)"
+    fi
+}
+build_dashboard_dist
 
 # ---------- 1. 已在运行？ ----------
 # 注意：必须以 Flask 的 /api/config 返回 JSON 为准。
@@ -103,7 +135,39 @@ for pid in $PIDS; do
 done
 sleep 1
 
+# ---------- 3.5 同步构建 dashboard dist ----------
+# dist/ 在 .gitignore 不入 git, Flask serve dist, 不 build 的话浏览器永远跑老代码
+# (历史上 8/12 → 8/13 复盘页"重算按钮点了没用"就是 src 改了但没 build)
+build_dashboard_dist() {
+    if [ ! -f "$SCRIPT_DIR/dashboard/package.json" ]; then
+        return 0  # 没 dashboard 目录, 跳过
+    fi
+    if [ ! -d "$SCRIPT_DIR/dashboard/node_modules" ]; then
+        echo "[!] dashboard/node_modules 不存在, 跳过 build (请先 cd dashboard && npm install)"
+        return 0
+    fi
+    # 增量 build: src 新于 dist 才 build (避免每次启动多等 5-30s)
+    DIST_INDEX="$SCRIPT_DIR/dashboard/dist/index.html"
+    SRC_NEWEST=$(find "$SCRIPT_DIR/dashboard/src" -name "*.tsx" -o -name "*.ts" 2>/dev/null \
+        | xargs stat -f %m 2>/dev/null | sort -nr | head -1)
+    if [ -z "$SRC_NEWEST" ]; then
+        return 0
+    fi
+    if [ -f "$DIST_INDEX" ] && [ "$SRC_NEWEST" -le "$(stat -f %m "$DIST_INDEX" 2>/dev/null || echo 0)" ]; then
+        echo "[✓] dashboard dist 最新, 跳过 build"
+        return 0
+    fi
+    echo "[…] build dashboard dist (src 有新改动)..."
+    if (cd "$SCRIPT_DIR/dashboard" && npm run build) 2>&1 | tail -8; then
+        echo "[✓] dashboard build 完成"
+    else
+        echo "[!] dashboard build 失败, 继续启动 (用旧 dist)"
+    fi
+}
+build_dashboard_dist
+
 # ---------- 4. 后台启动 ----------
+# (build 已在 step 0 跑过, 不会重复)
 PLIST="$HOME/Library/LaunchAgents/com.kun.marketradar.plist"
 AGENT_DOMAIN="gui/$(id -u)"
 
