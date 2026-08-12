@@ -11,7 +11,18 @@ import threading
 import time
 import warnings
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
+
+# 自动加载 .env.local (QMT_ENABLED / QMT_BRIDGE_URL / QMT_BRIDGE_TOKEN 等)
+# 避免每次手动 source .env.local 才能让 QMT 数据源生效
+try:
+    from dotenv import load_dotenv
+    _env_local = Path(__file__).parent / ".env.local"
+    if _env_local.exists():
+        load_dotenv(_env_local, override=False)  # 不覆盖已设 env (priority 给 shell)
+except ImportError:
+    pass  # 没装 python-dotenv 也没事, bash 启的 start.sh 会处理
 
 from core.python_runtime import get_python_executable
 

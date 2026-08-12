@@ -802,6 +802,14 @@ def replace_dt_pool_v3(trade_date: str, rows: list[dict]) -> None:
         with _conn() as conn:
             conn.execute("DELETE FROM dt_pool_v3 WHERE trade_date = ?", (trade_date,))
             if not rows:
+                # 写一行 sentinel 标识今天 scheduler 扫过 (0 candidates)
+                # 防止 get_dt_pool_v3(None) fallback 到昨天数据
+                conn.execute(
+                    "INSERT OR IGNORE INTO dt_pool_v3 "
+                    "(trade_date, stock_code, stock_name, last_price, last_close, down_limit, sector) "
+                    "VALUES (?, '__SCANNED__', '', 0, 0, 0, '')",
+                    (trade_date,),
+                )
                 return
             conn.executemany(
                 "INSERT OR REPLACE INTO dt_pool_v3 "
@@ -964,9 +972,23 @@ def get_dt_pool_v2(trade_date=None) -> list[dict]:
 
 def get_dt_pool_v3(trade_date=None) -> list[dict]:
     with _conn() as conn:
-        date = trade_date or _latest_trade_date(conn, "dt_pool_v3")
+        if trade_date:
+            date = trade_date
+        else:
+            # None → 优先 today (今天 scheduler 至少写一行 __SCANNED__ sentinel 证明扫过)
+            # today 没任何 row → fallback 最新非空 trade_date (scheduler 启动延迟窗口)
+            today = _today()
+            any_row = conn.execute(
+                "SELECT 1 FROM dt_pool_v3 WHERE trade_date = ? LIMIT 1", (today,)
+            ).fetchone()
+            if any_row is not None:
+                date = today
+            else:
+                date = _latest_trade_date(conn, "dt_pool_v3")
+        # 统一过滤 sentinel — 0 candidates 时的占位行, 不算真跌停
         cur = conn.execute(
-            "SELECT * FROM dt_pool_v3 WHERE trade_date = ?", (date,)
+            "SELECT * FROM dt_pool_v3 WHERE trade_date = ? AND stock_code != '__SCANNED__'",
+            (date,),
         )
         return _rows_to_dicts(cur)
 
