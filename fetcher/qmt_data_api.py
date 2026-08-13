@@ -164,18 +164,58 @@ def list_a_shares(sector_name: str = "沪深A股") -> list[str]:
     return [str(code).strip() for code in codes if str(code).strip()]
 
 
+def with_market_suffix(code: str) -> str:
+    """
+    给纯 6 位股票代码补市场后缀 (.SH / .SZ / .BJ)。
+
+    规则（按 A 股惯例）:
+    - 已有后缀 (.SH / .SZ / .BJ / .sh / .sz / .bj) → 原样返回
+    - 60xxxx / 68xxxx / 90xxxx → 上交所 SH
+    - 00xxxx / 30xxxx → 深交所 SZ
+    - 8xxxxx / 43xxxx / 92xxxx → 北交所 BJ
+    - 非法输入 → 原样返回 (上层 _xt 拿到空 dict 兜底)
+    """
+    raw = (code or "").strip()
+    if not raw:
+        return raw
+    if "." in raw:
+        return raw
+    if not raw.isdigit() or len(raw) != 6:
+        return raw
+    head2 = raw[:2]
+    head3 = raw[:3]
+    if head3 in {"600", "601", "603", "605", "688", "689", "900"}:
+        return f"{raw}.SH"
+    if head3 in {"000", "001", "002", "003", "300", "301"} or head2 == "15":
+        return f"{raw}.SZ"
+    if head3 in {"400", "420", "430", "830", "831", "836", "837", "838", "839",
+                 "870", "871", "872", "873", "874", "875", "876", "877", "878",
+                 "920", "921", "922", "923", "924", "925", "926", "927", "928",
+                 "929", "930", "931"} or head2 in {"83", "87", "43"}:
+        return f"{raw}.BJ"
+    return raw
+
+
 def get_full_tick_snapshot(codes: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    拿 QMT 实时 tick 快照。
+
+    自动给纯 6 位 code 补 .SH/.SZ/.BJ 后缀（xtdata 不认裸 code，会返 {}）。
+    返回的 key 用入参 code 形式（裸 / 带后缀 都原样保留），方便调用方按入参索引。
+    """
     if not codes:
         return {}
     if not _use_bridge() and (xtdata is None or not qmt_connect()):
         return {}
-    raw_ticks = _xt("get_full_tick", codes) or {}
+    # 补后缀（idempotent，已有 .SH/.SZ 不动）
+    enriched = [with_market_suffix(c) for c in codes]
+    raw_ticks = _xt("get_full_tick", enriched) or {}
 
     result: dict[str, dict[str, Any]] = {}
-    for code in codes:
-        tick = raw_ticks.get(code) or {}
-        result[code] = {
-            "stock_code": code,
+    for original_code, queried_code in zip(codes, enriched):
+        tick = raw_ticks.get(queried_code) or {}
+        result[original_code] = {
+            "stock_code": original_code,
             "last_price": _to_float(tick.get("lastPrice") or tick.get("last_price")),
             "last_close": _to_float(tick.get("lastClose") or tick.get("last_close")),
             "open": _to_float(tick.get("open")),

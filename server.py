@@ -1614,6 +1614,89 @@ def api_watchlist_update(code: str):
         return _err(exc)
 
 
+@app.route("/api/watchlist/quote")
+def api_watchlist_quote():
+    """
+    关注股池 + QMT 实时 tick 合并返回。
+
+    ?pool=xxx 过滤单个池，不带返全部（每项带 pool 字段）。
+    返回每只股票：watchlist 字段 + last_price / last_close / change / change_pct / open / high / low / volume / amount
+    QMT 不可用 / bridge 离线时只返 watchlist 字段，报价字段为 null。
+    """
+    try:
+        import time as _time
+        from fetcher.qmt_data_api import get_full_tick_snapshot
+        from fetcher import qmt_breaker
+
+        pool = (request.args.get("pool", "") or "").strip() or None
+        items = get_watchlist(pool)
+
+        if not items:
+            return _ok({
+                "items": [],
+                "quote_time": None,
+                "quote_source": None,
+                "bridge_state": qmt_breaker.snapshot().get("state"),
+            })
+
+        codes = [it["code"] for it in items if it.get("code")]
+        t0 = _time.time()
+        ticks = get_full_tick_snapshot(codes)
+        elapsed_ms = round((_time.time() - t0) * 1000, 1)
+
+        # A 股：红涨绿跌
+        # change = last_price - last_close
+        # change_pct = (last_price - last_close) / last_close * 100
+        quote_time = None
+        merged = []
+        ok_count = 0
+        for it in items:
+            code = it.get("code", "")
+            tick = ticks.get(code) or {}
+            lp = tick.get("last_price") or 0.0
+            lc = tick.get("last_close") or 0.0
+            has_quote = bool(lp and lc)
+            if has_quote:
+                ok_count += 1
+                change = round(lp - lc, 4)
+                change_pct = round((lp - lc) / lc * 100, 2) if lc else 0.0
+            else:
+                change = 0.0
+                change_pct = 0.0
+            # 拿最新成交时间
+            raw = tick.get("raw") or {}
+            qt = raw.get("time") or raw.get("datetime")
+            if qt is not None and quote_time is None and has_quote:
+                quote_time = str(qt)
+            merged.append({
+                **it,
+                "last_price": lp if has_quote else None,
+                "last_close": lc if has_quote else None,
+                "open": tick.get("open") or None,
+                "high": tick.get("high") or None,
+                "low": tick.get("low") or None,
+                "volume": tick.get("volume") or None,
+                "amount": tick.get("amount") or None,
+                "change": change if has_quote else None,
+                "change_pct": change_pct if has_quote else None,
+                "has_quote": has_quote,
+            })
+
+        bridge_snap = qmt_breaker.snapshot()
+        return _ok({
+            "items": merged,
+            "quote_time": quote_time,
+            "quote_elapsed_ms": elapsed_ms,
+            "quote_count": ok_count,
+            "total_count": len(items),
+            "quote_source": "QMT" if ok_count > 0 else None,
+            "bridge_state": bridge_snap.get("state"),
+            "bridge_offline_secs": bridge_snap.get("offline_secs", 0),
+        })
+    except Exception as exc:
+        return _err(exc)
+
+
 
 # ---------------------------------------------------------------------------
 # Sector flow acceleration / Volume breakout / Turnover stats / Market cap dist / Advance-decline

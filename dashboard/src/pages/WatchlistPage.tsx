@@ -29,6 +29,20 @@ interface WatchlistItem {
   sort: number;
 }
 
+// QMT 实时报价字段（/api/watchlist/quote 合并后）
+interface QuoteFields {
+  last_price: number | null;
+  last_close: number | null;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  volume: number | null;
+  amount: number | null;
+  change: number | null;
+  change_pct: number | null;
+  has_quote: boolean;
+}
+
 interface PoolInfo {
   name: string;
   count: number;
@@ -73,6 +87,12 @@ function WatchlistPanel({
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 实时报价 (QMT tick 合并到 watchlist)
+  const [quoteMap, setQuoteMap] = useState<Record<string, QuoteFields>>({});
+  const [quoteUpdatedAt, setQuoteUpdatedAt] = useState<string | null>(null);
+  const [bridgeState, setBridgeState] = useState<string | null>(null);
+  const quoteTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // 池管理
   const [manageOpen, setManageOpen] = useState(false);
   const [newPoolName, setNewPoolName] = useState('');
@@ -109,6 +129,53 @@ function WatchlistPanel({
 
   useEffect(() => { load(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPool]);
+
+  // 实时报价：每 5s 拉一次，QMT 拿全 watchlist tick
+  useEffect(() => {
+    let cancelled = false;
+    const fetchQuote = async () => {
+      const url = currentPool === '全部'
+        ? '/api/watchlist/quote'
+        : `/api/watchlist/quote?pool=${encodeURIComponent(currentPool)}`;
+      const data = await safeFetch<{
+        items: Array<WatchlistItem & QuoteFields>;
+        quote_time: string | null;
+        quote_count: number;
+        total_count: number;
+        bridge_state: string | null;
+      }>(url);
+      if (cancelled || !data) return;
+      const next: Record<string, QuoteFields> = {};
+      for (const it of data.items) {
+        next[it.code] = {
+          last_price: it.last_price,
+          last_close: it.last_close,
+          open: it.open,
+          high: it.high,
+          low: it.low,
+          volume: it.volume,
+          amount: it.amount,
+          change: it.change,
+          change_pct: it.change_pct,
+          has_quote: it.has_quote,
+        };
+      }
+      setQuoteMap(next);
+      setQuoteUpdatedAt(new Date().toISOString());
+      setBridgeState(data.bridge_state);
+    };
+    fetchQuote();
+    if (quoteTimerRef.current) clearInterval(quoteTimerRef.current);
+    quoteTimerRef.current = setInterval(fetchQuote, 5000);
+    return () => {
+      cancelled = true;
+      if (quoteTimerRef.current) {
+        clearInterval(quoteTimerRef.current);
+        quoteTimerRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPool, items.length]);
 
   const totalCount = pools.reduce((s, p) => s + p.count, 0);
 
@@ -567,32 +634,72 @@ function WatchlistPanel({
         </p>
       ) : (
         <div className="divide-y divide-gray-50">
-          {items.map(item => (
-            <div key={`${item.pool}-${item.code}`} className="flex items-center gap-3 py-2.5">
-              <span className="text-sm font-semibold text-gray-900">
-                {item.name || <span className="text-gray-300">未知名称</span>}
-              </span>
-              <span className="text-xs font-mono text-gray-400">{item.code}</span>
-              {currentPool === '全部' && (
-                <span className="text-xs px-1.5 py-0.5 rounded bg-rose-50 text-rose-500 font-medium shrink-0">
-                  {item.pool}
+          {items.map(item => {
+            const q = quoteMap[item.code];
+            // A 股红涨绿跌
+            const chgPct = q?.change_pct ?? null;
+            const chg = q?.change ?? null;
+            const lastPrice = q?.last_price ?? null;
+            const isUp = (chgPct ?? 0) > 0;
+            const isDown = (chgPct ?? 0) < 0;
+            const chgColor = !q?.has_quote
+              ? 'text-gray-300'
+              : isUp ? 'text-red-600' : isDown ? 'text-green-600' : 'text-gray-700';
+            return (
+              <div key={`${item.pool}-${item.code}`} className="flex items-center gap-3 py-2.5">
+                <span className="text-sm font-semibold text-gray-900 shrink-0">
+                  {item.name || <span className="text-gray-300">未知名称</span>}
                 </span>
-              )}
-              {item.note && (
-                <span className="text-xs text-gray-500 bg-gray-50 border border-gray-100 px-2 py-0.5 rounded-md truncate flex-1">
-                  {item.note}
-                </span>
-              )}
-              <button
-                onClick={() => handleRemove(item)}
-                title={`移出「${item.pool}」池`}
-                className="ml-auto shrink-0 p-1.5 rounded-lg text-gray-300
-                           hover:text-red-500 hover:bg-red-50 transition-colors"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
+                <span className="text-xs font-mono text-gray-400 shrink-0">{item.code}</span>
+                {currentPool === '全部' && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-rose-50 text-rose-500 font-medium shrink-0">
+                    {item.pool}
+                  </span>
+                )}
+                {item.note && (
+                  <span className="text-xs text-gray-500 bg-gray-50 border border-gray-100 px-2 py-0.5 rounded-md truncate max-w-[200px]">
+                    {item.note}
+                  </span>
+                )}
+
+                {/* 实时报价三联 (QMT) */}
+                <div className="ml-auto flex items-center gap-3 shrink-0 tabular-nums">
+                  <span className={`text-sm font-mono font-semibold ${chgColor}`} title="现价 (QMT)">
+                    {lastPrice == null ? '—' : lastPrice.toFixed(lastPrice >= 100 ? 2 : 2)}
+                  </span>
+                  <span className={`text-sm font-mono font-semibold w-16 text-right ${chgColor}`} title="涨跌幅 (QMT)">
+                    {chgPct == null ? '—' : `${isUp ? '+' : ''}${chgPct.toFixed(2)}%`}
+                  </span>
+                  <span className={`text-xs font-mono w-16 text-right ${chgColor}`} title="涨跌额 (QMT)">
+                    {chg == null ? '—' : `${isUp ? '+' : ''}${chg.toFixed(2)}`}
+                  </span>
+                </div>
+
+                <button
+                  onClick={() => handleRemove(item)}
+                  title={`移出「${item.pool}」池`}
+                  className="shrink-0 p-1.5 rounded-lg text-gray-300
+                             hover:text-red-500 hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 报价状态条 */}
+      {items.length > 0 && (
+        <div className="mt-2 flex items-center gap-2 text-[10px] text-gray-400">
+          <span>
+            报价: {bridgeState === 'closed' ? 'QMT 连接正常' : bridgeState ? `QMT 桥 ${bridgeState}` : 'QMT 检测中...'}
+          </span>
+          {quoteUpdatedAt && (
+            <span title={quoteUpdatedAt}>
+              · 刷新于 {new Date(quoteUpdatedAt).toLocaleTimeString('zh-CN', { hour12: false })}
+            </span>
+          )}
         </div>
       )}
     </div>
