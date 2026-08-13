@@ -9,6 +9,7 @@ import { ResearchPage } from './pages/ResearchPage';
 import { MarketRealtimePage } from './pages/MarketRealtimePage';
 import { MarketSentimentPage } from './pages/MarketSentimentPage';
 import { QmtDataPage } from './pages/QmtDataPage';
+import { ExodiaDataPage } from './pages/ExodiaDataPage';
 import { CyclePage } from './pages/CyclePage';
 import { ReviewPage } from './pages/ReviewPage';
 import { WatchlistPage } from './pages/WatchlistPage';
@@ -697,7 +698,7 @@ function SettingsPage({ settings, onUpdate }: {
   );
 }
 
-type TabId = 'news' | 'policy' | 'market' | 'qmt' | 'cycle' | 'review' | 'watchlist' | 'research' | 'ai-analysis' | 'settings';
+type TabId = 'news' | 'policy' | 'market' | 'qmt' | 'exodia' | 'cycle' | 'review' | 'watchlist' | 'research' | 'ai-analysis' | 'settings';
 
 interface DataAlert {
   level: 'error' | 'warning';
@@ -758,6 +759,8 @@ export default function App() {
         );
       case 'qmt':
         return <QmtDataPage />;
+      case 'exodia':
+        return <ExodiaDataPage />;
       case 'cycle':
         return <CyclePage />;
       case 'review':
