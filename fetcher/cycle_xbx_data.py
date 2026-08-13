@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -30,7 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 # XBX 本地 CSV 目录 (用户用 XBX 工具登录券商导出的数据)
-DEFAULT_XBX_CSV_DIR = "/Users/kun/Desktop/AGdata/stock-trading-data-pro"
+# 从 QUANT_DATA_ROOT 派生, env 缺失或路径不存在时 fail loud.
+_QDR = os.environ.get("QUANT_DATA_ROOT", "").strip()
+if not _QDR or not Path(_QDR).exists():
+    raise FileNotFoundError(
+        f"QUANT_DATA_ROOT 未配置或路径不存在: {_QDR!r} "
+        "(.env.local 或 launchd plist 注入)"
+    )
+DEFAULT_XBX_CSV_DIR = f"{_QDR}/stock-trading-data-pro"
 
 # 自管 XBX parquet 路径 (config.RAW_DATA_DIR / "xbx_stock_data.parquet")
 DEFAULT_XBX_PARQUET = DATA_ROOT / "raw" / "xbx_stock_data.parquet"

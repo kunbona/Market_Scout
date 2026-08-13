@@ -31,8 +31,10 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from ._paths import require_quant_data_root
+
 # ==================== 配置 ====================
-DATA_DIR = os.environ.get("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata") + "/stock-trading-data-pro"
+DATA_DIR = require_quant_data_root() + "/stock-trading-data-pro"
 # 三组分位窗口: 1 年 (250) / 3 年 (750) / 5 年 (1250). 3 年作为主分位决定拥挤/出清区,
 # 1 年和 5 年作为参考列展示, 用户能跨周期对比"这个板块短期 vs 长期是否都拥挤".
 # 老股票历史 19-35 年 (茅台 25 / 万科 35) 足够支撑 5 年分位.

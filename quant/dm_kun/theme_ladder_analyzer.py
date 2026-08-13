@@ -40,10 +40,12 @@ from collections import defaultdict
 import pandas as pd
 from dotenv import load_dotenv
 
+from ._paths import require_quant_data_root
+
 load_dotenv()
 
 # ==================== 配置 ====================
-DATA_DIR = os.environ.get("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata") + "/stock-trading-data-pro"
+DATA_DIR = require_quant_data_root() + "/stock-trading-data-pro"
 DAYS_TO_KEEP = 25       # 尾部读取天数（连板回溯 + 近3日题材统计足够）
 MAINLINE_SHARE = 40.0   # 主线题材涨停占比阈值（%，广发：40-50%）
 MAINLINE_DAYS = 2       # 主线确认需连续天数（广发：2-3天，取下沿）
@@ -61,7 +63,8 @@ COL_INDUSTRY2 = "新版申万二级行业名称"
 COL_0935 = "09:35收盘价"   # 早盘秒板近似：09:35 已涨停 → 先锋
 
 # 概念口径数据（stock-popular-concept-detail，2016-11 起，北交所概念列可能为空）
-CONCEPT_DIR = os.environ.get("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata") + "/stock-popular-concept-detail"
+_QDR = require_quant_data_root()
+CONCEPT_DIR = _QDR + "/stock-popular-concept-detail"
 CONCEPT_TOP_N = 3         # 观察池纳入的概念口径 Top 主线概念数
 CONCEPT_TAIL_BYTES = 16384  # 概念文件尾部读取字节数（约百行，足够覆盖目标日）
 

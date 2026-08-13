@@ -18,6 +18,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import warnings
 
+from ._paths import require_quant_data_root
+
 warnings.filterwarnings("ignore")
 
 # 热力图可视化（可选）
@@ -31,7 +33,7 @@ except ImportError:
     HAS_MATPLOTLIB = False
 
 # ==================== 配置 ====================
-DATA_DIR = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + "/stock-trading-data-pro"
+DATA_DIR = require_quant_data_root() + "/stock-trading-data-pro"
 LOOKBACK_CALENDAR = 150  # 日历天数，确保覆盖~100个交易日
 OUTPUT_DIR = None  # 动态计算
 

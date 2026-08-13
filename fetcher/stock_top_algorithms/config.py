@@ -12,7 +12,14 @@ from pathlib import Path
 # 用于存储XBX本地股票交易数据的根目录
 # 数据文件位于 {XBX_data_path}/stock-trading-data-pro/ 目录下
 # 可用环境变量 XBX_DATA_PATH 覆盖；默认指向本机 CommonData 目录
-XBX_data_path = os.environ.get("XBX_DATA_PATH", "/Users/kun/Desktop/AGdata")
+XBX_data_path = (
+    os.environ.get("XBX_DATA_PATH")
+    or os.environ.get("QUANT_DATA_ROOT", "").strip()
+)
+if not XBX_data_path:
+    raise FileNotFoundError(
+        "XBX_DATA_PATH / QUANT_DATA_ROOT 均未配置，请检查 .env.local"
+    )
 
 # 【最简单用法】把下面这行的 key 直接写死，跑 auto_runner 就会自动推送：
 #   WECOM_ROBOT_KEY = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"

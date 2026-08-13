@@ -8,10 +8,12 @@ import pandas as pd
 import numpy as np
 import json
 import os
+
+from ._paths import require_quant_data_root
 import warnings
 warnings.filterwarnings('ignore')
 
-DATA_PATH = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata')
+DATA_PATH = require_quant_data_root()
 INDEX_PATH = os.path.join(DATA_PATH, 'stock-main-index-data')
 STOCK_PATH = os.path.join(DATA_PATH, 'stock-trading-data-pro')
 # [AI-MODIFIED] 改为可通过 --date 参数指定，未指定时自动从指数数据中检测最新交易日

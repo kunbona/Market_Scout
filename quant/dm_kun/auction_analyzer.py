@@ -44,10 +44,12 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 
+from ._paths import require_quant_data_root
+
 load_dotenv()
 
 # ==================== 配置 ====================
-DC = os.environ.get("QUANT_DATA_ROOT") or "/Users/kun/Desktop/AGdata"
+DC = require_quant_data_root()
 AUCTION_DIR = os.path.join(DC, "stock-call-auction-data")
 DAILY_DIR = os.path.join(DC, "stock-trading-data-pro")
 

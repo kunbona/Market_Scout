@@ -32,10 +32,13 @@ from datetime import datetime
 import pandas as pd
 from dotenv import load_dotenv
 
+from ._paths import require_quant_data_root
+
 # ==================== 配置 ====================
 load_dotenv()
-DATA_DIR = os.environ.get("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata") + "/stock-chip-distribution"
-TRADE_DIR = os.environ.get("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata") + "/stock-trading-data-pro"
+_QDR = require_quant_data_root()
+DATA_DIR = _QDR + "/stock-chip-distribution"
+TRADE_DIR = _QDR + "/stock-trading-data-pro"
 TAIL_DAYS = 260          # 尾部读取交易日数（近一年，用于集中度分位）
 TREND_DAYS = 20          # 个股模式趋势表天数
 TAIL_BYTES = 120_000     # 尾部二进制读取窗口（260 行 × 约 250 字节，留足余量）

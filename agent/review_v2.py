@@ -465,8 +465,9 @@ def run(trade_date: str | None = None):
     if trade_date is None:
         trade_date = _latest_trade_date()
     print(f"[review_v2] start trade_date={trade_date}", flush=True)
-    # 强制设 QUANT_DATA_ROOT, 不然 loader 报 "未配置"
-    os.environ.setdefault("QUANT_DATA_ROOT", "/Users/kun/Desktop/AGdata")
+    # QUANT_DATA_ROOT 由 server._load_env_local() 注入, 此处只校验不设.
+    if not os.environ.get("QUANT_DATA_ROOT"):
+        raise FileNotFoundError("QUANT_DATA_ROOT 未设置 (server 启动时 .env.local 应已注入)")
 
     # Step 1: 跑 14 个 daily_compute
     print(f"[review_v2] running 14 daily_computes...", flush=True)

@@ -244,8 +244,11 @@ def run_full_refresh() -> Dict[str, Any]:
     log("步骤 1/4: 拉取 XBX 数据 (本地 CSV → self/raw/xbx_stock_data.parquet)")
     log("=" * 70)
     from fetcher.cycle_xbx_data import fetch_xbx
+    _qdr = os.environ.get("QUANT_DATA_ROOT", "").strip()
+    if not _qdr or not Path(_qdr).exists():
+        raise FileNotFoundError(f"QUANT_DATA_ROOT 未配置或路径不存在: {_qdr!r}")
     xbx_r = fetch_xbx(
-        csv_dir="/Users/kun/Desktop/AGdata/stock-trading-data-pro",
+        csv_dir=f"{_qdr}/stock-trading-data-pro",
     )
     log(f"  XBX success={xbx_r.get('success')}")
     log(f"  XBX saved_file_path={xbx_r.get('saved_file_path')}")

@@ -7,9 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
+from ._paths import require_quant_data_root
+
 # Raw data paths
-STOCK_DATA_DIR = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + '/stock-trading-data-pro'
-INDEX_DATA_DIR = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + '/stock-main-index-data'
+_QDR = require_quant_data_root()
+STOCK_DATA_DIR = _QDR + '/stock-trading-data-pro'
+INDEX_DATA_DIR = _QDR + '/stock-main-index-data'
 
 
 def _read_stock_for_snapshot(file_path):

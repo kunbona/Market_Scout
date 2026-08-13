@@ -18,11 +18,13 @@ from multiprocessing import Pool, cpu_count
 import numpy as np
 import pandas as pd
 
+from ._paths import require_quant_data_root
+
 BJ_PREFIX = ('8',)
 STAR_PREFIXES = ('68', '30')  # 科创板 + 创业板
 
 START_DATE = "2024-01-01"
-DATA_DIR = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + "/stock-trading-data-pro"
+DATA_DIR = require_quant_data_root() + "/stock-trading-data-pro"
 N_JOBS = max(cpu_count() - 3, 1)
 
 

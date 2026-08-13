@@ -6,7 +6,8 @@ quant.dm_kun - DM-kun 市场分析 skill 移植包
 
 每个脚本是独立 CLI 入口, 顶层有 main(). 通过 `python -m quant.dm_kun.<脚本>` 跑.
 
-数据路径: 读 QUANT_DATA_ROOT 环境变量 (从 plist 注入, fallback /Users/kun/Desktop/AGdata).
+数据路径: 读 QUANT_DATA_ROOT 环境变量 (从 plist 注入, `.env.local` 配置).
+通过 `quant.dm_kun._paths.require_quant_data_root()` 统一获取, env 缺失/路径不存在会 raise.
 DATACENTER 子目录: stock-trading-data-pro / stock-fin-data-xbx / stock-main-index-data /
                    stock-popular-concept-detail / stock-analyst-ranking / stock-chip-distribution.
 

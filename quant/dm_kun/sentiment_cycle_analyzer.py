@@ -12,9 +12,11 @@ from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 
+from ._paths import require_quant_data_root
+
 warnings.filterwarnings('ignore')
 
-STOCK_PATH = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + '/stock-trading-data-pro'
+STOCK_PATH = require_quant_data_root() + '/stock-trading-data-pro'
 DAYS_TO_KEEP = 45  # 读取最近45天（足够追踪连板 + MA20 + 20日收益计算）
 
 # 科创板/创业板代码前缀（20%涨跌停）

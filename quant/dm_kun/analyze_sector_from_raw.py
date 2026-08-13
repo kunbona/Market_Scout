@@ -6,6 +6,8 @@ import io
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
+
+from ._paths import require_quant_data_root
 from .trend_analyzer import TrendAnalyzer
 try:
     from financial_analyzer import FinancialAnalyzer
@@ -13,9 +15,10 @@ except ImportError:
     FinancialAnalyzer = None  # 可选模块，缺失时跳过财务分析
 
 # 配置
-DATA_DIR = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + '/stock-trading-data-pro'
-FINANCE_DIR = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + '/stock-fin-data-xbx'
-ANALYST_DIE = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + '/stock-analyst-ranking'
+_QDR = require_quant_data_root()
+DATA_DIR = _QDR + '/stock-trading-data-pro'
+FINANCE_DIR = _QDR + '/stock-fin-data-xbx'
+ANALYST_DIE = _QDR + '/stock-analyst-ranking'
 DAYS_TO_KEEP = 250  # 扩大回看窗口，确保有足够数据计算 MA20/MA60
 
 # [AI-MODIFIED] 支持 --date 参数指定分析日期，未指定时取最新

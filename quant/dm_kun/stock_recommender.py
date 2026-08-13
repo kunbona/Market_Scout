@@ -12,7 +12,9 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
-STOCK_PATH = os.environ.get('QUANT_DATA_ROOT', '/Users/kun/Desktop/AGdata') + '/stock-trading-data-pro'
+from ._paths import require_quant_data_root
+
+STOCK_PATH = require_quant_data_root() + '/stock-trading-data-pro'
 LOOKBACK = 60  # 加载最近60个交易日用于计算指标
 MAX_STALENESS_DAYS = 90  # 股票最新交易日距分析日超过此天数视为退市/停更
 

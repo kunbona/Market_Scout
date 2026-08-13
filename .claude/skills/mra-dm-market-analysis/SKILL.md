@@ -21,7 +21,7 @@ allowed-tools:
 
 ## 数据路径
 
-所有脚本从 `QUANT_DATA_ROOT` 环境变量读数据 (market-radar plist 注入 `/Users/kun/Desktop/AGdata`).
+所有脚本从 `QUANT_DATA_ROOT` 环境变量读数据 (market-radar plist 注入, `.env.local` 配置). **env 缺失会 raise** — 走 `quant.dm_kun._paths.require_quant_data_root()`, 不再回落硬编码路径.
 
 需要的数据子目录:
 - `stock-trading-data-pro` — 5200+ A股日线 CSV (主要数据源)
