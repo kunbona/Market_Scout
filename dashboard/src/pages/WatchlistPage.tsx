@@ -634,6 +634,19 @@ function WatchlistPanel({
         </p>
       ) : (
         <div className="divide-y divide-gray-50">
+          {/* 表头：跟数据列对齐, ml-auto + gap-3 跟 list 行一致 */}
+          <div className="flex items-center gap-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wide">
+            <span className="shrink-0">名称</span>
+            <span className="shrink-0">代码</span>
+            {currentPool === '全部' && <span className="shrink-0">池</span>}
+            <span className="max-w-[200px] truncate">备注</span>
+            <div className="ml-auto flex items-center gap-3 shrink-0">
+              <span className="w-16 text-right">现价</span>
+              <span className="w-16 text-right">涨跌幅</span>
+              <span className="w-16 text-right">涨跌额</span>
+            </div>
+            <span className="w-7 shrink-0" />
+          </div>
           {items.map(item => {
             const q = quoteMap[item.code];
             // A 股红涨绿跌
