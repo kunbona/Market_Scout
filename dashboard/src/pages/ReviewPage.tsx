@@ -95,21 +95,30 @@ export function ReviewPage() {
 
   const handleRecompute = async () => {
     if (recomputing) return;
-    // 永远让后端扫本地 CSV 找最新交易日 (force=1 无 date) — 不依赖 selectedDate
-    // 这样不管 dates 列表有没有新日期, 不管用户选中什么, 都能算出最新
-    if (!confirm('重算本地 CSV 最新交易日 (自动扫描 stock-trading-data-pro)?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住')) return;
+    // 调 review_v2.run(), 不传 trade_date: 后端自动从 Exodia 拿 stock-trading-data-pro-daily 最新日
+    // 强 force=true 跳过 cache, 跑 14 compute + L4 sector + compute_daily_analysis 写 review_daily
+    if (!confirm('按 Exodia 最新日重算复盘?\n后端从 exodia/code/data/products-status.json 拿 stock-trading-data-pro-daily 最新日,\n跑 14 compute + L4 + compute_daily_analysis (5-7 分钟), 期间页面会卡住')) return;
     setRecomputing(true);
     setError('');
     try {
-      const r = await fetch(`/api/review/data?force=1`);
+      const r = await fetch('/api/review/v2/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      });
       if (!r.ok) {
         const err = await r.json().catch(() => ({ message: r.statusText }));
         throw new Error(err.message || err.error || `HTTP ${r.status}`);
       }
-      // 重算完: 重新拉 dates (新日期入库后会进列表) + 跳到新最新 + 重载数据
+      const result = await r.json();
+      const usedDate = result?.data?.trade_date;
+      // 重算完: 重新拉 dates + 跳到算出来的最新日 + 重载数据
       const newDates = await apiFetch<string[]>('/api/review/dates');
       setDates(newDates);
-      if (newDates.length > 0) {
+      if (usedDate) {
+        setSelectedDate(usedDate);
+        await fetchData(usedDate);
+      } else if (newDates.length > 0) {
         setSelectedDate(newDates[0]);
         await fetchData(newDates[0]);
       } else {
@@ -124,14 +133,18 @@ export function ReviewPage() {
 
   const handleRecomputeSelected = async () => {
     if (recomputing) return;
-    // 重算当前选中的日期 (而不是 CSV 最新)
+    // 重算当前选中的日期 (按 select 选的, 而不是 exodia 最新)
     const targetDate = selectedDate || data?.trade_date || '';
     if (!targetDate) return;
-    if (!confirm(`重算 ${targetDate} 的复盘数据?\n5000+ 股票 × 250 天约需 30-120 秒, 期间页面会卡住`)) return;
+    if (!confirm(`重算 ${targetDate} 的复盘数据?\n跑 14 compute + L4 + compute_daily_analysis (5-7 分钟), 期间页面会卡住`)) return;
     setRecomputing(true);
     setError('');
     try {
-      const r = await fetch(`/api/review/data?date=${targetDate}&force=1`);
+      const r = await fetch('/api/review/v2/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trade_date: targetDate, force: true }),
+      });
       if (!r.ok) {
         const err = await r.json().catch(() => ({ message: r.statusText }));
         throw new Error(err.message || err.error || `HTTP ${r.status}`);
