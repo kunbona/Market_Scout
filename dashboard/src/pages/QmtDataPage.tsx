@@ -108,6 +108,14 @@ interface QmtIndustryStats {
     realtime_data_date: string | null;
     ma10_qmt_total_count?: number;   // 全市场 ma10 走 QMT 实时的个股数
     ma10_qmt_total_stocks?: number;  // 全市场总个股数
+    // 大面数 (= big_loss_count, 行业里下跌 >5% 个股数) 最多行业
+    top_big_loss_sector?: string | null;
+    top_big_loss_count?: number;
+    // 差值 (above_ma10_ratio_delta = 实时 - 昨CSV) 最大/最小行业
+    top_delta_sector?: string | null;
+    top_delta_value?: number;
+    bottom_delta_sector?: string | null;
+    bottom_delta_value?: number;
   };
   items: Array<{
     sector: string;
@@ -690,12 +698,61 @@ export function QmtDataPage() {
               { label: '行业数', value: `${industryStatsData?.summary.sector_count ?? 0}` },
               { label: '最大大肉行业', value: industryStatsData?.summary.top_meat_sector ?? '--' },
               { label: '主力净流入第一行业', value: industryStatsData?.summary.top_main_inflow_sector ?? '--' },
+              {
+                label: '最大面行业',
+                value: industryStatsData?.summary.top_big_loss_sector ?? '--',
+                sub: industryStatsData?.summary.top_big_loss_count
+                  ? `${industryStatsData.summary.top_big_loss_count} 家大跌`
+                  : '',
+                subColor: 'text-green-600',
+                title: '行业里大面数 (股价跌幅 > 5%) 最多的行业, 跌势覆盖最广',
+              },
             ].map((item) => (
-              <div key={item.label} className="rounded-xl border border-gray-100 p-4">
+              <div
+                key={item.label}
+                className="rounded-xl border border-gray-100 p-4"
+                title={item.title}
+              >
                 <div className="text-xs text-gray-400">{item.label}</div>
                 <div className="mt-2 text-2xl font-semibold text-gray-900">{item.value}</div>
+                {item.sub && <div className={`text-xs mt-1 ${item.subColor}`}>{item.sub}</div>}
               </div>
             ))}
+          </div>
+
+          {/* 第 2 行: 差值最大 / 差值最小 — MA10 实时占比 vs 昨 CSV 占比的差值排行
+              实时 - 昨 >0: 今日盘口比昨天强, <0: 弱 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {(() => {
+              const topV = industryStatsData?.summary.top_delta_value ?? 0;
+              const topS = industryStatsData?.summary.top_delta_sector ?? '--';
+              const topPct = (topV * 100).toFixed(2);
+              const topSign = topV > 0 ? '+' : '';
+              const topCls = topV > 0 ? 'text-red-600' : topV < 0 ? 'text-green-600' : 'text-gray-400';
+              return (
+                <div className="rounded-xl border border-gray-100 p-4"
+                  title="MA10 线上占比 (实时 - 昨 CSV) 差值最大行业: 今日盘口比昨天强。>0 红, <0 绿。">
+                  <div className="text-xs text-gray-400">差值最大 (实时-昨)</div>
+                  <div className="mt-2 text-2xl font-semibold text-gray-900">{topS}</div>
+                  <div className={`text-xs mt-1 ${topCls}`}>{topSign}{topPct} pp</div>
+                </div>
+              );
+            })()}
+            {(() => {
+              const botV = industryStatsData?.summary.bottom_delta_value ?? 0;
+              const botS = industryStatsData?.summary.bottom_delta_sector ?? '--';
+              const botPct = (botV * 100).toFixed(2);
+              const botSign = botV > 0 ? '+' : '';
+              const botCls = botV > 0 ? 'text-red-600' : botV < 0 ? 'text-green-600' : 'text-gray-400';
+              return (
+                <div className="rounded-xl border border-gray-100 p-4"
+                  title="MA10 线上占比 (实时 - 昨 CSV) 差值最小行业: 今日盘口比昨天弱。>0 红, <0 绿。">
+                  <div className="text-xs text-gray-400">差值最小 (实时-昨)</div>
+                  <div className="mt-2 text-2xl font-semibold text-gray-900">{botS}</div>
+                  <div className={`text-xs mt-1 ${botCls}`}>{botSign}{botPct} pp</div>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="grid grid-cols-10 px-4 py-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-t-xl">

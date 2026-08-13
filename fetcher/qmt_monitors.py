@@ -255,6 +255,12 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
     )
     top_meat = max(items, key=lambda item: (item["meat_count"], item["sector"]), default=None)
     top_main_inflow = items[0] if items else None
+    # 最大面行业 = big_loss_count 最大 (大面 = 大跌家数, 行业里下跌覆盖最广)
+    top_big_loss = max(items, key=lambda item: (item["big_loss_count"], item["sector"]), default=None)
+    # 差值最大/最小 = above_ma10_ratio_delta (实时 - 昨CSV) 最大/最小
+    #   +0.5pp = 今日盘口比昨天强 0.5 个百分点; -0.5pp = 弱
+    top_delta = max(items, key=lambda item: (item["above_ma10_ratio_delta"], item["sector"]), default=None)
+    bottom_delta = min(items, key=lambda item: (item["above_ma10_ratio_delta"], -ord(item["sector"][0])), default=None)
 
     # data_date 来自本地 CSV（T+1 截面），与今天的日历差即 staleness
     # 周末/节假日会自然产生更长 lag（不特殊处理，UI 用颜色编码即可）
@@ -277,6 +283,12 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
             "strong_ma10_sector_count_yesterday": sum(1 for item in items if item["above_ma10_ratio_csv"] > 0.5),
             "top_meat_sector": top_meat["sector"] if top_meat else None,
             "top_main_inflow_sector": top_main_inflow["sector"] if top_main_inflow else None,
+            "top_big_loss_sector": top_big_loss["sector"] if top_big_loss else None,
+            "top_big_loss_count": top_big_loss["big_loss_count"] if top_big_loss else 0,
+            "top_delta_sector": top_delta["sector"] if top_delta else None,
+            "top_delta_value": top_delta["above_ma10_ratio_delta"] if top_delta else 0.0,
+            "bottom_delta_sector": bottom_delta["sector"] if bottom_delta else None,
+            "bottom_delta_value": bottom_delta["above_ma10_ratio_delta"] if bottom_delta else 0.0,
             "data_date": summary_data_date or None,
             "data_lag_days": summary_data_lag_days,
             # 实时数据日期 = 今天（即使 19:00 之后，盘中价反映的是今天）
