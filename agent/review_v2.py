@@ -489,7 +489,7 @@ def run(trade_date: str | None = None, force: bool = False):
     force=True: 跳过缓存检查, 强制重算 (用于数据源修复/调试).
     """
     from quant.review_compute import _latest_trade_date
-    from db.storage import insert_review_v2_daily, get_review_v2_daily
+    from db.storage import insert_review_daily, get_review_daily
 
     # 1. 决定 trade_date: 显式参数 > Exodia 最新日 > loader 最新日
     if trade_date is None:
@@ -500,18 +500,18 @@ def run(trade_date: str | None = None, force: bool = False):
     if not os.environ.get("QUANT_DATA_ROOT"):
         raise FileNotFoundError("QUANT_DATA_ROOT 未设置 (server 启动时 .env.local 应已注入)")
 
-    # 3. 缓存检查: review_v2_daily 已有该 trade_date → 直接返回 (< 1s)
+    # 3. 缓存检查: review_daily 已有该 trade_date → 直接返回 (< 1s)
     if not force:
-        cached = get_review_v2_daily(trade_date)
+        cached = get_review_daily(trade_date)
         if cached and cached.get("payload"):
-            print(f"[review_v2] {trade_date} 已在 review_v2_daily (created {cached['created_at']}), 跳过 compute, 读 SQLite", flush=True)
+            print(f"[review_v2] {trade_date} 已在 review_daily (created {cached['created_at']}), 跳过 compute, 读 SQLite", flush=True)
             try:
                 payload = json.loads(cached["payload"])
             except Exception:
                 payload = {}
             return {
                 "trade_date": trade_date,
-                "summary": payload.get("summary", ""),
+                "summary": payload.get("sentiment", {}).get("score", "") or "cached",
                 "n_ok": "n/a (cached)",
                 "n_err": "n/a (cached)",
                 "html_path": "n/a (cached)",
@@ -553,10 +553,20 @@ def run(trade_date: str | None = None, force: bool = False):
     payload_json = json.dumps(payload, ensure_ascii=False, default=str)
 
     try:
-        insert_review_v2_daily(trade_date, payload_json, html)
-        print(f"[review_v2] review_v2_daily upserted for {trade_date}", flush=True)
+        # 全部写到一个表: review_daily (前端只读这个)
+        # 9 维度数据塞 _v2_dimensions 字段, 前端忽略, 保留以备 v2 切换
+        from quant.review_compute import compute_daily_analysis
+        from db.storage import insert_review_daily as _insert_legacy
+        print(f"[review_v2] 写 review_daily (调 compute_daily_analysis 拿前端结构)...", flush=True)
+        legacy = compute_daily_analysis(trade_date)
+        if legacy:
+            legacy["_v2_dimensions"] = {k: v for k, v in dims.items() if k != "trade_date"}
+            legacy["_v2_summary"] = summary_text
+            legacy["_v2_compute_results"] = compute_results
+            _insert_legacy(trade_date, json.dumps(legacy, ensure_ascii=False, default=str))
+            print(f"[review_v2] review_daily upserted for {trade_date} (前端可见)", flush=True)
     except Exception as e:
-        print(f"[review_v2] insert failed: {e}", flush=True)
+        print(f"[review_v2] review_daily write failed: {e}", flush=True)
 
     # HTML 落 tmp
     run_id = os.environ.get("MRA_RUN_ID", "default")
