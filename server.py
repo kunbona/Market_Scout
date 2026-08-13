@@ -2055,12 +2055,18 @@ def api_review_data():
 
 @app.route("/api/review/v2/run", methods=["POST"])
 def api_review_v2_run():
-    """手动触发 9 维度复盘 (review_v2: 编排 14 daily_compute + sector 板块效应)。"""
+    """手动触发 9 维度复盘 (review_v2: 编排 14 daily_compute + sector 板块效应)。
+
+    增量逻辑: 不传 trade_date 时, 自动从 Exodia status 拿 stock-trading-data-pro-daily 最新日.
+    如果 review_v2_daily 已有该日期, 直接返回缓存 (< 1s).
+    force=true 强制重算 (跳过缓存).
+    """
     try:
         from agent.review_v2 import run as run_review_v2
         body = request.get_json(silent=True) or {}
         trade_date = (body.get("trade_date") or "").strip() or None
-        result = run_review_v2(trade_date)
+        force = bool(body.get("force", False))
+        result = run_review_v2(trade_date, force=force)
         return _ok(result)
     except Exception as exc:
         return _err(exc)

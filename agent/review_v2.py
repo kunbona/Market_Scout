@@ -457,17 +457,67 @@ def render_html(dims: dict, sector_data: dict | None, compute_results: dict, tra
     return "".join(h)
 
 
-def run(trade_date: str | None = None):
-    """主入口: 14 compute + 1 sector + 收集 9 维度 + 渲染 + 落库"""
-    from quant.review_compute import _latest_trade_date
-    from db.storage import insert_review_v2_daily
+def _exodia_latest_stock_date() -> str | None:
+    """读 Exodia 的 products-status.json, 返回 stock-trading-data-pro-daily.dataContentTime.
 
+    这是用户视角的"最新数据日" — 复盘增量判断的 source of truth.
+    不读 CSVs / 不读 parquet, 1 个 JSON 解析, 毫秒级.
+    """
+    exodia_dir = os.environ.get("EXODIA_DATA_DIR", "/Users/kun/Desktop/AGdata_exodia")
+    status_path = Path(exodia_dir) / "code" / "data" / "products-status.json"
+    if not status_path.exists():
+        return None
+    try:
+        with open(status_path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        node = d.get("stock-trading-data-pro-daily")
+        if not node:
+            return None
+        return node.get("dataContentTime")
+    except Exception as e:
+        logger.warning("[review_v2] 读 exodia status 失败: %s", e)
+        return None
+
+
+def run(trade_date: str | None = None, force: bool = False):
+    """主入口: 14 compute + 1 sector + 收集 9 维度 + 渲染 + 落库.
+
+    增量逻辑 (force=False 时):
+      - trade_date=None 时, 从 Exodia status 拿 stock-trading-data-pro-daily 最新日
+      - 如果 review_v2_daily 已有该 trade_date 记录, 直接返回缓存 (ms 级)
+      - 没有就跑 14 compute + L4 sector + collect + render + upsert (1-2min)
+    force=True: 跳过缓存检查, 强制重算 (用于数据源修复/调试).
+    """
+    from quant.review_compute import _latest_trade_date
+    from db.storage import insert_review_v2_daily, get_review_v2_daily
+
+    # 1. 决定 trade_date: 显式参数 > Exodia 最新日 > loader 最新日
     if trade_date is None:
-        trade_date = _latest_trade_date()
-    print(f"[review_v2] start trade_date={trade_date}", flush=True)
-    # QUANT_DATA_ROOT 由 server._load_env_local() 注入, 此处只校验不设.
+        trade_date = _exodia_latest_stock_date() or _latest_trade_date()
+    print(f"[review_v2] start trade_date={trade_date} force={force}", flush=True)
+
+    # 2. QUANT_DATA_ROOT 必须设 (之前切换数据源时改的 fail-loud 检查)
     if not os.environ.get("QUANT_DATA_ROOT"):
         raise FileNotFoundError("QUANT_DATA_ROOT 未设置 (server 启动时 .env.local 应已注入)")
+
+    # 3. 缓存检查: review_v2_daily 已有该 trade_date → 直接返回 (< 1s)
+    if not force:
+        cached = get_review_v2_daily(trade_date)
+        if cached and cached.get("payload"):
+            print(f"[review_v2] {trade_date} 已在 review_v2_daily (created {cached['created_at']}), 跳过 compute, 读 SQLite", flush=True)
+            try:
+                payload = json.loads(cached["payload"])
+            except Exception:
+                payload = {}
+            return {
+                "trade_date": trade_date,
+                "summary": payload.get("summary", ""),
+                "n_ok": "n/a (cached)",
+                "n_err": "n/a (cached)",
+                "html_path": "n/a (cached)",
+                "cached": True,
+                "created_at": cached["created_at"],
+            }
 
     # Step 1: 跑 14 个 daily_compute
     print(f"[review_v2] running 14 daily_computes...", flush=True)
