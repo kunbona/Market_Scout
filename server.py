@@ -2165,10 +2165,10 @@ def api_dm_kun_list():
 
 
 # ---------------------------------------------------------------------------
-# Exodia 数据中心更新状态（AGdata_exodia 日线增量更新）
+# Exodia 数据中心更新状态（Vesta 外置盘 AGdata_exodia 日线增量更新）
 # ---------------------------------------------------------------------------
 
-EXODIA_DATA_DIR = os.environ.get("EXODIA_DATA_DIR", "/Users/kun/Desktop/AGdata_exodia")
+EXODIA_DATA_DIR = os.environ.get("EXODIA_DATA_DIR", "/Volumes/Vesta/AGdata_exodia")
 EXODIA_CODE_DIR = os.path.join(EXODIA_DATA_DIR, "code")
 EXODIA_DATA_SUBDIR = os.path.join(EXODIA_CODE_DIR, "data")
 EXODIA_BIN = os.path.join(EXODIA_CODE_DIR, "exodia")

@@ -463,7 +463,7 @@ def _exodia_latest_stock_date() -> str | None:
     这是用户视角的"最新数据日" — 复盘增量判断的 source of truth.
     不读 CSVs / 不读 parquet, 1 个 JSON 解析, 毫秒级.
     """
-    exodia_dir = os.environ.get("EXODIA_DATA_DIR", "/Users/kun/Desktop/AGdata_exodia")
+    exodia_dir = os.environ.get("EXODIA_DATA_DIR", "/Volumes/Vesta/AGdata_exodia")
     status_path = Path(exodia_dir) / "code" / "data" / "products-status.json"
     if not status_path.exists():
         return None
