@@ -121,10 +121,13 @@ def start_scheduler() -> None:
     scheduler.add_job(lambda: _guarded("概念资金流",   fetch_concept_flow),      "interval", minutes=15)
 
     # QMT 行业统计 warm-up：5 分钟跑一次填 cache，避免前端首次请求全量算 5200+ 只股票
+    # 走 subprocess 路径：之前 in-process 跑被 waitress 8 worker 抢 GIL, 让 CyclePage 进页卡 13s+
+    # (扫 5200+ 只 stock CSV 期间所有 waitress thread 全卡 PyThread_acquire_lock)
+    # 启动 warmup 仍走 in-process 同步 (一次性 30-60s OK, 不抢 GIL 周期性 scheduler 才是元凶)
     def _warm_industry_stats() -> None:
-        from server import _refresh_qmt_industry_stats_cache, _current_qmt_trade_date
+        from server import _refresh_qmt_industry_stats_cache_subprocess, _current_qmt_trade_date
         try:
-            _refresh_qmt_industry_stats_cache(_current_qmt_trade_date())
+            _refresh_qmt_industry_stats_cache_subprocess(_current_qmt_trade_date())
         except Exception as e:
             print(f"[scheduler] warm_industry_stats failed: {e}")
 

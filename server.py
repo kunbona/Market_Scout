@@ -39,9 +39,8 @@ try:
 except ImportError:
     pass
 
-# 强制 line-buffering，确保 PIPELINE 日志在重定向时也能实时刷出
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
+# 强制 line-buffering, 已在 _main() 里 (避免 module-level 触发 reconfigure
+#  在 background thread 调 `from server import ...` 引起 server.py 重 exec 失败)
 
 # 自定义 PIPELINE 级别（25），介于 INFO(20) 和 WARNING(30) 之间
 # Claude/Kimi 对话内容走这个级别，根 logger 设 WARNING 压掉噪音后仍可见
@@ -648,7 +647,95 @@ def _empty_qmt_industry_stats_payload() -> dict:
     }
 
 
+def _refresh_qmt_industry_stats_cache_subprocess(target_trade_date: str) -> bool:
+    """
+    用 subprocess 跑 build_qmt_industry_stats_source_rows + payload,
+    通过 pickle 中介把结果回写到 server 进程 cache dict。
+
+    之前 in-process 跑被 scheduler 5min 触发一次, 扫 5200+ 只 stock CSV
+    (ThreadPoolExecutor 32 worker) 抢 GIL, 让 waitress 8 worker 全卡死
+    → CyclePage 进页 13s+。subprocess 跑完全隔离, server 进程无感知。
+
+    返回 True/False (成功/失败)。失败时 caller 保留旧 cache (stale 也比 500 好)。
+    """
+    import pickle
+    import subprocess
+    from pathlib import Path as _P
+
+    py = sys.executable  # server 自己用的 .venv python (已经 import qmt_data_api 等)
+    cache_file = _P("/tmp/qmt_industry_stats_cache.pkl")
+    log_file = _P("/tmp/qmt_industry_stats_refresh.log")
+
+    # 一行 code (subprocess -c 单行), 调 build_*, pickle 写到 cache_file
+    code = (
+        "import sys as _s, pickle as _pk, json as _j; "
+        f"_s.path.insert(0, '{Path(__file__).resolve().parent}'); "
+        "from fetcher.qmt_monitors import build_qmt_industry_stats_source_rows, build_qmt_industry_stats_payload; "
+        f"rows = build_qmt_industry_stats_source_rows('{target_trade_date}'); "
+        "payload = build_qmt_industry_stats_payload(rows); "
+        f"open('{cache_file}', 'wb').write(_pk.dumps({{'trade_date': '{target_trade_date}', 'payload': payload}})); "
+        "print(f'[industry_subprocess] done: items={len(payload.get(\"items\", []))} rows={len(rows)}', flush=True); "
+    )
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    try:
+        proc = subprocess.Popen(
+            [py, "-c", code],
+            stdout=open(log_file, "a"),
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+    except Exception as e:
+        logger.warning("[qmt-industry-subprocess] 启动失败: %s", e)
+        return False
+
+    # 后台等, 不阻塞 caller (caller 多半是 scheduler 5min 跑)
+    def _wait_and_load():
+        try:
+            proc.wait(timeout=600)  # 10min 上限 (CSV 5200+ 全市场可能 1-3min)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                _qmt_industry_stats_cache  # noqa - 引用以确认 module state
+                with _qmt_industry_stats_cache_lock:
+                    _qmt_industry_stats_cache["payload"] = _empty_qmt_industry_stats_payload()
+            except Exception:
+                pass
+            return
+        if proc.returncode != 0:
+            return
+        try:
+            data = pickle.loads(cache_file.read_bytes())
+        except Exception as e:
+            logger.warning("[qmt-industry-subprocess] 读 pickle 失败: %s", e)
+            return
+        with _qmt_industry_stats_cache_lock:
+            _qmt_industry_stats_cache["trade_date"] = data.get("trade_date", target_trade_date)
+            _qmt_industry_stats_cache["payload"] = data.get("payload", _empty_qmt_industry_stats_payload())
+
+    threading.Thread(target=_wait_and_load, daemon=True, name="industry-stats-load").start()
+    return True
+
+
 def _refresh_qmt_industry_stats_cache(target_trade_date: str) -> None:
+    """
+    QMT 行业统计 cache 刷新。
+
+    启动 warmup 一次性 (in-process, 30-60s 同步, OK);
+    scheduler 5min 周期走 subprocess 路径 (避免反复抢 waitress GIL).
+    Caller 选路径:
+    - _bootstrap_industry_stats_warmup → _refresh_qmt_industry_stats_cache_inprocess (同步, 启动只一次)
+    - scheduler._warm_industry_stats    → _refresh_qmt_industry_stats_cache_subprocess (异步, 不抢 GIL)
+    """
+    # 默认走 in-process (启动 warmup 用, 一次性, OK)
+    _refresh_qmt_industry_stats_cache_inprocess(target_trade_date)
+
+
+def _refresh_qmt_industry_stats_cache_inprocess(target_trade_date: str) -> None:
+    """in-process 同步刷新: 启动 warmup 一次性用, scheduler 周期别调 (会抢 GIL)."""
     rows = build_qmt_industry_stats_source_rows(target_trade_date)
     payload = build_qmt_industry_stats_payload(rows)
     with _qmt_industry_stats_cache_lock:
@@ -3251,6 +3338,16 @@ def start_flask(port: int = 20026):
 
 if __name__ == "__main__":
     import signal, multiprocessing
+
+    # 强制 line-buffering (主进程启动时跑一次, module-level 不能放)
+    # background thread 调 `from server import ...` 触发 module 重 exec 时
+    # sys.stdout 可能是 cycle_signal._RefreshStream (没 reconfigure 方法),
+    # 放 module-level 会抛 AttributeError 阻断 import
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
 
     _port = int(os.environ.get("FLASK_PORT", 20026))
 

@@ -38,7 +38,6 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 from fetcher.cycle_self_runner import (  # noqa: E402
     install as _install_self_runner,
-    run_full_refresh as _run_self_full_refresh,
     get_config_paths as _get_self_config_paths,
     DATA_ROOT as _SELF_DATA_ROOT,
 )
@@ -1032,6 +1031,54 @@ def _run_subprocess_fallback(
     return True
 
 
+def _run_subprocess_full(
+    stream: _RefreshStream,
+    data_root: Path,
+) -> bool:
+    """subprocess 跑完整 self_full_refresh (XBX+akshare+11指标+周期信号)。
+
+    之前 mode='full' 走 in-process _run_self_full_refresh(), 5min+ 占满
+    waitress 8 worker (XBX 扫 5544 CSV 大量 pd.read_csv), 让前端进 CyclePage
+    卡 13s+。现在改成 subprocess 完全隔离, server 进程无感知。
+
+    返回 bool (跟 _run_subprocess_fallback 接口一致)。
+    """
+    try:
+        py = _resolve_python()
+    except FileNotFoundError as e:
+        _log_refresh(f"✗ full subprocess 找不到 python: {e}", stream)
+        return False
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    with _cycle_refresh_lock:
+        _cycle_refresh_state["step"] = "self_full_subprocess"
+        _cycle_refresh_state["step_label"] = "完整刷新 (subprocess 隔离)"
+    _log_refresh(
+        f"→ full mode: subprocess 跑 self_full_refresh (XBX+akshare+11指标+周期信号, 完全隔离)",
+        stream,
+    )
+
+    # 跟 _run_subprocess_fallback 同样一行 code (subprocess -c 单行), 调顶层 run_full_refresh
+    # run_full_refresh 已含 install() + 4 步全流程, 输出逐行 flush
+    full_code = (
+        "import sys; "
+        "sys.path.insert(0, '.'); "
+        "from fetcher.cycle_self_runner import run_full_refresh; "
+        "r = run_full_refresh(); "
+        "import json as _j; "
+        "print('[full_subprocess]', _j.dumps({'success': r.get('success'), 'step': r.get('step'), 'error': r.get('error', '')[:300]}, ensure_ascii=False), flush=True); "
+    )
+    ok = _run_subprocess_step(py, full_code, data_root, env, stream)
+    if not ok:
+        _log_refresh("✗ self_full_refresh subprocess 失败", stream)
+        return False
+    _log_refresh("✓ self_full_refresh subprocess 完成 (写自管目录, 不抢 waitress worker)", stream)
+    return True
+
+
 def _run_subprocess_step(
     py: str,
     code: str,
@@ -1197,33 +1244,19 @@ def _do_run_cycle_refresh(mode: str = "quick") -> None:
                     _log_refresh(f"[warn] 删 flag 失败 {flag.name}: {e}", stream)
         _log_refresh(f"清理旧 flag: {removed} 个", stream)
 
-        # 2. full 模式：self_runner 一气呵成 (XBX+akshare+指标+周期信号, 全自管)
+        # 2. full 模式：subprocess 跑 self_runner (XBX+akshare+指标+周期信号)
+        #    之前 in-process 跑 5min+ 占满 waitress 8 worker 让 CyclePage 进页卡 13s+
+        #    现在 subprocess 独立进程, server 进程无感知
         if mode == "full":
             with _cycle_refresh_lock:
-                _cycle_refresh_state["step"] = "self_full"
-                _cycle_refresh_state["step_label"] = "完整刷新 (XBX+akshare+指标+信号)"
-            _log_refresh("→ full 模式: self_runner 一气呵成 (XBX+akshare+11 指标+周期信号)", stream)
-            try:
-                with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
-                    sr_result = _run_self_full_refresh()
-                if sr_result.get("success"):
-                    success = True
-                    rpt = sr_result.get("report", {})
-                    _log_refresh(
-                        f"✓ self_runner 全流程完成: date={rpt.get('date')} "
-                        f"score={rpt.get('cycle_score')} phase={rpt.get('phase')}",
-                        stream,
-                    )
-                else:
-                    _log_refresh(
-                        f"⚠ self_runner 失败 (step={sr_result.get('step')}): "
-                        f"{sr_result.get('error')}",
-                        stream,
-                    )
-            except Exception as e:
-                import traceback
-                _log_refresh(f"⚠ self_runner 异常: {type(e).__name__}: {e}", stream)
-                _log_refresh(traceback.format_exc(limit=3)[:500], stream)
+                _cycle_refresh_state["step"] = "self_full_subprocess"
+                _cycle_refresh_state["step_label"] = "完整刷新 (subprocess 隔离)"
+            _log_refresh("→ full 模式: subprocess 跑 self_full_refresh (XBX+akshare+11 指标+周期信号, 隔离)", stream)
+            if _run_subprocess_full(stream, data_root):
+                success = True
+                _log_refresh("✓ self_full_refresh subprocess 完成", stream)
+            else:
+                _log_refresh("⚠ self_full_refresh subprocess 失败, 尝试 fallback", stream)
 
         # 3. quick 模式: 跑 step2+3 (in-process, 已 self-managed 因为 install 改了 config)
         if not success and mode == "quick":
