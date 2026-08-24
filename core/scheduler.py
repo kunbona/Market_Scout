@@ -1,4 +1,5 @@
 import atexit
+import logging
 import os
 import threading
 from datetime import datetime, time
@@ -38,7 +39,7 @@ from fetcher.eastmoney import (fetch_margin, fetch_block_trade, fetch_holder_cou
                                fetch_lockup_expiry, fetch_dividend_history,
                                fetch_industry_ranking, fetch_ths_hot_stocks)
 
-from quant.daily_compute import run_daily_compute
+from quant.daily_compute import run_daily_compute, run_daily_compute_if_stale
 from fetcher.backfill import run_backfill
 
 
@@ -91,7 +92,7 @@ def start_scheduler() -> None:
     scheduler = BackgroundScheduler(
         timezone="Asia/Shanghai",
         job_defaults={
-            "misfire_grace_time": 60,   # 任务可延迟60秒执行，消除1秒卡顿引发的missed警告
+            "misfire_grace_time": 900,  # 任务可延迟15分钟执行: in-process 全量股票加载(review_compute/daily_compute)会阻塞 GIL 2-5 分钟, 60s 时 30+ interval 任务成批被丢弃; 900s 覆盖已知阻塞窗口, 恢复后 coalesce 补跑一次
             "coalesce": True,           # 积压的同一任务只执行一次，不补跑
             "max_instances": 4,         # 不同任务可并发（之前=1 时 warm_industry_stats 永远等不到 instance）
         },
@@ -132,11 +133,13 @@ def start_scheduler() -> None:
             print(f"[scheduler] warm_industry_stats failed: {e}")
 
     scheduler.add_job(_warm_industry_stats, "interval", minutes=5)
-    # ── 静态数据每日计算（两次：盘前 + 盘后）──────────────────────────────────
+    # ── 静态数据每日计算（盘前全量 + 盘后补漏）────────────────────────────────
+    # 9:00 全量: 兜夜间迟到数据(研报/龙虎榜等)重算一遍
+    # 21:00 补漏: 20:30 复盘链路已跑过同一批 compute, 这里只补缺失, 不重复算
     _compute_enabled = os.environ.get("COMPUTE_ENABLED", "true").lower() == "true"
     if _compute_enabled:
         scheduler.add_job(lambda: _auto_run("每日计算", run_daily_compute), "cron", hour=9,  minute=0)
-        scheduler.add_job(lambda: _auto_run("每日计算", run_daily_compute), "cron", hour=21, minute=0)
+        scheduler.add_job(lambda: _auto_run("每日计算(补漏)", run_daily_compute_if_stale), "cron", hour=21, minute=0)
     scheduler.add_job(lambda: _guarded("炸板池",       fetch_zbgc_pool),        "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("强势股",       fetch_strong_pool),      "interval", minutes=15)
     scheduler.add_job(lambda: _guarded("人气飙升",     fetch_hot_rank_up),      "interval", minutes=30)
@@ -199,16 +202,42 @@ def start_scheduler() -> None:
                 scheduler.add_job(lambda: _run_strategist("intraday"), "cron", hour=13, minute=40)
                 scheduler.add_job(lambda: _run_strategist("evening"),  "cron", hour=21, minute=10)
 
-        # ── 复盘 (review_v2), 盘后 16:00 跑 (15:00 收盘 + 1h 清算) ──
-        # 9 维度编排, 无 LLM, 1-2 分钟, 落 review_daily
+        # ── 复盘 (review_v2), 盘后 20:30 跑 ──
+        # 链路: Exodia 增量更新全部 (等完成, 最多 25min) → review_v2 复盘 → DM-kun 级联
+        # 原 16:00 — Exodia 收盘数据没那么快同步完, kun 要求改晚上: 先更新数据再复盘。
         from agent.review_v2 import run as run_review_v2
         _review_enabled = os.environ.get("REVIEW_ENABLED", "true").lower() == "true"
         if _review_enabled:
             def _run_review() -> None:
                 if not _is_trade_day():
                     return
+                # 1. 先跑「数据更新」页的 增量更新全部 (exodia all_data), 等它完成
+                try:
+                    from server import exodia_update_all_and_wait
+                    _st = exodia_update_all_and_wait(timeout_sec=1500)
+                    logging.getLogger(__name__).info(
+                        "[scheduler] Exodia 增量更新: %s", _st)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "[scheduler] Exodia 增量更新异常, 继续复盘", exc_info=True)
+                # 2. 复盘 + 级联刷新 DM-kun 6 个 tab
                 _auto_run("Review-9维", lambda: run_review_v2())
-            scheduler.add_job(_run_review, "cron", hour=16, minute=0)
+                try:
+                    from server import dm_kun_recompute_all
+                    dm_kun_recompute_all()
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "[scheduler] Review 后 DM-kun 级联刷新失败", exc_info=True)
+                # 3. AI 总结: 9 维度 + DM-kun 数据喂给 claude, 落 agent_summary (run_type=review_ai)
+                try:
+                    from server import review_ai_with_dm_cache
+                    _ai = review_ai_with_dm_cache()
+                    logging.getLogger(__name__).info(
+                        "[scheduler] 复盘 AI 总结: %s", _ai.get("status"))
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "[scheduler] 复盘 AI 总结失败", exc_info=True)
+            scheduler.add_job(_run_review, "cron", hour=20, minute=30)
 
     scheduler.start()
     atexit.register(scheduler.shutdown)

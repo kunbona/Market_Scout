@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -1041,6 +1042,22 @@ def get_agent_summary_history(limit: int = 20, today_only: bool = False, run_typ
         return _rows_to_dicts(cur)
 
 
+def get_agent_summary_latest_snapshot(run_type: str) -> dict | None:
+    """最近一条指定 run_type 的 data_snapshot_json（解析后 dict，解析失败返 None）。"""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT data_snapshot_json FROM agent_summary WHERE run_type = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (run_type,),
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
+
+
 def get_research_reports(qtype: int = None, limit: int = 50, today_only: bool = False) -> list[dict]:
     today = datetime.now().strftime("%Y-%m-%d")
     with _conn() as conn:
@@ -1057,6 +1074,43 @@ def get_research_reports(qtype: int = None, limit: int = 50, today_only: bool = 
         cur = conn.execute(
             f"SELECT * FROM research_report {where} ORDER BY publish_date DESC, id DESC LIMIT ?",
             params,
+        )
+        return _rows_to_dicts(cur)
+
+
+# ── 个股信息聚合检索（关注股池情报用）────────────────────────────
+
+def search_research_by_stock(stock_code: str, limit: int = 10) -> list[dict]:
+    """研报按股票代码精确匹配（research_report.stock_code）。"""
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM research_report WHERE stock_code = ? "
+            "ORDER BY publish_date DESC, id DESC LIMIT ?",
+            (stock_code, limit),
+        )
+        return _rows_to_dicts(cur)
+
+
+def search_cls_news_by_keyword(keyword: str, limit: int = 10) -> list[dict]:
+    """财经快讯按关键词 LIKE 匹配标题/正文。"""
+    like = f"%{keyword}%"
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM cls_news WHERE title LIKE ? OR content LIKE ? "
+            "ORDER BY pub_time DESC LIMIT ?",
+            (like, like, limit),
+        )
+        return _rows_to_dicts(cur)
+
+
+def search_policy_by_keyword(keyword: str, limit: int = 10) -> list[dict]:
+    """政策动态按关键词 LIKE 匹配标题。"""
+    like = f"%{keyword}%"
+    with _conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM policy_news WHERE title LIKE ? "
+            "ORDER BY pub_time DESC LIMIT ?",
+            (like, limit),
         )
         return _rows_to_dicts(cur)
 
@@ -1577,6 +1631,56 @@ def get_review_v2_dates() -> list[str]:
     with _conn() as conn:
         rows = conn.execute(
             "SELECT trade_date FROM review_v2_daily ORDER BY trade_date DESC LIMIT 60"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+
+# ── industry_trend_daily (行业趋势每日截面存档, quant/industry_trend_daily.py 维护) ──
+
+def _ensure_industry_trend_table() -> None:
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS industry_trend_daily (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL UNIQUE,
+                payload TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+
+def insert_industry_trend_daily(trade_date: str, payload_json: str) -> None:
+    _ensure_industry_trend_table()
+    with _write_lock:
+        with _conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO industry_trend_daily (trade_date, payload) VALUES (?, ?)",
+                (trade_date, payload_json),
+            )
+
+
+def get_industry_trend_daily(trade_date: str | None = None) -> dict | None:
+    _ensure_industry_trend_table()
+    with _conn() as conn:
+        if trade_date:
+            row = conn.execute(
+                "SELECT trade_date, payload, created_at FROM industry_trend_daily WHERE trade_date = ?",
+                (trade_date,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT trade_date, payload, created_at FROM industry_trend_daily ORDER BY trade_date DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        return {"trade_date": row[0], "payload": row[1], "created_at": row[2]}
+
+
+def get_industry_trend_dates() -> list[str]:
+    _ensure_industry_trend_table()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT trade_date FROM industry_trend_daily ORDER BY trade_date DESC LIMIT 120"
         ).fetchall()
         return [r[0] for r in rows]
 
@@ -2180,6 +2284,79 @@ def update_watchlist_note(code: str, note: str, pool: str = DEFAULT_POOL) -> boo
     with _conn() as conn:
         cur = conn.execute("UPDATE watchlist SET note = ? WHERE pool = ? AND code = ?", (note, pool, code))
         return cur.rowcount > 0
+
+
+# ── dm_kun_daily (复盘页 6 个 DM-kun tab 按日期存档, 2026-08-21) ─────────────
+# 之前 DM-kun 结果只存 server 内存 cache, 切日期/新开页面都是同一份最新, 没历史。
+# 加按 (trade_date, name) 存档: 重算时按复盘选中日期算并存档, 前端切日期回看历史。
+
+def _ensure_dm_kun_table() -> None:
+    with _conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dm_kun_daily (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date  TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                markdown    TEXT NOT NULL,
+                data_date   TEXT,
+                computed_at TEXT,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(trade_date, name)
+            )
+        """)
+
+
+def insert_dm_kun_daily(trade_date: str, name: str, markdown: str,
+                        data_date: str | None = None, computed_at: str | None = None) -> None:
+    _ensure_dm_kun_table()
+    with _write_lock:
+        with _conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO dm_kun_daily (trade_date, name, markdown, data_date, computed_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (trade_date, name, markdown, data_date,
+                 computed_at or datetime.now().isoformat(timespec="seconds")),
+            )
+
+
+def get_dm_kun_daily(trade_date: str, name: str) -> dict | None:
+    """取某日期某 tab 的存档; 没有返回 None(前端显示引导, 不 fallback 其它日期)。"""
+    _ensure_dm_kun_table()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT trade_date, name, markdown, data_date, computed_at FROM dm_kun_daily "
+            "WHERE trade_date = ? AND name = ?",
+            (trade_date, name),
+        ).fetchone()
+        if not row:
+            return None
+        return {"trade_date": row[0], "name": row[1], "markdown": row[2],
+                "data_date": row[3], "computed_at": row[4]}
+
+
+def get_dm_kun_latest_by_name(name: str) -> dict | None:
+    """某 tab 最新一条存档(不分日期), 供 server 启动后无 cache 时兜底回填内存。"""
+    _ensure_dm_kun_table()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT trade_date, name, markdown, data_date, computed_at FROM dm_kun_daily "
+            "WHERE name = ? ORDER BY trade_date DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        if not row:
+            return None
+        return {"trade_date": row[0], "name": row[1], "markdown": row[2],
+                "data_date": row[3], "computed_at": row[4]}
+
+
+def get_dm_kun_dates() -> list[str]:
+    """所有有存档的日期(任一 tab 有就算), 倒序。"""
+    _ensure_dm_kun_table()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT trade_date FROM dm_kun_daily ORDER BY trade_date DESC LIMIT 120"
+        ).fetchall()
+        return [r[0] for r in rows]
 
 
 # ── Module init ───────────────────────────────────────────────────────────────

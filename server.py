@@ -173,9 +173,15 @@ from db.storage import (
     get_ths_hot_stocks_latest,
     get_latest_emotion_date,
     get_research_activity,
+    insert_dm_kun_daily,
+    get_dm_kun_daily,
+    get_dm_kun_latest_by_name,
+    get_dm_kun_dates,
     get_review_daily,
     get_review_dates,
     insert_review_daily,
+    get_industry_trend_daily,
+    get_industry_trend_dates,
     get_watchlist,
     add_watchlist,
     remove_watchlist,
@@ -209,6 +215,9 @@ from fetcher.cycle_signal import (
 DIST = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
 
 app = Flask(__name__, static_folder=None, static_url_path="/_static_disabled_")
+# jsonify 默认 sort_keys=True 会把 dict 按 key 字母序重排——中文按 Unicode 编码排,
+# 热力图 latest(综合分降序) 被排乱。关掉: 保序 dict 原样序列化。
+app.json.sort_keys = False
 # 关键: 关掉 Flask 默认的 static catch-all 路由. 之前用 static_folder=DIST +
 # static_url_path="" 时, Flask 自动注册了 "/<path:filename>" 路由, 比我们的
 # @app.route("/<path:path>") serve_spa 先注册, 所有路径 (如 /review /strategist) 都被它
@@ -238,7 +247,8 @@ _DM_KUN_CACHE: dict[str, dict] = {
 _DM_KUN_LOCK = threading.Lock()
 
 
-def _dm_kun_run_one(name: str, script_module: str, extra_args: list[str] | None = None) -> None:
+def _dm_kun_run_one(name: str, script_module: str, extra_args: list[str] | None = None,
+                    trade_date: str | None = None) -> None:
     """跑一个 quant.dm_kun 脚本 (独立子进程), 抓 stdout 当 markdown 存 cache.
 
     关键: 用 subprocess.run 起独立 Python 进程, capture_output=True 拿隔离的 stdout.
@@ -247,6 +257,8 @@ def _dm_kun_run_one(name: str, script_module: str, extra_args: list[str] | None 
     独立子进程 → stdout 完全隔离 → 干净 cache.
 
     extra_args: 传给脚本的额外 CLI args (e.g. ["--summary-only", "电子", "有色金属"]).
+    trade_date: 指定历史交易日 → 追加 --date (脚本已支持), 并把结果存进
+                dm_kun_daily 按日期存档; None=最新日, 只更新内存 cache。
     """
     import subprocess as _sp
     with _DM_KUN_LOCK:
@@ -257,9 +269,16 @@ def _dm_kun_run_one(name: str, script_module: str, extra_args: list[str] | None 
         cmd = [sys.executable, "-m", f"quant.dm_kun.{script_module}"]
         if extra_args:
             cmd.extend(extra_args)
+        if trade_date:
+            td = trade_date.replace("-", "")
+            cmd.extend(["--date", trade_date])  # 脚本接受 YYYY-MM-DD
         result = _sp.run(
-            cmd, capture_output=True, text=True, timeout=180,
-            cwd=repo_root, env=os.environ.copy(),
+            # timeout 600s: 正常 5-60s/个, 但与其他任务 (启动预热/复盘级联) 并发时
+            # 内存竞争会显著变慢, 180s 曾在 industry_enhanced 上超时 (复盘页截图实证)
+            # 不指定 encoding → 沿用系统 locale (mac 默认 UTF-8); errors=replace 防止
+            # 个别脚本输出非 UTF-8 字节导致 markdown 带非法字符、Flask jsonify 500
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=600, cwd=repo_root, env=os.environ.copy(),
         )
         # 优先 stdout, 如果有 stderr 警告也保留 (前面)
         text = result.stdout or ""
@@ -302,6 +321,17 @@ def _dm_kun_run_one(name: str, script_module: str, extra_args: list[str] | None 
             _DM_KUN_CACHE[name]["data_date"] = data_date
             if result.returncode != 0:
                 _DM_KUN_CACHE[name]["error"] = f"exit {result.returncode}"
+        # 按日期存档: 复盘页 6 个 DM-kun tab 统一进日期管理, 切日期回看历史。
+        # 存档 key 用请求的目标交易日 (跟复盘/行业趋势同一口径), 无 --date 时退回解析到的 data_date。
+        # name 这里是 cache key (market_regime), 存档统一用 endpoint 名 (market-regime) 跟 GET 查询对齐。
+        archive_date = trade_date or data_date
+        if archive_date and text.strip():
+            try:
+                ep_name = next((k for k, v in _DM_KUN_ENDPOINTS.items() if v == name), name)
+                insert_dm_kun_daily(archive_date, ep_name, text, data_date=data_date,
+                                    computed_at=_DM_KUN_CACHE[name]["computed_at"])
+            except Exception as exc:
+                logger.warning("[dm_kun] %s 存档失败: %s", name, exc)
     except _sp.TimeoutExpired:
         with _DM_KUN_LOCK:
             _DM_KUN_CACHE[name]["error"] = "timeout (180s)"
@@ -1784,6 +1814,505 @@ def api_watchlist_quote():
         return _err(exc)
 
 
+# ---------------------------------------------------------------------------
+# 关注股票情报聚合（研报 + 财经快讯 + 政策 + 智堡）
+# ---------------------------------------------------------------------------
+
+_WATCHLIST_INTEL_JOB = {
+    "state": "idle",        # idle | running | done | error
+    "code": None,
+    "name": None,
+    "result": None,         # {markdown, code, name}
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_watchlist_intel_lock = threading.Lock()
+
+
+def _watchlist_intel_collect(code: str, name: str) -> dict:
+    """聚合四路信息源（研报/快讯/政策/智堡）+ 股池动态分析的逐股体检，返回 {code,name,sources,checkup}。"""
+    from db.storage import (
+        search_research_by_stock,
+        search_cls_news_by_keyword,
+        search_policy_by_keyword,
+    )
+    research = search_research_by_stock(code, limit=10)
+    news = search_cls_news_by_keyword(name, limit=10)
+    policy = search_policy_by_keyword(name, limit=10)
+    wisburg: list[dict] = []
+    try:
+        from agent.wisburg_ai import list_resource
+        _seen_ids: set = set()
+        for res in ("reports", "feed", "articles"):
+            try:
+                items, _ = list_resource(res, first=5, query=name)
+                for it in items:
+                    _id = it.get("id")
+                    if _id in _seen_ids:
+                        continue  # reports/feed 共用 id，去重
+                    _seen_ids.add(_id)
+                    wisburg.append({**it, "source_type": res})
+            except Exception:
+                continue
+        wisburg.sort(key=lambda x: str(x.get("datetime") or ""), reverse=True)
+    except Exception:
+        pass
+    return {
+        "code": code,
+        "name": name,
+        "sources": {
+            "research": research or [],
+            "news": news or [],
+            "policy": policy or [],
+            "wisburg": wisburg[:10] or [],
+        },
+        "checkup": _get_stock_checkup(code),
+    }
+
+
+# 股池动态分析逐股体检缓存（5 分钟，避免每只股票重复查库）
+_checkup_cache: dict = {}
+_checkup_cache_ts: float = 0.0
+
+
+def _get_stock_checkup(code: str) -> dict:
+    """从最近一次「股池动态分析」（agent_summary run_type=watchlist）结果里取该股的
+    问题提醒 issues / 优势亮点 highlights / 涨跌幅。返回 {issues, highlights, change_pct}，无则空。"""
+    import time as _t
+    global _checkup_cache, _checkup_cache_ts
+    now = _t.time()
+    if not _checkup_cache or (now - _checkup_cache_ts) > 300:
+        from db.storage import get_agent_summary_latest_snapshot
+        _checkup_cache = {}
+        snap = get_agent_summary_latest_snapshot("watchlist")
+        if snap and snap.get("stocks"):
+            for s in snap["stocks"]:
+                _checkup_cache[str(s.get("code"))] = {
+                    "issues": s.get("issues") or [],
+                    "highlights": s.get("highlights") or [],
+                    "change_pct": s.get("change_pct"),
+                    "analyze_ok": s.get("analyze_ok"),
+                }
+        _checkup_cache_ts = now
+    return _checkup_cache.get(str(code)) or {}
+
+
+@app.route("/api/watchlist/intel")
+def api_watchlist_intel():
+    """关注股票情报聚合。?code=xxx&name=xxx → 按研报/快讯/政策/智堡四组返回。"""
+    try:
+        code = (request.args.get("code") or "").strip()
+        name = (request.args.get("name") or "").strip()
+        if not code or not name:
+            return _err("缺少 code/name 参数", 400)
+        return _ok(_watchlist_intel_collect(code, name))
+    except Exception as exc:
+        return _err(exc)
+
+
+def _watchlist_intel_ai_worker(code: str, name: str) -> None:
+    """后台生成 AI 综合简报（claude 串行，约 1-3 分钟）。"""
+    from agent.wisburg_ai import call_claude
+    job = _WATCHLIST_INTEL_JOB
+    try:
+        collected = _watchlist_intel_collect(code, name)
+        src = collected["sources"]
+
+        def _fmt(items, keys: tuple[str, ...]) -> str:
+            lines = []
+            for it in items:
+                title = it.get("title", "")
+                ts = it.get("publish_date") or it.get("pub_time") or it.get("datetime") or ""
+                extra = " ".join(str(it.get(k) or "") for k in keys)
+                summary = it.get("summary") or it.get("content") or it.get("description") or ""
+                if isinstance(summary, str):
+                    summary = summary[:200]
+                else:
+                    summary = ""
+                lines.append(f"- [{str(ts)[:16]}] {title} {extra}\n  {summary}")
+            return "\n".join(lines) if lines else "（无）"
+
+        research_txt = _fmt(src["research"], ("org_name", "rating", "aim_price"))
+        news_txt = _fmt(src["news"], ("source",))
+        policy_txt = _fmt(src["policy"], ("source",))
+        wisburg_txt = _fmt(src["wisburg"], ("source_type",))
+
+        prompt = f"""你是一位资深投研分析师。下面是关注股票「{name}（{code}）」从四个信息源聚合到的相关资料，请做综合整理，输出一份个股情报简报。
+
+## 一、券商研报（{len(src['research'])} 条）
+{research_txt}
+
+## 二、财经快讯（{len(src['news'])} 条）
+{news_txt}
+
+## 三、政策动态（{len(src['policy'])} 条）
+{policy_txt}
+
+## 四、智堡研究（{len(src['wisburg'])} 条）
+{wisburg_txt}
+
+请输出 markdown（不要代码块包裹），严格按以下结构：
+1. `## 一句话概括` — 这只股票当前的核心状态
+2. `## 研报观点` — 机构评级/目标价/核心逻辑（引用具体机构和评级）
+3. `## 近期动态` — 快讯里的关键事件（业绩/公告/异动），按时间
+4. `## 政策与行业` — 政策动态和智堡研究里与它相关的行业/宏观背景
+5. `## 风险与关注点` — 值得注意的风险信号或待验证的逻辑
+
+约束：只用给定资料里的信息，不编造；每条结论尽量标注来源；总长 600-1000 字。"""
+
+        md = call_claude(prompt)
+        job["result"] = {"markdown": md, "code": code, "name": name}
+        job["state"] = "done"
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = str(exc)
+        logger.exception("[watchlist-intel] AI 简报失败")
+    finally:
+        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+@app.route("/api/watchlist/intel/ai", methods=["POST"])
+def api_watchlist_intel_ai():
+    """生成 AI 综合简报（后台任务，轮询 /api/watchlist/intel/ai-job）。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        code = (body.get("code") or "").strip()
+        name = (body.get("name") or "").strip()
+        if not code or not name:
+            return _err("缺少 code/name 参数", 400)
+        with _watchlist_intel_lock:
+            if _WATCHLIST_INTEL_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running"})
+            _WATCHLIST_INTEL_JOB.update(
+                state="running", code=code, name=name, result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
+            )
+            threading.Thread(target=_watchlist_intel_ai_worker, args=(code, name),
+                             daemon=True, name="watchlist-intel-ai").start()
+        return _ok({"started": True, "state": "running"})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/watchlist/intel/ai-job")
+def api_watchlist_intel_ai_job():
+    with _watchlist_intel_lock:
+        return _ok(dict(_WATCHLIST_INTEL_JOB))
+
+
+# ── 全池 AI 整理（一键整理里的 AI 横向分析）────────────────────
+
+_WATCHLIST_INTEL_ALL_JOB = {
+    "state": "idle",        # idle | running | done | error
+    "result": None,         # {markdown, count}
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_watchlist_intel_all_lock = threading.Lock()
+
+
+def _watchlist_intel_all_worker(stocks: list[dict]) -> None:
+    """后台聚合全池情报喂 claude，生成全池横向整理分析（约 1-3 分钟）。"""
+    from agent.wisburg_ai import call_claude
+    job = _WATCHLIST_INTEL_ALL_JOB
+    try:
+        parts = []
+        for s in stocks:
+            code = str(s.get("code") or "").strip()
+            name = str(s.get("name") or "").strip()
+            if not code or not name:
+                continue
+            collected = _watchlist_intel_collect(code, name)
+            src = collected["sources"]
+            def _brief(items, keys: tuple[str, ...], n: int = 3) -> str:
+                out = []
+                for it in items[:n]:
+                    title = str(it.get("title") or "")
+                    extra = " ".join(str(it.get(k) or "") for k in keys)
+                    out.append(f"{title}{'（' + extra + '）' if extra else ''}")
+                if len(items) > n:
+                    out.append(f"…共{len(items)}条")
+                return "；".join(out) if out else "无"
+            parts.append(
+                f"### {name}（{code}）\n"
+                f"- 研报{len(src['research'])}条：{_brief(src['research'], ('org_name', 'rating'))}\n"
+                f"- 快讯{len(src['news'])}条：{_brief(src['news'], ('source',))}\n"
+                f"- 政策{len(src['policy'])}条：{_brief(src['policy'], ('source',))}\n"
+                f"- 智堡{len(src['wisburg'])}条：{_brief(src['wisburg'], ('source_type',))}"
+            )
+
+        if not parts:
+            raise RuntimeError("没有可分析的关注股票")
+
+        prompt = f"""你是一位资深投研分析师。下面是关注股池 {len(parts)} 只股票的聚合情报（券商研报/财经快讯/政策动态/智堡研究）。请做全池横向整理分析，帮用户快速把握整个股池的状态。
+
+## 股票情报
+{chr(10).join(parts)}
+
+请输出 markdown（不要代码块包裹），严格按以下结构：
+1. `## 全池概览` — 一句话总结整个池子当前的状态（热点方向/情绪/信息密集度）
+2. `## 个股速览` — 每只股票 1-2 句（当前核心逻辑 + 值得关注的点）
+3. `## 横向对比` — 池内谁研报/关注度最高、谁信息最少最冷清；有没有共性主题（如 AI、半导体、铝业）
+4. `## 风险提示` — 池内出现的风险信号（评级下调、业绩下滑、政策收紧等）
+5. `## 操作线索` — 值得进一步研究的 2-3 条线索
+
+约束：只用给定资料里的信息，不编造；每条结论尽量标注股票；总长 800-1500 字。"""
+
+        md = call_claude(prompt)
+        job["result"] = {"markdown": md, "count": len(parts)}
+        job["state"] = "done"
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = str(exc)
+        logger.exception("[watchlist-intel-all] 全池 AI 整理失败")
+    finally:
+        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+@app.route("/api/watchlist/intel/ai-all", methods=["POST"])
+def api_watchlist_intel_ai_all():
+    """全池 AI 整理（后台任务，轮询 /api/watchlist/intel/ai-all-job）。body: {stocks: [{code,name}]}"""
+    try:
+        body = request.get_json(silent=True) or {}
+        stocks = body.get("stocks") or []
+        stocks = [s for s in stocks if (s.get("code") or "").strip() and (s.get("name") or "").strip()]
+        if not stocks:
+            return _err("缺少 stocks 参数", 400)
+        with _watchlist_intel_all_lock:
+            if _WATCHLIST_INTEL_ALL_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running"})
+            _WATCHLIST_INTEL_ALL_JOB.update(
+                state="running", result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
+            )
+            threading.Thread(target=_watchlist_intel_all_worker, args=(stocks,),
+                             daemon=True, name="watchlist-intel-all").start()
+        return _ok({"started": True, "state": "running"})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/watchlist/intel/ai-all-job")
+def api_watchlist_intel_ai_all_job():
+    with _watchlist_intel_all_lock:
+        return _ok(dict(_WATCHLIST_INTEL_ALL_JOB))
+
+
+# ── iFinD 实时体检（复用股池动态分析的数据源，不用等 agent 跑）────────
+
+_IFIND_CFG: dict | None = None
+
+
+def _ifind_call(server_key: str, tool_name: str, args: dict, timeout: float = 30) -> str:
+    """调 iFinD MCP 的 tools/call，返回文本内容。token 从项目根 ifind-mcp-config.txt 读。"""
+    global _IFIND_CFG
+    import json as _json
+    import requests as _requests
+    import urllib3
+    urllib3.disable_warnings()
+    if _IFIND_CFG is None:
+        _cfg_path = Path(__file__).resolve().parent / "ifind-mcp-config.txt"
+        _IFIND_CFG = _json.loads(_cfg_path.read_text(encoding="utf-8"))
+    srv = _IFIND_CFG["mcpServers"].get(server_key)
+    if not srv:
+        raise RuntimeError(f"iFinD 服务未配置: {server_key}")
+    resp = _requests.post(
+        srv["url"],
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": tool_name, "arguments": args}},
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream",
+                 "Authorization": srv["headers"]["Authorization"]},
+        verify=False,
+        timeout=timeout,
+    )
+    data = resp.json() if resp.text.strip() else {}
+    if "error" in data:
+        raise RuntimeError(f"iFinD {tool_name} 失败: {data['error']}")
+    content = (data.get("result") or {}).get("content") or []
+    for c in content:
+        if c.get("type") == "text" and c.get("text"):
+            return c["text"]
+    return ""
+
+
+def _ifind_parse(text: str) -> dict:
+    """解析 iFinD 返回（data 字段是 JSON 字符串，可能是 answer 表格 / 数组 / 嵌套）。"""
+    import json as _json
+    try:
+        d = _json.loads(text)
+    except Exception:
+        return {}
+    data = d.get("data") if isinstance(d, dict) else None
+    if isinstance(data, str):
+        try:
+            data = _json.loads(data)
+        except Exception:
+            data = None
+    # 行情：{"answer": "markdown 表格"}
+    if isinstance(data, dict) and "answer" in data:
+        return {"answer": data["answer"]}
+    # 新闻：{"data": "[...]"}
+    if isinstance(data, dict) and isinstance(data.get("data"), str):
+        try:
+            return {"list": _json.loads(data["data"])}
+        except Exception:
+            return {}
+    # 公告：数组
+    if isinstance(data, list):
+        return {"list": data}
+    return {}
+
+
+def _md_table_rows(answer: str) -> list[list[str]]:
+    """解析 markdown 表格 → 行（跳过表头和分隔行）。"""
+    rows = []
+    for line in answer.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if all(set(c) <= set("-: ") for c in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def _ifind_stock_checkup(code: str, name: str) -> dict:
+    """用 iFinD 实时拿行情/公告/新闻，规则化生成问题提醒/亮点（复用动态分析数据源）。"""
+    import re
+    from datetime import date, timedelta
+    issues: list[str] = []
+    highlights: list[str] = []
+    change_pct: float | None = None
+    price: float | None = None
+    today = date.today().isoformat()
+    start7 = (date.today() - timedelta(days=7)).isoformat()
+
+    # 1. 行情（涨跌幅）—— iFinD 多指标问句列不稳定，用单一指标"今日涨跌幅"最稳
+    try:
+        txt = _ifind_call("hexin-ifind-ds-stock-mcp", "get_stock_performance",
+                          {"query": f"{name} {code} 今日涨跌幅"})
+        parsed = _ifind_parse(txt)
+        rows = _md_table_rows(parsed.get("answer", ""))
+        if len(rows) >= 2:
+            header = rows[0]
+            idx_chg = next((i for i, h in enumerate(header) if "涨跌幅" in h), None)
+            idx_amt = next((i for i, h in enumerate(header) if "成交额" in h), None)
+            for r in rows[1:]:
+                if r and code in r[0]:
+                    chg = None
+                    if idx_chg is not None:
+                        try:
+                            chg = float(r[idx_chg])
+                        except (TypeError, ValueError):
+                            chg = None
+                    amt = r[idx_amt] if idx_amt is not None and idx_amt < len(r) else ""
+                    if chg is not None:
+                        change_pct = chg
+                        if chg <= -5:
+                            issues.append(f"{today} 大跌 {chg:.2f}%（成交额 {amt}）（iFinD行情）")
+                        elif chg >= 5:
+                            highlights.append(f"{today} 大涨 {chg:.2f}%（成交额 {amt}）（iFinD行情）")
+                        elif chg <= -3:
+                            issues.append(f"{today} 下跌 {chg:.2f}%，需留意（iFinD行情）")
+                        elif chg >= 3:
+                            highlights.append(f"{today} 上涨 {chg:.2f}%（iFinD行情）")
+                    break
+    except Exception:
+        pass
+    except Exception:
+        pass
+
+    # 2. 近期公告
+    try:
+        txt = _ifind_call("hexin-ifind-ds-news-mcp", "search_notice",
+                          {"query": f"{name} {code} 公告", "time_start": start7, "time_end": today, "size": 5})
+        for it in _ifind_parse(txt).get("list", [])[:3]:
+            title = str(it.get("公告标题") or "").strip()
+            if title:
+                highlights.append(f"{title}（iFinD公告）" if not any(k in title for k in ("减持", "处罚", "诉讼", "亏损")) else f"{title}（iFinD公告，注意风险）")
+    except Exception:
+        pass
+
+    # 3. 近期新闻
+    try:
+        txt = _ifind_call("hexin-ifind-ds-news-mcp", "search_news",
+                          {"query": f"{name} {code} 新闻", "time_start": start7, "time_end": today, "size": 5})
+        for it in _ifind_parse(txt).get("list", [])[:3]:
+            title = str(it.get("资讯标题") or "").strip()
+            dt = str(it.get("日期") or "")[:10]
+            if title:
+                highlights.append(f"{dt} {title}（iFinD新闻）")
+    except Exception:
+        pass
+
+    return {"issues": issues, "highlights": highlights, "change_pct": change_pct,
+            "price": price, "source": "iFinD实时"}
+
+
+# 全池实时体检 job
+_WATCHLIST_REALTIME_JOB = {
+    "state": "idle",        # idle | running | done | error
+    "result": None,         # {checkups: {code: {...}}, count}
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_watchlist_realtime_lock = threading.Lock()
+
+
+def _watchlist_realtime_worker(stocks: list[dict]) -> None:
+    """后台逐只 iFinD 体检（串行 + 限速防并发超限），进度写回 job。"""
+    import time as _t
+    job = _WATCHLIST_REALTIME_JOB
+    try:
+        checkups: dict = {}
+        for i, s in enumerate(stocks):
+            code = str(s.get("code") or "").strip()
+            name = str(s.get("name") or "").strip()
+            if code and name:
+                checkups[code] = _ifind_stock_checkup(code, name)
+            job["result"] = {"checkups": checkups, "count": len(stocks), "done": i + 1}
+            _t.sleep(0.6)  # iFinD 免费并发 2/s，串行 + 间隔
+        job["state"] = "done"
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = str(exc)
+        logger.exception("[watchlist-realtime] iFinD 实时体检失败")
+    finally:
+        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+@app.route("/api/watchlist/intel/realtime", methods=["POST"])
+def api_watchlist_intel_realtime():
+    """全池 iFinD 实时体检（后台任务，轮询 /api/watchlist/intel/realtime-job）。body: {stocks}"""
+    try:
+        body = request.get_json(silent=True) or {}
+        stocks = [s for s in (body.get("stocks") or []) if (s.get("code") or "").strip()]
+        if not stocks:
+            return _err("缺少 stocks 参数", 400)
+        with _watchlist_realtime_lock:
+            if _WATCHLIST_REALTIME_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running"})
+            _WATCHLIST_REALTIME_JOB.update(
+                state="running", result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
+            )
+            threading.Thread(target=_watchlist_realtime_worker, args=(stocks,),
+                             daemon=True, name="watchlist-realtime").start()
+        return _ok({"started": True, "state": "running"})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/watchlist/intel/realtime-job")
+def api_watchlist_intel_realtime_job():
+    with _watchlist_realtime_lock:
+        return _ok(dict(_WATCHLIST_REALTIME_JOB))
+
 
 # ---------------------------------------------------------------------------
 # Sector flow acceleration / Volume breakout / Turnover stats / Market cap dist / Advance-decline
@@ -2099,7 +2628,21 @@ def api_review_latest():
 @app.route("/api/review/dates")
 def api_review_dates():
     try:
-        return _ok(get_review_dates())
+        dates = get_review_dates()
+        # 把 Exodia 数据中心的最新数据日合并到顶部 (即使还没算过, 也要让用户能选它)
+        # source of truth: products-status.json → stock-trading-data-pro-daily.dataContentTime
+        try:
+            from agent.review_v2 import _exodia_latest_stock_date
+            ex = _exodia_latest_stock_date()
+            if ex:
+                # 归一化成 ISO (DB 存 ISO, dataContentTime 正常也是 ISO)
+                if len(ex) == 8 and ex.isdigit():
+                    ex = f"{ex[:4]}-{ex[4:6]}-{ex[6:8]}"
+                if ex not in dates:
+                    dates.insert(0, ex)
+        except Exception as exc:
+            logger.warning("[review/dates] 合并 Exodia 最新日失败: %s", exc)
+        return _ok(dates)
     except Exception as exc:
         return _err(exc)
 
@@ -2123,7 +2666,12 @@ def api_review_data():
         row = get_review_daily(trade_date)
         if row and not force:
             return _ok(_json.loads(row["payload"]))
-        # force=1 或 没找到 → 同步重算 (1-2 分钟, 期间 HTTP 不返, 前端按钮转圈等)
+        if not row and not force:
+            # 该日期还没算过 → 返回空, 由前端提示用户点「重算选中日期」
+            # (不再自动跑 legacy compute_daily_analysis — 那会写半成品 payload 污染缓存)
+            logger.info("[review] %s 未计算且未 force, 返回空 (等用户显式重算)", trade_date)
+            return _ok(None)
+        # force=1 → 同步重算 (1-2 分钟, 期间 HTTP 不返, 前端按钮转圈等)
         from quant.review_compute import compute_daily_analysis
         logger.info("[review] 重算开始 trade_date=%s force=%s (cache_hit=%s)", trade_date, force, bool(row))
         t0 = _time.time()
@@ -2140,23 +2688,328 @@ def api_review_data():
         return _err(exc)
 
 
-@app.route("/api/review/v2/run", methods=["POST"])
-def api_review_v2_run():
-    """手动触发 9 维度复盘 (review_v2: 编排 14 daily_compute + sector 板块效应)。
+# ── 行业趋势 (industry_ma_trend 50列截面每日存档 + 多日对比, 2026-08-21) ────────
 
-    增量逻辑: 不传 trade_date 时, 自动从 Exodia status 拿 stock-trading-data-pro-daily 最新日.
-    如果 review_v2_daily 已有该日期, 直接返回缓存 (< 1s).
-    force=true 强制重算 (跳过缓存).
+@app.route("/api/industry-trend/latest")
+def api_industry_trend_latest():
+    """最近一次行业趋势截面 — 永远返回 cache, 不触发重算(重算走 data?force=1)。"""
+    try:
+        row = get_industry_trend_daily(None)
+        return _ok(_json.loads(row["payload"]) if row else None)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-trend/dates")
+def api_industry_trend_dates():
+    try:
+        dates = get_industry_trend_dates()
+        # 把 Exodia 数据中心的最新数据日合并到顶部(照抄 /api/review/dates):
+        # 收盘数据落地但还没算过时, 用户也能在下拉里选到新日期并点「重算选中日期」
+        try:
+            from agent.review_v2 import _exodia_latest_stock_date
+            ex = _exodia_latest_stock_date()
+            if ex:
+                if len(ex) == 8 and ex.isdigit():
+                    ex = f"{ex[:4]}-{ex[4:6]}-{ex[6:8]}"
+                if ex not in dates:
+                    dates.insert(0, ex)
+        except Exception as exc:
+            logger.warning("[industry-trend/dates] 合并 Exodia 最新日失败: %s", exc)
+        return _ok(dates)
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-trend/data")
+def api_industry_trend_data():
+    """单日截面。force=1 → 同步重算该交易日(industry_ma_trend.py 子进程, 1-3 分钟,
+    前端「重算选中日期」按钮转圈等), 走 INSERT OR REPLACE 覆盖存档。"""
+    try:
+        import time as _time
+        trade_date = request.args.get("date", "").strip()
+        force = request.args.get("force", "").strip() in ("1", "true", "yes")
+        if len(trade_date) == 8 and trade_date.isdigit():
+            trade_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
+        if not force:
+            if not trade_date:
+                row = get_industry_trend_daily(None)
+                return _ok(_json.loads(row["payload"]) if row else None)
+            row = get_industry_trend_daily(trade_date)
+            if row:
+                return _ok(_json.loads(row["payload"]))
+            # 未算过 → 返回空, 前端提示点「重算选中日期」
+            return _ok(None)
+        # force=1: 重算(无 date → 数据最新交易日)
+        from quant.industry_trend_daily import run_industry_trend
+        logger.info("[industry-trend] 重算开始 date=%s", trade_date or "(最新)")
+        t0 = _time.time()
+        data = run_industry_trend(trade_date or None, force_recompute=True)
+        elapsed = round(_time.time() - t0, 1)
+        if data:
+            logger.info("[industry-trend] 重算完成 %s 耗时=%ss", data["trade_date"], elapsed)
+            return _ok({**data, "_recompute": True, "_elapsed_sec": elapsed})
+        return _ok(None)
+    except Exception as exc:
+        return _err(exc)
+
+
+# ── 行业趋势异步任务 (照抄复盘 v2 模式: POST 立即返回, 前端轮询 job) ─────────
+# 与 data?force=1 同步路径的区别: 先增量刷申万指数/资金流缓存再算——
+# 新交易日不先刷缓存, resolve_trade_date 会把日期归一到旧一天, 重算静默失效。
+
+_INDUSTRY_TREND_JOB: dict = {
+    "state": "idle",        # idle | running | done | error
+    "trade_date": None,
+    "progress": "",
+    "result": None,         # {trade_date, changes}
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_industry_trend_job_lock = threading.Lock()
+
+
+def _industry_trend_job_worker(trade_date, force: bool) -> None:
+    job = _INDUSTRY_TREND_JOB
+    try:
+        job["progress"] = "增量拉取申万指数/资金流缓存 (已最新则秒级跳过)..."
+        from quant.industry_trend_daily import refresh_sw_caches, run_industry_trend
+        if force:
+            refresh_sw_caches()
+        job["progress"] = "重算 50 列截面 + 存档 + 与上期对比 (industry_ma_trend.py, 1-3 分钟)..."
+        it = run_industry_trend(trade_date or None, force_recompute=True)
+        if not it:
+            raise RuntimeError("重算未返回数据, 请查看后端日志")
+        job["result"] = {"trade_date": it.get("trade_date"),
+                         "changes": len(it.get("changes", []))}
+        job["trade_date"] = it.get("trade_date")
+        job["state"] = "done"
+        logger.info("[industry-trend-job] 重算完成 %s changes=%s",
+                    it.get("trade_date"), job["result"]["changes"])
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = str(exc)
+        logger.exception("[industry-trend-job] 重算失败")
+    finally:
+        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        job["progress"] = ""
+
+
+@app.route("/api/industry-trend/run", methods=["POST"])
+def api_industry_trend_run():
+    """手动触发行业趋势重算 (后台任务, 立即返回).
+
+    body: {trade_date?: "YYYY-MM-DD", force?: bool}
+    - 不传 trade_date: 自动用申万缓存最新交易日
+    - force=true (默认建议): 先增量刷申万指数/资金流缓存, 新交易日数据才完整
+    - 已有任务在跑: 返回 {started: false, state: "running"}
+    前端轮询 GET /api/industry-trend/job 拿进度。
     """
     try:
+        body = request.get_json(silent=True) or {}
+        trade_date = (body.get("trade_date") or "").strip() or None
+        force = bool(body.get("force", True))
+        with _industry_trend_job_lock:
+            if _INDUSTRY_TREND_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running",
+                            "progress": _INDUSTRY_TREND_JOB["progress"]})
+            _INDUSTRY_TREND_JOB.update(
+                state="running", trade_date=trade_date, progress="启动中...",
+                result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"),
+                finished_at=None,
+            )
+            threading.Thread(
+                target=_industry_trend_job_worker, args=(trade_date, force),
+                daemon=True, name="industry-trend-job",
+            ).start()
+        return _ok({"started": True, "state": "running"})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-trend/job")
+def api_industry_trend_job():
+    """行业趋势异步任务状态 (前端轮询)."""
+    with _industry_trend_job_lock:
+        return _ok(dict(_INDUSTRY_TREND_JOB))
+
+
+@app.route("/api/industry-trend/rps-heatmap")
+def api_industry_trend_rps_heatmap():
+    """行业 RPS(相对强度)热力图: 日期 × 行业。"""
+    try:
+        days = int(request.args.get("days", "40"))
+        import importlib
+        import quant.industry_trend_daily as _itd
+        importlib.reload(_itd)
+        return _ok(_itd.get_rps_heatmap(days))
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-trend/heatmap")
+def api_industry_trend_heatmap():
+    """综合分热力图: 日期 × 行业矩阵 (行业趋势页新标签页用)。"""
+    try:
+        days = int(request.args.get("days", "20"))
+        import importlib
+        import quant.industry_trend_daily as _itd
+        importlib.reload(_itd)
+        return _ok(_itd.get_score_heatmap(days))
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-trend/category-rotation")
+def api_industry_trend_category_rotation():
+    """6 大板块类别轮动时序: 日期 × 类别 多指标均值 (类别轮动标签页用)。"""
+    try:
+        days = int(request.args.get("days", "60"))
+        import importlib
+        import quant.industry_trend_daily as _itd
+        importlib.reload(_itd)
+        return _ok(_itd.get_category_rotation(days))
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-trend/series")
+def api_industry_trend_series():
+    """单行业关键指标时序(从存档聚合, 供折线图)。"""
+    try:
+        industry = request.args.get("industry", "").strip()
+        days = int(request.args.get("days", "30"))
+        if not industry:
+            return _err("缺少 industry 参数", 400)
+        from quant.industry_trend_daily import get_industry_series
+        return _ok(get_industry_series(industry, days))
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/industry-trend/kline")
+def api_industry_trend_kline():
+    """单行业申万官方指数日K + 均线 + 1/3/5年位置高低点 (ECharts K线图)。
+
+    params: industry (必填), days=1600 (返回根数), date=YYYY-MM-DD (可选,
+    截断到该存档日, 与当日截面位置%口径一致, 不"偷看未来")。
+    """
+    try:
+        industry = request.args.get("industry", "").strip()
+        days = int(request.args.get("days", "1600"))
+        end_date = (request.args.get("date") or "").strip() or None
+        if not industry:
+            return _err("缺少 industry 参数", 400)
+        from quant.industry_trend_daily import get_industry_kline
+        data = get_industry_kline(industry, days=days, end_date=end_date)
+        if data is None:
+            return _err(f"无该行业指数数据: {industry}", 404)
+        return _ok(data)
+    except Exception as exc:
+        return _err(exc)
+
+
+# ── 复盘 v2 异步任务 (POST 立即返回, 前端轮询 /api/review/v2/job) ────────────────
+# 原实现同步阻塞 5-7 分钟, 浏览器/代理容易先超时断开。改为后台线程跑,
+# 复盘完成后自动级联刷新 DM-kun 6 个 tab (两套系统一次按钮全刷新)。
+
+_REVIEW_V2_JOB: dict = {
+    "state": "idle",        # idle | running | done | error
+    "trade_date": None,
+    "progress": "",
+    "result": None,
+    "dm_kun": None,
+    "industry_trend": None,   # 行业趋势页级联结果 (2026-08-20 联动)
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_review_v2_job_lock = threading.Lock()
+
+
+def _review_v2_job_worker(trade_date, force: bool) -> None:
+    job = _REVIEW_V2_JOB
+    try:
+        job["progress"] = "复盘计算中 (L4 板块效应 + 汇总, 约 2-6 分钟)"
         from agent.review_v2 import run as run_review_v2
+        result = run_review_v2(trade_date, force=force)
+        job["result"] = result
+        # 级联 1: 行业趋势页同日期截面 (用户要求"和复盘数据页一起联动",
+        # 一次重算按钮两套系统同更新)。先增量刷申万指数/资金流缓存——
+        # 否则新交易日 resolve_trade_date 会把日期归一到缓存里的旧一天, 联动静默失效。
+        try:
+            from quant.industry_trend_daily import refresh_sw_caches, run_industry_trend
+            job["progress"] = "复盘完成, 级联刷新行业趋势 (先增量拉申万指数/资金流, 1-4 分钟)..."
+            td = (result or {}).get("trade_date") or trade_date
+            refresh_sw_caches()
+            it = run_industry_trend(td, force_recompute=True)
+            job["industry_trend"] = {
+                "trade_date": (it or {}).get("trade_date"),
+                "changes": len((it or {}).get("changes", [])),
+            }
+        except Exception as exc:
+            job["industry_trend"] = {"error": str(exc)}
+            logger.warning("[review-v2-job] 行业趋势级联失败: %s", exc)
+        job["progress"] = "复盘完成, 级联刷新 DM-kun 6 个 tab (约 1-5 分钟)..."
+        try:
+            # 传 td → 各 DM-kun 脚本按 --date 切片到复盘选中日并按日期存档,
+            # 6 个 tab 统一进日期管理 (切日期可回看历史)
+            job["dm_kun"] = dm_kun_recompute_all(trade_date=td)
+        except Exception as exc:
+            job["dm_kun"] = {"error": str(exc)}
+            logger.warning("[review-v2-job] DM-kun 级联失败: %s", exc)
+        # 手动重算不跑 AI 总结 (无意义还多等 1-3 分钟); 晚间定时链 (scheduler 20:30
+        # _run_review) 自带 AI, 不走本 worker。
+        job["state"] = "done"
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = str(exc)
+        logger.exception("[review-v2-job] 重算失败")
+    finally:
+        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        job["progress"] = ""
+
+
+@app.route("/api/review/v2/run", methods=["POST"])
+def api_review_v2_run():
+    """手动触发 9 维度复盘 (后台任务, 立即返回).
+
+    body: {trade_date?: "YYYY-MM-DD", force?: bool}
+    - 不传 trade_date: 自动从 Exodia status 拿 stock-trading-data-pro-daily 最新日
+    - 完成后自动级联刷新 DM-kun 6 个 tab
+    - 已有任务在跑: 返回 {started: false, state: "running"}
+    前端轮询 GET /api/review/v2/job 拿进度和结果。
+    """
+    try:
         body = request.get_json(silent=True) or {}
         trade_date = (body.get("trade_date") or "").strip() or None
         force = bool(body.get("force", False))
-        result = run_review_v2(trade_date, force=force)
-        return _ok(result)
+        with _review_v2_job_lock:
+            if _REVIEW_V2_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running",
+                            "progress": _REVIEW_V2_JOB["progress"]})
+            _REVIEW_V2_JOB.update(
+                state="running", trade_date=trade_date, progress="启动中...",
+                result=None, dm_kun=None, industry_trend=None, error=None, ai=None,
+                started_at=datetime.now().isoformat(timespec="seconds"),
+                finished_at=None,
+            )
+            threading.Thread(
+                target=_review_v2_job_worker, args=(trade_date, force),
+                daemon=True, name="review-v2-job",
+            ).start()
+        return _ok({"started": True, "state": "running"})
     except Exception as exc:
         return _err(exc)
+
+
+@app.route("/api/review/v2/job")
+def api_review_v2_job():
+    """复盘 v2 异步任务状态 (前端 5s 轮询)."""
+    with _review_v2_job_lock:
+        return _ok(dict(_REVIEW_V2_JOB))
 
 
 @app.route("/api/review/v2/latest")
@@ -2200,21 +3053,161 @@ _DM_KUN_ENDPOINTS = {
 }
 
 
+def dm_kun_recompute_all(trade_date: str | None = None) -> dict:
+    """串行重算全部 6 个 DM-kun tab (阻塞调用方线程, 共 2-6 分钟).
+
+    供两条路径复用:
+    - 复盘重算完成后级联刷新 (按钮 / 16:00 定时任务)
+    - 其他需要全量刷新 DM-kun 的场景
+    模块名走 _DM_KUN_SCRIPT 映射 (market_regime → market_regime_analyzer),
+    额外 args 跟 prewarm / 单 tab recompute 端点保持一致。
+    trade_date: 复盘选中日期 → 各脚本按 --date 切片到该日并把结果按日期存档;
+                None=最新日, 仍存档到解析出的 data_date。
+    返回 {endpoint: "ok" | "error: ..."}
+    """
+    results = {}
+    for ep_name, cache_key in _DM_KUN_ENDPOINTS.items():
+        try:
+            # 正在算 (如启动预热/单 tab 重算) → 跳过, 避免同一脚本双跑抢内存
+            with _DM_KUN_LOCK:
+                if _DM_KUN_CACHE[cache_key]["loading"]:
+                    results[ep_name] = "skipped (已在计算中)"
+                    continue
+            extra = list(_DM_KUN_EXTRA_ARGS.get(cache_key, []))
+            if cache_key == "stock_recommender":
+                extra.extend(_dm_kun_default_industries())
+            _dm_kun_run_one(cache_key, _DM_KUN_SCRIPT[cache_key], extra, trade_date=trade_date)
+            with _DM_KUN_LOCK:
+                err = _DM_KUN_CACHE[cache_key].get("error")
+            results[ep_name] = "ok" if not err else f"error: {err}"
+            logger.info("[dm-kun] 级联重算 %s %s (date=%s)", ep_name, results[ep_name], trade_date or "最新")
+        except Exception as exc:
+            results[ep_name] = f"error: {exc}"
+            logger.warning("[dm-kun] 级联重算 %s 失败: %s", ep_name, exc)
+    return results
+
+
+def review_ai_with_dm_cache(trade_date: str | None = None) -> dict:
+    """复盘 AI 总结: 把 DM-kun 内存 cache 的 markdown 一起喂给 agent.review_ai。
+
+    在 server 进程内调用 (cache 在这里); 手动重算 job、手动按钮和 20:30 定时链共用。
+    """
+    try:
+        from agent.review_ai import run as run_review_ai
+        with _DM_KUN_LOCK:
+            dm = {k: (v.get("markdown") or "") for k, v in _DM_KUN_CACHE.items()}
+        return run_review_ai(trade_date, extra_context={"dm_kun": dm})
+    except Exception as exc:
+        logger.warning("[review-ai] 失败: %s", exc)
+        return {"status": "error", "reason": str(exc)}
+
+
+# ── 复盘 AI 总结 手动触发 (异步 job, 前端轮询 /api/agent/review_ai/job) ────────
+_REVIEW_AI_JOB: dict = {
+    "state": "idle",        # idle | running | done | error
+    "progress": "",
+    "result": None,
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_review_ai_job_lock = threading.Lock()
+
+
+def _review_ai_job_worker(trade_date) -> None:
+    with _review_ai_job_lock:
+        _REVIEW_AI_JOB["progress"] = "AI 正在阅读复盘数据 + DM-kun 分析 (约 1 分钟)..."
+    result = review_ai_with_dm_cache(trade_date)
+    with _review_ai_job_lock:
+        st = result.get("status")
+        if st in ("ok", "warn"):
+            _REVIEW_AI_JOB.update(state="done", progress="完成", result=result, error=None)
+        else:
+            _REVIEW_AI_JOB.update(state="error", progress="失败",
+                                  result=result, error=result.get("reason") or st)
+        _REVIEW_AI_JOB["finished_at"] = datetime.now().isoformat(timespec="seconds")
+    logger.info("[review-ai] 手动 job 结束: %s", result)
+
+
+@app.route("/api/agent/review_ai", methods=["POST"])
+def api_agent_review_ai_run():
+    """手动触发复盘 AI 总结 (后台线程, 立即返回; 前端轮询 GET /api/agent/review_ai/job)."""
+    try:
+        body = request.get_json(silent=True) or {}
+        trade_date = (body.get("trade_date") or "").strip() or None
+        with _review_ai_job_lock:
+            if _REVIEW_AI_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running",
+                            "progress": _REVIEW_AI_JOB["progress"]})
+            _REVIEW_AI_JOB.update(
+                state="running", progress="启动中...", result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"),
+                finished_at=None,
+            )
+        threading.Thread(target=_review_ai_job_worker, args=(trade_date,),
+                         daemon=True, name="review-ai-job").start()
+        return _ok({"started": True, "state": "running"})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/agent/review_ai/job")
+def api_agent_review_ai_job():
+    """复盘 AI 总结手动任务状态 (前端轮询)."""
+    with _review_ai_job_lock:
+        return _ok(dict(_REVIEW_AI_JOB))
+
 @app.route("/api/dm-kun/<name>")
 def api_dm_kun_get(name: str):
-    """返 cache: {markdown, computed_at, loading, error}. cache 空时 loading=True."""
+    """返 {markdown, computed_at, data_date, loading, error, trade_date, archived}.
+
+    - 带 ?date=YYYY-MM-DD: 读 dm_kun_daily 该日期存档(切日期回看历史);
+      无存档返回 {archived:false, trade_date, markdown:null} 由前端显示引导。
+    - 不带 date: 返内存 cache(最新一次重算), cache 空时 loading=True。
+    """
     if name not in _DM_KUN_ENDPOINTS:
         return _err(f"unknown dm-kun endpoint: {name}", 404)
+    date = (request.args.get("date") or "").strip()
+    if date:
+        if len(date) == 8 and date.isdigit():
+            date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+        row = get_dm_kun_daily(date, name)
+        if row is None:
+            return _ok({"trade_date": date, "name": name, "markdown": None,
+                        "data_date": None, "computed_at": None,
+                        "loading": False, "error": None, "archived": False})
+        # 清洗可能混入的非 UTF-8 字符(早期 subprocess 用 locale 解码残留), 防 jsonify 500
+        if row.get("markdown"):
+            row["markdown"] = row["markdown"].encode("utf-8", "replace").decode("utf-8", "replace")
+        return _ok({**row, "loading": False, "error": None, "archived": True})
     with _DM_KUN_LOCK:
         entry = dict(_DM_KUN_CACHE[_DM_KUN_ENDPOINTS[name]])
+    # 内存 cache 空时从最新存档回填 (重启后预热未完成前也能看到最近一次数据)
+    if not entry.get("markdown") and not entry.get("loading"):
+        latest = get_dm_kun_latest_by_name(name)
+        if latest and latest.get("markdown"):
+            latest["markdown"] = latest["markdown"].encode("utf-8", "replace").decode("utf-8", "replace")
+            latest["archived"] = True
+            return _ok(latest)
+    entry["archived"] = False
     return _ok(entry)
+
+
+@app.route("/api/dm-kun/dates")
+def api_dm_kun_dates():
+    """DM-kun 有存档的日期列表(任一 tab 有就算), 供前端判断历史可看性。"""
+    try:
+        return _ok(get_dm_kun_dates())
+    except Exception as exc:
+        return _err(exc)
 
 
 @app.route("/api/dm-kun/<name>/recompute", methods=["POST"])
 def api_dm_kun_recompute(name: str):
     """手动重算: 启动后台线程跑 main(), 立即返 {started: True, loading: True}.
-    跑完会自动更新 cache, 前端轮询 GET 看 loading=false.
-    同一名字已 loading 时拒绝 (避免并发)."""
+    跑完会自动更新 cache 并按日期存档, 前端轮询 GET 看 loading=false.
+    同一名字已 loading 时拒绝 (避免并发).
+    body 可带 date=YYYY-MM-DD → 按该历史日切片算并存档(复盘页统一管理)。"""
     if name not in _DM_KUN_ENDPOINTS:
         return _err(f"unknown dm-kun endpoint: {name}", 404)
     cache_key = _DM_KUN_ENDPOINTS[name]
@@ -2228,14 +3221,18 @@ def api_dm_kun_recompute(name: str):
     except Exception:
         body = {}
     user_industries = body.get("industries") if isinstance(body, dict) else None
+    date = (body.get("date") or "").strip() if isinstance(body, dict) else ""
+    if date and len(date) == 8 and date.isdigit():
+        date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+    trade_date = date or None
     def _runner():
         extra = list(_DM_KUN_EXTRA_ARGS.get(cache_key, []))
         if cache_key == "stock_recommender":
             inds = user_industries if (isinstance(user_industries, list) and user_industries) else None
             extra.extend(inds if inds else _dm_kun_default_industries())
-        _dm_kun_run_one(cache_key, _DM_KUN_SCRIPT[cache_key], extra)
+        _dm_kun_run_one(cache_key, _DM_KUN_SCRIPT[cache_key], extra, trade_date=trade_date)
     threading.Thread(target=_runner, daemon=True, name=f"dm_kun_recompute_{name}").start()
-    return _ok({"started": True, "name": name})
+    return _ok({"started": True, "name": name, "trade_date": trade_date})
 
 
 @app.route("/api/dm-kun/list")
@@ -2249,6 +3246,133 @@ def api_dm_kun_list():
                   "error": _DM_KUN_CACHE[k]["error"]}
                  for n, k in _DM_KUN_ENDPOINTS.items()]
     return _ok({"items": items})
+
+
+# ---------------------------------------------------------------------------
+# 智堡 (Wisburg) 投研数据 + AI 分析
+# 数据源: quant.dm_kun._wisburg 直连智堡开放 API (Bearer WISBURG_API_KEY)
+# AI: agent.wisburg_ai 调 claude CLI (分析/整理/总结/预测)
+# ---------------------------------------------------------------------------
+
+_WISBURG_AI_JOB = {
+    "state": "idle",        # idle | running | done | error
+    "type": None,           # analyze | briefing
+    "result": None,         # analyze: {title,datetime,markdown}; briefing: {markdown,count}
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_wisburg_ai_lock = threading.Lock()
+
+
+def _wisburg_ai_worker(kind: str, resource: str, **kwargs) -> None:
+    """后台跑 AI 分析 (claude 串行 1-3 分钟, 不能阻塞 HTTP)。"""
+    from agent.wisburg_ai import analyze_item, build_briefing, build_briefing_all, list_resource
+    job = _WISBURG_AI_JOB
+    try:
+        if kind == "analyze":
+            job["result"] = analyze_item(resource, kwargs["item_id"])
+        elif resource == "all":
+            job["result"] = build_briefing_all()
+        else:
+            items, _ = list_resource(resource, first=kwargs.get("first", 50),
+                                     query=kwargs.get("query"))
+            job["result"] = {"markdown": build_briefing(resource, items),
+                             "count": len(items), "resource": resource}
+        job["state"] = "done"
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = str(exc)
+        logger.exception("[wisburg-ai] %s 分析失败", kind)
+    finally:
+        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+@app.route("/api/wisburg/meta")
+def api_wisburg_meta():
+    try:
+        from agent.wisburg_ai import resources_meta
+        return _ok({"resources": resources_meta()})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/wisburg/list")
+def api_wisburg_list():
+    try:
+        from agent.wisburg_ai import list_resource
+        resource = request.args.get("resource", "feed").strip()
+        first = int(request.args.get("first", 20))
+        query = request.args.get("query", "").strip() or None
+        after = request.args.get("after", "").strip() or None
+        items, cursor = list_resource(resource, first=first, query=query, after=after)
+        return _ok({"items": items, "after": cursor, "resource": resource})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/wisburg/detail")
+def api_wisburg_detail():
+    try:
+        from agent.wisburg_ai import get_detail
+        resource = request.args.get("resource", "").strip()
+        item_id = int(request.args.get("id", 0))
+        if not resource or not item_id:
+            return _err("缺少 resource/id 参数", 400)
+        return _ok(get_detail(resource, item_id))
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/wisburg/analyze", methods=["POST"])
+def api_wisburg_analyze():
+    try:
+        body = request.get_json(silent=True) or {}
+        resource = (body.get("resource") or "").strip()
+        item_id = int(body.get("id", 0))
+        if not resource or not item_id:
+            return _err("缺少 resource/id 参数", 400)
+        with _wisburg_ai_lock:
+            if _WISBURG_AI_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running"})
+            _WISBURG_AI_JOB.update(
+                state="running", type="analyze", result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
+            )
+            threading.Thread(target=_wisburg_ai_worker, args=("analyze", resource),
+                             kwargs={"item_id": item_id}, daemon=True,
+                             name="wisburg-analyze").start()
+        return _ok({"started": True, "state": "running"})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/wisburg/briefing", methods=["POST"])
+def api_wisburg_briefing():
+    try:
+        body = request.get_json(silent=True) or {}
+        resource = (body.get("resource") or "feed").strip()
+        first = int(body.get("first", 50))
+        query = (body.get("query") or "").strip() or None
+        with _wisburg_ai_lock:
+            if _WISBURG_AI_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running"})
+            _WISBURG_AI_JOB.update(
+                state="running", type="briefing", result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
+            )
+            threading.Thread(target=_wisburg_ai_worker, args=("briefing", resource),
+                             kwargs={"first": first, "query": query}, daemon=True,
+                             name="wisburg-briefing").start()
+        return _ok({"started": True, "state": "running"})
+    except Exception as exc:
+        return _err(exc)
+
+
+@app.route("/api/wisburg/ai-job")
+def api_wisburg_ai_job():
+    with _wisburg_ai_lock:
+        return _ok(dict(_WISBURG_AI_JOB))
 
 
 # ---------------------------------------------------------------------------
@@ -2378,6 +3502,56 @@ def api_exodia_status():
             "latest_data_date": max((x["dataContentTime"] for x in products if x["dataContentTime"]), default=None),
         },
     })
+
+
+def exodia_update_all_and_wait(timeout_sec: int = 1500) -> str:
+    """触发 exodia all_data (增量更新全部) 并阻塞等待完成。
+
+    给复盘定时任务链用: 数据落盘后再算复盘, 避免复盘拿到旧数据。
+    返回: "ok" (更新完成) | "timeout" (等超时, 仍建议继续) | "no_bin"
+    已有更新在跑时不重复启动, 等它跑完视同 ok。
+    """
+    import subprocess as _sp
+
+    if not os.path.exists(EXODIA_BIN):
+        logger.warning("[exodia-chain] 二进制不存在: %s", EXODIA_BIN)
+        return "no_bin"
+
+    already = _exodia_running_cmd()
+    if not already:
+        os.makedirs(EXODIA_LOG_DIR, exist_ok=True)
+        log_path = os.path.join(EXODIA_LOG_DIR, "scheduled-all_data.log")
+        try:
+            with open(log_path, "ab") as logf:
+                _sp.Popen(
+                    [EXODIA_BIN, "all_data"],
+                    cwd=EXODIA_CODE_DIR,
+                    stdout=logf, stderr=_sp.STDOUT,
+                    start_new_session=True,
+                )
+            logger.info("[exodia-chain] all_data 已启动, 日志: %s", log_path)
+        except Exception as exc:
+            logger.warning("[exodia-chain] all_data 启动失败: %s", exc)
+            return "no_bin"
+    else:
+        logger.info("[exodia-chain] 已有 exodia 更新在跑 (%s), 直接等它完成", already)
+
+    # 等待完成 (先睡 5s 让进程注册到 pgrep 可见)
+    deadline = time.time() + timeout_sec
+    time.sleep(5)
+    while time.time() < deadline:
+        if not _exodia_running_cmd():
+            logger.info("[exodia-chain] all_data 完成, 用时约 %.0fs, 清空 loader 窗口缓存",
+                        timeout_sec - (deadline - time.time()))
+            try:
+                from quant.loader import clear_loader_cache
+                clear_loader_cache()
+            except Exception as exc:
+                logger.warning("[exodia-chain] 清 loader 缓存失败(忽略): %s", exc)
+            return "ok"
+        time.sleep(15)
+    logger.warning("[exodia-chain] all_data 等待超时 (%ds), 继续后续任务", timeout_sec)
+    return "timeout"
 
 
 @app.route("/api/exodia/run", methods=["POST"])
@@ -3356,7 +4530,8 @@ if __name__ == "__main__":
     # 40s 算力被分散到 5+ 分钟，前端请求同步等
     print(f"[warmup] industry_stats 启动预热（scheduler 未起，独占 I/O）...")
     _bootstrap_industry_stats_warmup()
-    _wait_for_industry_stats_cache(timeout=120)
+    # warmup 最多等 30 秒(原 120s), 外置盘 I/O 慢/缺文件时不再卡死启动
+    _wait_for_industry_stats_cache(timeout=30)
 
     from core.scheduler import start_scheduler
     start_scheduler()
@@ -3376,6 +4551,25 @@ if __name__ == "__main__":
         print(f"[dm_kun] prewarm 启动失败 (非致命): {_e}")
 
     print(f"[server] 仪表盘已启动 → http://0.0.0.0:{_port}")
+
+    # 派生独立 watchdog 守护进程：检测 server 假死（进程活着但端口不监听）自动 kickstart。
+    # detached (start_new_session)，不依赖 launchd bootstrap / cron（当前环境两者均不可用）。
+    # pidfile 互斥在脚本内处理，server 重启不会累积多个 watchdog。
+    try:
+        import subprocess as _sp
+        _wd_script = Path(__file__).resolve().parent / "scripts" / "market_radar_watchdog_daemon.sh"
+        if _wd_script.exists():
+            _wd_log = open("/tmp/mra-watchdog.log", "a")
+            _sp.Popen(
+                ["/bin/bash", str(_wd_script)],
+                start_new_session=True,
+                stdout=_wd_log,
+                stderr=_sp.STDOUT,
+                close_fds=True,
+            )
+            print("[server] watchdog 守护进程已派生")
+    except Exception as _e:
+        print(f"[server] watchdog 派生失败 (非致命): {_e}")
 
     # 显眼打印企微推送模式, 启动时一眼看到
     try:
