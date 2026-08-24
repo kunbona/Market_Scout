@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Market Radar 代码审查报告 — 2026-08-14</title>
+<style>
+  :root {
+    --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0;
+    --text: #1e293b; --text-muted: #64748b; --text-light: #94a3b8;
+    --red: #dc2626; --red-bg: #fef2f2; --red-border: #fecaca;
+    --amber: #d97706; --amber-bg: #fffbeb; --amber-border: #fde68a;
+    --blue: #2563eb; --blue-bg: #eff6ff; --blue-border: #bfdbfe;
+    --green: #059669; --green-bg: #ecfdf5; --green-border: #a7f3d0;
+    --code-bg: #f1f5f9; --code-text: #334155;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; padding: 24px; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
+  h2 { font-size: 22px; font-weight: 700; margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--border); }
+  h3 { font-size: 17px; font-weight: 700; margin: 24px 0 12px; }
+  .subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 32px; }
+  .summary-bar { display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 24px; text-align: center; min-width: 120px; }
+  .stat .num { font-size: 32px; font-weight: 800; }
+  .stat .label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .stat.critical .num { color: var(--red); }
+  .stat.high .num { color: var(--amber); }
+  .stat.medium .num { color: var(--blue); }
+  .stat.low .num { color: var(--green); }
+  .issue { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .issue-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .badge { padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
+  .badge-critical { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+  .badge-high { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
+  .badge-medium { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-border); }
+  .badge-low { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+  .badge-dim { background: var(--code-bg); color: var(--text-muted); border: 1px solid var(--border); }
+  .issue-title { font-size: 15px; font-weight: 700; }
+  .issue-body { font-size: 14px; color: var(--text); }
+  .issue-body p { margin-bottom: 8px; }
+  .issue-body ul { padding-left: 20px; margin: 8px 0; }
+  .issue-body li { margin-bottom: 4px; }
+  code { background: var(--code-bg); color: var(--code-text); padding: 2px 6px; border-radius: 4px; font-family: 'Menlo', 'Consolas', monospace; font-size: 13px; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; overflow-x: auto; margin: 8px 0; }
+  pre code { background: none; padding: 0; font-size: 13px; }
+  .fix { background: var(--green-bg); border-left: 3px solid var(--green); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 8px 0; font-size: 13px; }
+  .fix strong { color: var(--green); }
+  .impact { background: var(--amber-bg); border-left: 3px solid var(--amber); padding: 8px 12px; border-radius: 0 6px 6px 0; margin: 8px 0; font-size: 13px; }
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 32px; }
+  .toc h3 { margin: 0 0 12px; font-size: 14px; }
+  .toc ol { padding-left: 20px; }
+  .toc li { margin-bottom: 6px; font-size: 14px; }
+  .toc a { color: var(--blue); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .dim-section { margin-bottom: 40px; }
+  .dim-header { font-size: 20px; font-weight: 700; padding: 12px 20px; border-radius: 10px; margin-bottom: 16px; }
+  .dim-1 { background: linear-gradient(135deg, #fef2f2, #fee2e2); color: #991b1b; }
+  .dim-2 { background: linear-gradient(135deg, #fffbeb, #fef3c7); color: #92400e; }
+  .dim-3 { background: linear-gradient(135deg, #eff6ff, #dbeafe); color: #1e40af; }
+  .dim-4 { background: linear-gradient(135deg, #ecfdf5, #d1fae5); color: #065f46; }
+  .footer { margin-top: 40px; padding: 20px; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Market Radar 代码审查报告</h1>
+<div class="subtitle">审查日期: 2026-08-14 · 审查范围: server.py, core/, agent/, fetcher/, db/, dashboard/ · 审查人: 小魔</div>
+
+<div class="summary-bar">
+  <div class="stat critical"><div class="num">3</div><div class="label">严重 (Critical)</div></div>
+  <div class="stat high"><div class="num">5</div><div class="label">高 (High)</div></div>
+  <div class="stat medium"><div class="num">8</div><div class="label">中 (Medium)</div></div>
+  <div class="stat low"><div class="num">7</div><div class="label">低 (Low)</div></div>
+</div>
+
+<div class="toc">
+  <h3>目录</h3>
+  <ol>
+    <li><a href="#dim1">维度一: 潜在的 Bug 或逻辑错误 (8 项)</a></li>
+    <li><a href="#dim2">维度二: 功能冲突或重复 (5 项)</a></li>
+    <li><a href="#dim3">维度三: 代码结构和可维护性 (7 项)</a></li>
+    <li><a href="#dim4">维度四: 遗漏的边界情况处理 (8 项)</a></li>
+  </ol>
+</div>
+
+<!-- ═══════════════ 维度一 ═══════════════ -->
+<div class="dim-section" id="dim1">
+  <div class="dim-header dim-1">维度一: 潜在的 Bug 或逻辑错误</div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-critical">CRITICAL</span>
+      <span class="badge badge-dim">agent/orchestrator.py:363</span>
+      <span class="issue-title">1.1 _cleanup_after_pipeline 引用未定义的 run_type 变量</span>
+    </div>
+    <div class="issue-body">
+      <p><strong>问题:</strong> <code>_cleanup_after_pipeline(run_id: str)</code> 函数签名只有 <code>run_id</code>，但函数体内第 363 行调用了 <code>_auto_notify_latest(run_type)</code>，<code>run_type</code> 在此作用域中不存在。</p>
+      <pre><code>def _cleanup_after_pipeline(run_id: str) -> None:
+    ...
+    if os.environ.get("AGENT_AUTO_NOTIFY", "0") == "1":
+        _auto_notify_latest(run_type)  # ← NameError: run_type 未定义</code></pre>
+      <p><strong>触发条件:</strong> 当 <code>AGENT_AUTO_NOTIFY=1</code> 时，每次 agent pipeline 结束都会抛 <code>NameError</code>，导致清理逻辑中断、临时目录不被删除、状态不复位。</p>
+      <div class="fix"><strong>修复:</strong> 从 <code>_agent_state</code> 读 <code>last_run_type</code>，或把 <code>run_type</code> 作为参数传入。<code>run_type = _agent_state.get("last_run_type", "unknown")</code></div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-critical">CRITICAL</span>
+      <span class="badge badge-dim">agent/*.py + agent/orchestrator.py</span>
+      <span class="issue-title">1.2 临时目录路径不一致: /tmp/ vs {project}/tmp/</span>
+    </div>
+    <div class="issue-body">
+      <p><strong>问题:</strong> Orchestrator 用 <code>_TMP_ROOT = _PROJ_ROOT / "tmp"</code>（即 <code>market-radar/tmp/</code>），但 info_brief_v2 / strategist / review_v2 硬编码 <code>/tmp/</code>：</p>
+      <ul>
+        <li><code>orchestrator.py:32</code> → <code>_TMP_ROOT = _PROJ_ROOT / "tmp"</code> + <code>env["MRA_TMP_DIR"] = str(_TMP_ROOT / f"mra-{run_id}")</code></li>
+        <li><code>info_brief_v2.py:85</code> → <code>tmp_dir = Path(f"/tmp/mra-{run_id}")</code></li>
+        <li><code>strategist.py:161</code> → <code>tmp_dir = Path(f"/tmp/mra-{run_id}")</code></li>
+        <li><code>review_v2.py:573</code> → <code>tmp_dir = Path(f"/tmp/mra-{run_id}")</code></li>
+        <li><code>write_result.py:93</code> → <code>os.environ.get("MRA_TMP_DIR", "")</code> ✓ (正确)</li>
+      </ul>
+      <p><strong>后果:</strong> Orchestrator 的 <code>_auto_notify_latest()</code> 搜索 <code>_TMP_ROOT.glob("mra-*/last_row_id")</code>（line 391），找不到 info_brief/strategist/review_v2 写到 <code>/tmp/mra-*/last_row_id</code> 的文件。auto-notify 永远推不了这三者的报告。</p>
+      <div class="fix"><strong>修复:</strong> 所有模块统一用 <code>os.environ.get("MRA_TMP_DIR", "/tmp")</code> 或 import orchestrator 的 <code>_TMP_ROOT</code>。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-critical">CRITICAL</span>
+      <span class="badge badge-dim">core/scheduler.py:52-53</span>
+      <span class="issue-title">1.3 _auto_run() bare except 静默吞掉所有错误</span>
+    </div>
+    <div class="issue-body">
+      <p><strong>问题:</strong> <code>_auto_run()</code> 包裹所有定时抓取任务，但用 <code>except Exception: pass</code> 静默处理：</p>
+      <pre><code>def _auto_run(task_name, fetch_fn, *args, **kwargs):
+    try:
+        fetch_fn(*args, **kwargs)
+        # ... update status to "done"
+    except Exception:
+        pass  # ← 所有抓取错误被静默吞掉</code></pre>
+      <p><strong>后果:</strong> 数据抓取失败时（API 挂了、网络断了、解析错误），前端看到 <code>fetch_state.status = "done"</code>（因为 pass 不改状态），实际上数据是空的。运维完全无感知。</p>
+      <div class="fix"><strong>修复:</strong> <code>except Exception as e: logger.exception("[auto_run] %s failed", task_name)</code>，同时把 <code>fetch_state["status"]</code> 改为 <code>"error"</code>，记录 <code>fetch_state["error"] = str(e)</code>。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">server.py:19-82</span>
+      <span class="issue-title">1.4 .env.local 被加载了三次（两种不同方式）</span>
+    </div>
+    <div class="issue-body">
+      <p>三段重复逻辑：</p>
+      <ul>
+        <li><strong>第一段 (L19-25):</strong> <code>from dotenv import load_dotenv; load_dotenv(Path(__file__).parent / ".env.local", override=False)</code></li>
+        <li><strong>第二段 (L30-40):</strong> 同样 <code>load_dotenv</code>，路径改用 <code>os.path.join</code>，还多加了 <code>.env</code></li>
+        <li><strong>第三段 (L69-82):</strong> <code>_load_env_local()</code> 手动逐行解析 KEY=VALUE，用 <code>os.environ.setdefault(key, val)</code></li>
+      </ul>
+      <p>三种方式语义有细微差异：<code>override=False</code> vs <code>setdefault</code> 对已设环境变量的处理一致，但手动解析器不处理 <code>export KEY=val</code> 格式和注释中的 <code>#</code>。</p>
+      <div class="fix"><strong>修复:</strong> 只保留 <code>dotenv.load_dotenv</code> 一段，删掉手动解析器和第二段重复加载。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">core/scheduler.py:63-75 + agent/query.py:47-58</span>
+      <span class="issue-title">1.5 _is_trade_day() 每次调用都做 akshare 网络请求，无缓存</span>
+    </div>
+    <div class="issue-body">
+      <p><code>_is_trade_day()</code> 调 <code>akshare.tool_trade_date_hist_sina()</code> 拉取全量交易日历（HTTP 请求）。<code>_guarded()</code> 用它包裹所有交易时段定时任务，即每个定时任务执行前都会发一次网络请求。</p>
+      <p>同样的问题在 <code>agent/query.py</code> 的 <code>_get_trade_calendar()</code> 中也存在——<code>cmd_data_health</code> 调 <code>get_market_session()</code> + <code>get_prev_trade_dates()</code>，各发一次 akshare 请求。</p>
+      <div class="impact"><strong>影响:</strong> akshare 接口不稳定时，定时任务因 <code>_is_trade_day()</code> 超时而整体卡住；akshare 被限流时任务静默跳过。</div>
+      <div class="fix"><strong>修复:</strong> 模块级缓存 <code>_cal_cache = {"date": None, "data": None}</code>，每天只拉一次。或把交易日历存到 SQLite。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">agent/review_v2.py:531+561</span>
+      <span class="issue-title">1.6 compute_daily_analysis() 对同一 trade_date 被调用两次</span>
+    </div>
+    <div class="issue-body">
+      <p>在 <code>run()</code> 函数中：</p>
+      <ul>
+        <li><strong>Line 531:</strong> <code>sector_data = run_sector_effect(trade_date)</code> → 内部调 <code>compute_daily_analysis(trade_date)</code>（30-60s 慢任务）</li>
+        <li><strong>Line 561:</strong> <code>legacy = compute_daily_analysis(trade_date)</code> → 对同一 <code>trade_date</code> 再次调用</li>
+      </ul>
+      <p>第二次调用的目的是拿前端结构写 <code>review_daily</code> 表，但 <code>sector_data</code> 已经是同一个函数的返回值，可以直接复用。</p>
+      <div class="fix"><strong>修复:</strong> Line 561 改为 <code>legacy = sector_data</code>（如果 <code>sector_data</code> 不为 None），避免重复计算 30-60s。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">agent/orchestrator.py:597-598</span>
+      <span class="issue-title">1.7 _run_full() 中 chief skill 警告条件逻辑错误</span>
+    </div>
+    <div class="issue-body">
+      <pre><code>if run_type not in _CHIEF_SKILL_MAP or run_type not in ("morning", "evening"):
+    logger.warning("run_type=%s has no dedicated chief skill, using %s", ...)</code></pre>
+      <p><code>_CHIEF_SKILL_MAP</code> 有 4 个 key: morning, evening, auction, closing。条件用 <code>or</code> 连接，对 auction/closing 来说，前半 <code>not in _CHIEF_SKILL_MAP</code> = False，但后半 <code>not in ("morning", "evening")</code> = True，所以 warning 仍然触发。实际上 auction/closing <strong>有</strong>专属映射（映射到 evening），警告是误导的。</p>
+      <div class="fix"><strong>修复:</strong> 改为 <code>if run_type not in _CHIEF_SKILL_MAP:</code>，删掉 <code>or</code> 后半段。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">agent/info_brief_v2.py:32 + agent/strategist.py:23</span>
+      <span class="issue-title">1.8 CLAUDE_BIN 硬编码 Node 版本路径，升级即断</span>
+    </div>
+    <div class="issue-body">
+      <p>两个文件都硬编码 <code>CLAUDE_BIN = "/Users/kun/.nvm/versions/node/v24.15.0/bin/claude"</code>。而 orchestrator.py 的 <code>_find_claude()</code> fallback 路径还是 <code>v20.20.2</code>（已过期）。用户升级 Node 后这三处全会断。</p>
+      <div class="fix"><strong>修复:</strong> 统一用 <code>core/python_runtime.py</code> 类似的模式，或从 orchestrator import <code>_find_claude()</code>。加 <code>CLAUDE_BIN</code> 环境变量支持。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ 维度二 ═══════════════ -->
+<div class="dim-section" id="dim2">
+  <div class="dim-header dim-2">维度二: 功能冲突或重复</div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">agent/info_brief_v2.py + agent/strategist.py</span>
+      <span class="issue-title">2.1 4 路数据在 info_brief → strategist 级联中被重复加载</span>
+    </div>
+    <div class="issue-body">
+      <p>Scheduler 级联：<code>info_brief(+5min) → strategist(+5min)</code>。两个模块各自独立调 <code>load_flash() / load_policy() / load_notice() / load_research()</code>，从 SQLite 拉同样的数据。</p>
+      <p>strategist 声称"双保险：独立加载 4 路原始数据做交叉验证"，但 info_brief 5 分钟前刚加载过，数据完全一样。对数据库和内存都是双倍开销。</p>
+      <div class="fix"><strong>建议:</strong> info_brief 把 <code>summary_4way</code> 写到 <code>tmp_dir/info_brief_input.json</code>（已写），strategist 直接读这个文件，不再独立加载。保留"交叉验证"语义但避免重复 IO。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">fetcher/cycle_notifier.py + fetcher/wecom_notifier.py</span>
+      <span class="issue-title">2.2 cycle_notifier.py 退化为纯透传层，与 wecom_notifier 高度重叠</span>
+    </div>
+    <div class="issue-body">
+      <p><code>cycle_notifier.py</code> 已全部 re-export <code>wecom_notifier</code> 的函数，自己只新增了 <code>push_cycle_from_disk()</code>（读 JSON + 调 <code>send_cycle_result</code>）。<code>push_cycle_result()</code> 是 <code>send_cycle_result</code> 的 1:1 透传。</p>
+      <p>两个文件让调用方不确定该用哪个。新代码用 <code>wecom_notifier</code>，旧代码用 <code>cycle_notifier</code>，实际走同一套逻辑。</p>
+      <div class="fix"><strong>建议:</strong> 把 <code>push_cycle_from_disk()</code> 移到 <code>wecom_notifier.py</code>，删掉 <code>cycle_notifier.py</code>，全局替换 import 路径。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">agent/classifier.py + agent/info_brief_classify.py</span>
+      <span class="issue-title">2.3 两个独立分类器，关键词规则各搞各的</span>
+    </div>
+    <div class="issue-body">
+      <p><code>classifier.py</code> 对新闻做 6 类分类（政策/产业/个股/海外/市场情绪/无关），<code>info_brief_classify.py</code> 对快讯/政策/公告/研报分别做分类。两套关键词列表、两套优先级逻辑、互不复用。</p>
+      <p>例如 <code>classifier.py</code> 的 <code>_POLICY_KEYWORDS</code> 和 <code>info_brief_classify.py</code> 的政策分类关键词有大量重叠但不一致。</p>
+      <div class="fix"><strong>建议:</strong> 统一到一个 <code>classifier.py</code>，导出 <code>classify_flash()</code> / <code>classify_policy()</code> / <code>classify_notice()</code> / <code>classify_research()</code>，共用关键词字典。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">core/scheduler.py + agent/query.py</span>
+      <span class="issue-title">2.4 交易日历获取逻辑在 scheduler 和 query.py 各写一份</span>
+    </div>
+    <div class="issue-body">
+      <p><code>scheduler.py:_is_trade_day()</code> 和 <code>query.py:_get_trade_calendar()</code> 都调 <code>akshare.tool_trade_date_hist_sina()</code>，各自做异常处理，各自没有缓存。同样的逻辑在 <code>query.py:get_market_session()</code> 中又调了一次。</p>
+      <div class="fix"><strong>建议:</strong> 抽到 <code>core/trade_calendar.py</code>，带日级缓存，全局复用。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-low">LOW</span>
+      <span class="badge badge-dim">fetcher/eastmoney.py + fetcher/tencent.py</span>
+      <span class="issue-title">2.5 实时行情数据源有两套（东财+腾讯），无统一 fallback 策略</span>
+    </div>
+    <div class="issue-body">
+      <p><code>eastmoney.py</code> 和 <code>tencent.py</code> 都提供 A 股实时行情，但无统一调度层决定何时用哪个。各模块直接 import 其中一个，没有自动 fallback。</p>
+      <div class="fix"><strong>建议:</strong> 抽 <code>fetcher/quote.py</code> 统一入口，优先用腾讯（零封禁），失败 fallback 东财。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ 维度三 ═══════════════ -->
+<div class="dim-section" id="dim3">
+  <div class="dim-header dim-3">维度三: 代码结构和可维护性</div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">server.py (75KB)</span>
+      <span class="issue-title">3.1 server.py 单文件 75KB / 90+ 路由，严重超标</span>
+    </div>
+    <div class="issue-body">
+      <p>一个文件包含：Flask app 创建、90+ 路由、scheduler 集成、industry_stats warmup、DM-kun cache、Exodia 集成、review/watchlist/pools/wecom 推送、文件 limit 抬升、env 加载……</p>
+      <p>任何修改都需要在 75KB 文件中搜索定位，PR diff 极难 review，新人上手成本极高。</p>
+      <div class="fix"><strong>建议:</strong> 按领域拆成 Flask Blueprint：<code>routes/agent.py</code>, <code>routes/cycle.py</code>, <code>routes/review.py</code>, <code>routes/market.py</code>, <code>routes/data.py</code>。公共逻辑抽到 <code>core/</code>。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">db/storage.py (81KB)</span>
+      <span class="issue-title">3.2 db/storage.py 单文件 81KB，30+ 表 CRUD 全塞一起</span>
+    </div>
+    <div class="issue-body">
+      <p>包含 30+ 表的建表/迁移/CRUD、agent_summary、review_daily、cycle signal、watchlist 等。<code>_migrate()</code> 函数内有 30+ 个 <code>ALTER TABLE</code> 兼容语句。</p>
+      <div class="fix"><strong>建议:</strong> 按域拆分：<code>db/market_data.py</code>, <code>db/agent_store.py</code>, <code>db/review_store.py</code>, <code>db/watchlist_store.py</code>。共享 <code>db/connection.py</code> 管连接池和 write_lock。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">全局</span>
+      <span class="issue-title">3.3 硬编码绝对路径遍布各模块</span>
+    </div>
+    <div class="issue-body">
+      <ul>
+        <li><code>cycle_self_runner.py:30</code> → <code>DATA_ROOT = Path("/Users/kun/Documents/market-radar/data")</code></li>
+        <li><code>info_brief_v2.py:32</code> → <code>CLAUDE_BIN = "/Users/kun/.nvm/versions/node/v24.15.0/bin/claude"</code></li>
+        <li><code>strategist.py:23</code> → 同上</li>
+        <li><code>review_v2.py:466</code> → <code>os.environ.get("EXODIA_DATA_DIR", "/Users/kun/Desktop/AGdata_exodia")</code></li>
+        <li><code>orchestrator.py:94-98</code> → fallback 路径 <code>v20.20.2</code>（过期版本）</li>
+        <li><code>query.py:701</code> → <code>DATA_ROOT / "stock-trading-data-pro"</code> （依赖 quant.loader，但 fallback 路径硬编码）</li>
+      </ul>
+      <div class="fix"><strong>建议:</strong> 建立 <code>core/paths.py</code> 统一管理所有路径常量，全部从 <code>__file__</code> 推导或从环境变量读取，零硬编码绝对路径。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">agent/info_brief_v2.py + strategist.py + review_v2.py</span>
+      <span class="issue-title">3.4 HTML/CSS 在 Python 中大量内联拼接，不可复用</span>
+    </div>
+    <div class="issue-body">
+      <p>三个模块各自有 100-200 行内联 CSS + HTML string 拼接。CSS 重复（<code>body { font-family: 'Inter'... }</code> 在三处几乎一样），无模板复用。</p>
+      <div class="fix"><strong>建议:</strong> 抽 <code>core/report_template.py</code>，提供 <code>render_report(title, sections, css_extra=None)</code> 基础模板。各模块只传数据和 section 定义。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">fetcher/cycle_self_runner.py</span>
+      <span class="issue-title">3.5 cycle_self_runner 的 module reload 机制脆弱</span>
+    </div>
+    <div class="issue-body">
+      <p><code>_RELOAD_TARGETS</code> 列表有 30+ 个模块名，硬编码。每新增一个指标模块就要手动加到列表里，否则新模块的 <code>from config import RAW_DATA_DIR</code> 会拿到旧路径。</p>
+      <p>而且 <code>importlib.reload()</code> 不保证模块顶部 <code>from config import X</code> 被重新求值——如果模块用了 <code>from config import RAW_DATA_DIR as RD</code>，reload 后 RD 仍是旧值（Python 的 from import 在模块级冻结）。</p>
+      <div class="fix"><strong>建议:</strong> 改为 monkey-patch config module 的属性后，遍历 <code>sys.modules</code> 自动 reload 所有 <code>program.*</code> 模块，不硬编码列表。或改算法代码用 <code>config.RAW_DATA_DIR</code>（属性访问）而非 <code>from config import RAW_DATA_DIR</code>（值冻结）。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-low">LOW</span>
+      <span class="badge badge-dim">fetcher/cycle_signal.py</span>
+      <span class="issue-title">3.6 cycle_signal.py 单文件 1351 行，职责过多</span>
+    </div>
+    <div class="issue-body">
+      <p>包含：指标元数据定义、CSV 缓存、JSON 缓存、数据规范化、Composite PE 计算、公开 payload 组装、XBX 新鲜度检测、手动刷新状态机、in-process 计算、subprocess fallback、step 解析、stdout stream 重定向……</p>
+      <div class="fix"><strong>建议:</strong> 拆成 <code>cycle/meta.py</code>（指标定义）、<code>cycle/cache.py</code>（CSV/JSON 缓存）、<code>cycle/refresh.py</code>（刷新状态机 + in-process/subprocess）、<code>cycle/payload.py</code>（公开 API 组装）。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-low">LOW</span>
+      <span class="badge badge-dim">全局</span>
+      <span class="issue-title">3.7 无统一的错误响应格式</span>
+    </div>
+    <div class="issue-body">
+      <p>各路由的错误返回格式不一致：有的返回 <code>{"error": "msg"}</code>，有的返回 <code>{"note": "...", "data": []}</code>，有的直接 <code>jsonify(str(e))</code>。前端需要分别处理。</p>
+      <div class="fix"><strong>建议:</strong> 统一为 <code>{"error": true, "message": "...", "code": "ERROR_CODE"}</code>，写一个 <code>@error_handler</code> 装饰器。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ 维度四 ═══════════════ -->
+<div class="dim-section" id="dim4">
+  <div class="dim-header dim-4">维度四: 遗漏的边界情况处理</div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">fetcher/cycle_signal.py:786-799</span>
+      <span class="issue-title">4.1 _compute_target_date_str() 不处理周末/节假日</span>
+    </div>
+    <div class="issue-body">
+      <pre><code>def _compute_target_date_str() -> str:
+    now = datetime.now()
+    if now.hour >= 18:
+        return now.strftime("%Y%m%d")     # ← 周六 18:00 返回周六！
+    yesterday = now - timedelta(days=1)
+    return yesterday.strftime("%Y%m%d")   # ← 周日 10:00 返回周六！</code></pre>
+      <p>周六 18:00 触发 full refresh，target_date = 周六，但 akshare 没有周六数据，step1 会失败。周日 10:00 target = 周六，同样问题。</p>
+      <div class="fix"><strong>修复:</strong> 用交易日历找最近交易日。或简单判断 <code>now.weekday() >= 5</code> 时回退到周五。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-high">HIGH</span>
+      <span class="badge badge-dim">agent/orchestrator.py:83-98</span>
+      <span class="issue-title">4.2 _find_claude() 找不到时返回不存在的路径</span>
+    </div>
+    <div class="issue-body">
+      <p>Line 98: <code>return str(Path.home() / ".nvm/versions/node/v20.20.2/bin/claude")</code> — 这是个 fallback 兜底，但如果文件不存在，<code>_run_skill()</code> 会 <code>Popen</code> 一个不存在的可执行文件，报错信息是 <code>rc=non-zero</code> 而不是"claude not found"，极难排查。</p>
+      <div class="fix"><strong>修复:</strong> 所有路径都走完后，<code>raise FileNotFoundError("claude CLI not found")</code>。在 <code>_run_skill()</code> 入口加 <code>Path(claude_bin).exists()</code> 检查。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">agent/info_brief_v2.py:334</span>
+      <span class="issue-title">4.3 4 路数据全空时仍调 claude CLI</span>
+    </div>
+    <div class="issue-body">
+      <p><code>run()</code> 不检查 flash/policy/notice/research 是否全空，直接构建 summary 并调 <code>run_ai_analysis()</code>。如果数据库没数据（非交易日/抓取失败），会浪费 300s 的 claude 调用，生成空报告。</p>
+      <div class="fix"><strong>修复:</strong> <code>total = len(flash) + len(policy) + len(notice) + len(research)</code>，<code>if total == 0: return {"skipped": True, "reason": "4 路数据全空"}</code>。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">agent/query.py:307-321</span>
+      <span class="issue-title">4.4 _stale_minutes() 只尝试 3 种时间格式，不支持带时区的 ISO 8601</span>
+    </div>
+    <div class="issue-body">
+      <p>尝试格式：<code>%Y-%m-%d %H:%M:%S</code>, <code>%Y-%m-%dT%H:%M:%S</code>, <code>%Y-%m-%d %H:%M</code>。如果时间戳是 <code>2026-08-14T07:32:53+08:00</code>（带时区），三种都 <code>ValueError</code>，函数返回 <code>None</code>，stale 检查静默跳过。</p>
+      <div class="fix"><strong>修复:</strong> 用 <code>datetime.fromisoformat(ts_str)</code>（Python 3.7+ 原生支持 ISO 8601），或 <code>dateutil.parser.parse</code>。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">core/scheduler.py</span>
+      <span class="issue-title">4.5 并发任务共享 FetchStatus 无隔离</span>
+    </div>
+    <div class="issue-body">
+      <p><code>max_instances=4</code> 允许同一 job 4 个并发实例。但 <code>_auto_run()</code> 共用 <code>fetch_state</code> dict，并发写入会导致状态覆盖。两个抓取任务同时跑，后完成的会覆盖先完成的状态。</p>
+      <p><code>fetch_lock</code> 保护了 dict 写操作，但不保护"读-判断-写"竞态：两个任务都看到 <code>status="idle"</code>，都开始跑，状态被来回覆盖。</p>
+      <div class="fix"><strong>建议:</strong> 每个 task 用独立的 state key（<code>fetch_state[task_name]</code>），或用 <code>max_instances=1</code> + <code>coalesce=True</code> 避免同 job 并发。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-medium">MEDIUM</span>
+      <span class="badge badge-dim">agent/review_v2.py:498-501</span>
+      <span class="issue-title">4.6 QUANT_DATA_ROOT 检查位置过晚</span>
+    </div>
+    <div class="issue-body">
+      <p><code>QUANT_DATA_ROOT</code> 检查在缓存检查之后（line 500），但 <code>_exodia_latest_stock_date()</code> 在 line 496 就可能需要它（间接依赖 Exodia 数据目录）。如果 <code>QUANT_DATA_ROOT</code> 未设，<code>_exodia_latest_stock_date()</code> 用 fallback 路径可能返回错误日期。</p>
+      <div class="fix"><strong>修复:</strong> 把 <code>QUANT_DATA_ROOT</code> 检查移到 <code>run()</code> 函数最开头。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-low">LOW</span>
+      <span class="badge badge-dim">fetcher/wecom_notifier.py:378-396</span>
+      <span class="issue-title">4.7 send_ai_report 并发调用无企微限流保护</span>
+    </div>
+    <div class="issue-body">
+      <p>企微 webhook 限制 20 条/分钟。<code>send_ai_report</code> 内段间 sleep 0.3s，但如果报告分段 >20 条，或多个 pipeline 同时推送，会触发限流。</p>
+      <p>目前 0.3s × N 的间隔在单 pipeline 下是安全的（最多 10 段 = 3s），但多 pipeline 并发时无全局计数器。</p>
+      <div class="fix"><strong>建议:</strong> 加一个全局 <code>threading.Semaphore</code> 或 token bucket 限流器，限制每分钟最多 18 条（留 2 条余量）。</div>
+    </div>
+  </div>
+
+  <div class="issue">
+    <div class="issue-header">
+      <span class="badge badge-low">LOW</span>
+      <span class="badge badge-dim">agent/orchestrator.py:120-137</span>
+      <span class="issue-title">4.8 _kill_proc_group 杀进程后 wait 只等 10s</span>
+    </div>
+    <div class="issue-body">
+      <p><code>_kill_proc_group()</code> 发 SIGKILL 后 <code>_wait_wallclock(proc, 10)</code>。SIGKILL 不可被忽略，进程应立即退出。但如果 claude 进程有大量子进程（MCP servers），SIGKILL 传递到整个进程组可能有延迟。10s 超时后 <code>except Exception: pass</code>，proc 可能变成 zombie。</p>
+      <div class="fix"><strong>建议:</strong> 超时后 <code>proc.wait(timeout=0)</code> 检查是否已退出，未退出则 <code>os.waitpid(os.getpgid(proc.pid), os.WNOHANG)</code> 清理 zombie。</div>
+  </div>
+  </div>
+</div>
+
+<!-- ═══════════════ 总结 ═══════════════ -->
+<h2>优先级排序与修复建议</h2>
+
+<div class="issue">
+  <div class="issue-header">
+    <span class="badge badge-critical">立即修复</span>
+    <span class="issue-title">3 个 Critical 问题</span>
+  </div>
+  <div class="issue-body">
+    <ol>
+      <li><strong>orchestrator.py:363</strong> — <code>run_type</code> NameError：加参数或从 state 读，5 分钟修复</li>
+      <li><strong>临时目录路径不一致</strong> — 统一用 <code>MRA_TMP_DIR</code>，10 分钟修复</li>
+      <li><strong>scheduler.py bare except</strong> — 加 <code>logger.exception</code> + 状态改为 error，5 分钟修复</li>
+    </ol>
+  </div>
+</div>
+
+<div class="issue">
+  <div class="issue-header">
+    <span class="badge badge-high">本周修复</span>
+    <span class="issue-title">5 个 High 问题</span>
+  </div>
+  <div class="issue-body">
+    <ol>
+      <li><strong>server.py 三重 env 加载</strong> — 删两段，保留 <code>dotenv.load_dotenv</code></li>
+      <li><strong>_is_trade_day 无缓存</strong> — 加日级缓存，或迁到 SQLite</li>
+      <li><strong>review_v2 compute_daily_analysis 重复调用</strong> — 复用 sector_data</li>
+      <li><strong>_compute_target_date_str 不处理周末</strong> — 加 weekday 判断</li>
+      <li><strong>_find_claude 返回不存在路径</strong> — 抛 FileNotFoundError</li>
+    </ol>
+  </div>
+</div>
+
+<div class="issue">
+  <div class="issue-header">
+    <span class="badge badge-medium">迭代优化</span>
+    <span class="issue-title">8 个 Medium + 7 个 Low</span>
+  </div>
+  <div class="issue-body">
+    <p>Medium 问题建议在下一个迭代中处理，主要包括：</p>
+    <ul>
+      <li>CLAUDE_BIN 统一发现机制（抽 <code>core/claude_cli.py</code>）</li>
+      <li>4 路数据重复加载优化（strategist 读 info_brief 缓存）</li>
+      <li>cycle_notifier 合并到 wecom_notifier</li>
+      <li>分类器统一</li>
+      <li>交易日历抽公共模块</li>
+      <li>QUANT_DATA_ROOT 检查前置</li>
+      <li>并发任务状态隔离</li>
+      <li>chief skill 警告条件修正</li>
+    </ul>
+    <p>Low 问题可安排在技术债清理周处理。server.py 和 db/storage.py 的拆分是最大的结构优化，建议专门安排一个迭代。</p>
+  </div>
+</div>
+
+<div class="footer">
+  Market Radar 代码审查报告 · 审查人: 小魔 · 2026-08-14<br>
+  审查范围: server.py, core/scheduler.py, core/fetch_status.py, core/python_runtime.py, db/storage.py, agent/orchestrator.py, agent/info_brief_v2.py, agent/strategist.py, agent/review_v2.py, agent/classifier.py, agent/query.py, agent/write_result.py, fetcher/cycle_signal.py, fetcher/cycle_self_runner.py, fetcher/cycle_notifier.py, fetcher/wecom_notifier.py, fetcher/qmt_breaker.py, fetcher/tencent.py, fetcher/info_brief_filter.py, dashboard/src/pages/*.tsx
+</div>
+
+</body>
+</html>

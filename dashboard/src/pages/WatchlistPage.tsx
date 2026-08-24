@@ -9,12 +9,15 @@ import {
   Clock,
   Loader2,
   Plus,
+  Sparkles,
   Star,
   Trash2,
   Upload,
+  Zap,
 } from 'lucide-react';
 import { TabHeader } from '../components/TabHeader';
 import { PhaseBar, HtmlReportView, safeFetch, formatAlreadyRunningMessage } from '../components/agentShared';
+import { renderMarkdown } from '../lib/markdown';
 import type { AgentStatus, AlreadyRunningData } from '../components/agentShared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -72,6 +75,476 @@ interface ImportResult {
   pool?: string;
 }
 
+// ─── 个股情报弹窗（研报/财经快讯/政策/智堡聚合 + AI 综合简报）────────
+interface IntelSources { research: any[]; news: any[]; policy: any[]; wisburg: any[] }
+interface IntelJob {
+  state: 'idle' | 'running' | 'done' | 'error';
+  result: { markdown?: string; code?: string; name?: string } | null;
+  error: string | null;
+}
+
+function IntelModal({ code, name, onClose }: { code: string; name: string; onClose: () => void }) {
+  const [data, setData] = useState<{ sources: IntelSources; checkup: any } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [aiJob, setAiJob] = useState<IntelJob>({ state: 'idle', result: null, error: null });
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setErr('');
+    // 后端返回 {code, name, sources:{research,news,policy,wisburg}, checkup:{issues,highlights}}
+    safeFetch<{ sources: IntelSources; checkup?: any }>(`/api/watchlist/intel?code=${code}&name=${encodeURIComponent(name)}`)
+      .then(d => { if (d?.sources) setData({ sources: d.sources, checkup: d.checkup || {} }); else setErr('情报加载失败'); })
+      .catch(() => setErr('情报加载失败'))
+      .finally(() => setLoading(false));
+  }, [code, name]);
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const startPoll = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      const j = await safeFetch<IntelJob>('/api/watchlist/intel/ai-job');
+      if (j) {
+        setAiJob(j);
+        if (j.state !== 'running' && pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      }
+    }, 3000);
+  };
+
+  const handleAi = async () => {
+    setAiJob({ state: 'running', result: null, error: null });
+    try {
+      await fetch('/api/watchlist/intel/ai', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, name }),
+      });
+      startPoll();
+    } catch (e: any) {
+      setAiJob({ state: 'error', result: null, error: e.message || 'AI 简报启动失败' });
+    }
+  };
+
+  const renderGroup = (title: string, emoji: string, items: any[] | undefined, renderItem: (it: any) => ReactNode) => {
+    const list = items || [];
+    return (
+      <div className="mb-5">
+        <p className="text-xs font-semibold text-gray-500 mb-2">
+          {emoji} {title}
+          <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{list.length}</span>
+        </p>
+        {list.length === 0 ? (
+          <p className="text-xs text-gray-300 pl-1">暂无相关信息</p>
+        ) : (
+          <div className="space-y-2">
+            {list.map((it, i) => (
+              <div key={i} className="text-xs text-gray-700 leading-relaxed bg-gray-50/60 border border-gray-50 rounded-lg px-2.5 py-2">
+                {renderItem(it)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">
+              {name} <span className="text-sm font-mono text-gray-400 ml-1">{code}</span>
+            </h3>
+            <p className="text-xs text-gray-400 mt-0.5">情报聚合：券商研报 / 财经快讯 / 政策动态 / 智堡研究</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none shrink-0">✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loading ? (
+            <div className="py-12 text-center text-gray-400 text-sm">情报加载中…</div>
+          ) : err ? (
+            <div className="py-12 text-center text-red-500 text-sm">⚠️ {err}</div>
+          ) : data ? (
+            <>
+              {/* 股池动态分析的逐股体检 */}
+              {data.checkup && ((data.checkup.issues?.length || 0) > 0 || (data.checkup.highlights?.length || 0) > 0) && (
+                <div className="mb-5 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+                  {(data.checkup.issues?.length || 0) > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-amber-600 mb-2">⚠️ 问题提醒</p>
+                      <div className="space-y-1.5">
+                        {data.checkup.issues.map((t: string, i: number) => (
+                          <div key={i} className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-2 leading-relaxed">
+                            {t}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {(data.checkup.highlights?.length || 0) > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-emerald-600 mb-2">✦ 优势亮点</p>
+                      <div className="space-y-1.5">
+                        {data.checkup.highlights.map((t: string, i: number) => (
+                          <div key={i} className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-lg px-2.5 py-2 leading-relaxed">
+                            {t}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+                {renderGroup('券商研报', '📑', data.sources.research, it => (
+                  <>
+                    <span className="text-gray-900 font-medium">{it.title}</span>
+                    <span className="block text-gray-400 mt-0.5">
+                      {it.publish_date}
+                      {it.org_name && <> · {it.org_name}</>}
+                      {it.rating && <span className="text-amber-600"> · {it.rating}</span>}
+                      {it.aim_price && <span className="text-blue-600"> · 目标 {it.aim_price}</span>}
+                    </span>
+                  </>
+                ))}
+                {renderGroup('财经快讯', '📰', data.sources.news, it => (
+                  <>
+                    <span className="text-gray-900 font-medium">{it.title}</span>
+                    <span className="block text-gray-400 mt-0.5">{it.pub_time} · {it.source}</span>
+                  </>
+                ))}
+                {renderGroup('政策动态', '📋', data.sources.policy, it => (
+                  <>
+                    <span className="text-gray-900 font-medium">{it.title}</span>
+                    <span className="block text-gray-400 mt-0.5">{it.pub_time} · {it.source}</span>
+                  </>
+                ))}
+                {renderGroup('智堡研究', '🏛️', data.sources.wisburg, it => (
+                  <>
+                    <span className="text-gray-900 font-medium">{it.title}</span>
+                    <span className="block text-gray-400 mt-0.5">
+                      {String(it.datetime || '').slice(0, 16)} · {it.source_type}
+                    </span>
+                  </>
+                ))}
+              </div>
+            </>
+          ) : null}
+
+          {/* AI 综合简报 */}
+          <div className="mt-4 border-t border-gray-100 pt-4">
+            {aiJob.state === 'running' && (
+              <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-sm text-indigo-600 animate-pulse">
+                🤖 claude 正在生成综合简报（约 1-3 分钟）…
+              </div>
+            )}
+            {aiJob.state === 'done' && aiJob.result?.markdown && (
+              <div>
+                <p className="text-xs font-semibold text-indigo-600 mb-2">🤖 AI 综合简报</p>
+                <div dangerouslySetInnerHTML={{ __html: renderMarkdown(aiJob.result.markdown) }} />
+              </div>
+            )}
+            {aiJob.state === 'error' && aiJob.error && (
+              <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
+                ⚠️ AI 简报失败：{aiJob.error}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-6 py-4 border-t border-gray-100 flex justify-end">
+          <button onClick={handleAi} disabled={aiJob.state === 'running'}
+                  className="accent-solid px-4 py-2 text-sm rounded-lg disabled:opacity-50">
+            {aiJob.state === 'running' ? '生成中…' : '🤖 AI 综合简报'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── 全池情报总览（一键整理：全部关注股票的情报一起看）────────────
+function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onClose: () => void }) {
+  const [results, setResults] = useState<Record<string, { code: string; name: string; sources: IntelSources; checkup: any }>>({});
+  const [progress, setProgress] = useState(0);
+  const total = stocks.length;
+  const list = Object.values(results);
+  // 每只股票展开/收起
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // AI 全池整理 job
+  const [aiAll, setAiAll] = useState<IntelJob>({ state: 'idle', result: null, error: null });
+  const aiAllPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // iFinD 实时体检 job
+  const [realtimeJob, setRealtimeJob] = useState<{ state: string; result: any; error: string | null }>({ state: 'idle', result: null, error: null });
+  const [realtimeCheckups, setRealtimeCheckups] = useState<Record<string, any>>({});
+  const rtPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    let done = 0;
+    const map: Record<string, { code: string; name: string; sources: IntelSources; checkup: any }> = {};
+    const empty: IntelSources = { research: [], news: [], policy: [], wisburg: [] };
+    stocks.forEach(s => {
+      safeFetch<{ sources: IntelSources; checkup?: any }>(`/api/watchlist/intel?code=${s.code}&name=${encodeURIComponent(s.name || s.code)}`)
+        .then(d => {
+          map[s.code] = { code: s.code, name: s.name, sources: d?.sources || empty, checkup: d?.checkup || {} };
+          done++;
+          setResults({ ...map });
+          setProgress(done);
+        })
+        .catch(() => {
+          map[s.code] = { code: s.code, name: s.name, sources: empty, checkup: {} };
+          done++;
+          setResults({ ...map });
+          setProgress(done);
+        });
+    });
+  }, [stocks]);
+
+  const renderBrief = (label: string, items: any[], fmt: (it: any) => string, showAll: boolean) => (
+    <div className="text-xs">
+      <span className="font-semibold text-gray-500">{label}</span>
+      {items.length === 0 ? (
+        <span className="text-gray-300 ml-2">无</span>
+      ) : (
+        <div className="mt-1 space-y-0.5">
+          {(showAll ? items : items.slice(0, 3)).map((it, i) => (
+            <div key={i} className="text-gray-600 truncate" title={fmt(it)}>· {fmt(it)}</div>
+          ))}
+          {!showAll && items.length > 3 && <div className="text-gray-400">… 共 {items.length} 条</div>}
+        </div>
+      )}
+    </div>
+  );
+
+  const startAiAllPoll = () => {
+    if (aiAllPollRef.current) clearInterval(aiAllPollRef.current);
+    aiAllPollRef.current = setInterval(async () => {
+      const j = await safeFetch<IntelJob>('/api/watchlist/intel/ai-all-job');
+      if (j) {
+        setAiAll(j);
+        if (j.state !== 'running' && aiAllPollRef.current) { clearInterval(aiAllPollRef.current); aiAllPollRef.current = null; }
+      }
+    }, 3000);
+  };
+
+  const handleAiAll = async () => {
+    setAiAll({ state: 'running', result: null, error: null });
+    try {
+      await fetch('/api/watchlist/intel/ai-all', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stocks: stocks.map(s => ({ code: s.code, name: s.name })) }),
+      });
+      startAiAllPoll();
+    } catch (e: any) {
+      setAiAll({ state: 'error', result: null, error: e.message || 'AI 整理启动失败' });
+    }
+  };
+
+  // iFinD 实时体检：后台逐只拿行情/公告/新闻（复用股池动态分析的数据源，不用等 agent）
+  const handleRealtime = async () => {
+    setRealtimeJob({ state: 'running', result: null, error: null });
+    setRealtimeCheckups({});
+    try {
+      await fetch('/api/watchlist/intel/realtime', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stocks: stocks.map(s => ({ code: s.code, name: s.name })) }),
+      });
+      if (rtPollRef.current) clearInterval(rtPollRef.current);
+      rtPollRef.current = setInterval(async () => {
+        const j = await safeFetch<any>('/api/watchlist/intel/realtime-job');
+        if (j) {
+          setRealtimeJob(j);
+          if (j.result?.checkups) setRealtimeCheckups(j.result.checkups);
+          if (j.state !== 'running' && rtPollRef.current) { clearInterval(rtPollRef.current); rtPollRef.current = null; }
+        }
+      }, 2500);
+    } catch (e: any) {
+      setRealtimeJob({ state: 'error', result: null, error: e.message || '实时体检启动失败' });
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">📊 全池情报总览</h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {progress}/{total} 只已整理 · 券商研报 / 财经快讯 / 政策动态 / 智堡研究
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleRealtime}
+              disabled={realtimeJob.state === 'running'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
+                         bg-blue-100 text-blue-700 hover:bg-blue-200 ring-1 ring-blue-300
+                         transition-colors disabled:opacity-50"
+            >
+              {realtimeJob.state === 'running' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+              {realtimeJob.state === 'running'
+                ? `实时体检 ${realtimeJob.result?.done ?? 0}/${realtimeJob.result?.count ?? stocks.length}…`
+                : '⚡ 实时体检'}
+            </button>
+            <button
+              onClick={handleAiAll}
+              disabled={aiAll.state === 'running'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
+                         bg-indigo-100 text-indigo-700 hover:bg-indigo-200 ring-1 ring-indigo-300
+                         transition-colors disabled:opacity-50"
+            >
+              {aiAll.state === 'running' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              {aiAll.state === 'running' ? 'AI 整理中…' : 'AI 全池整理'}
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">✕</button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {progress < total && (
+            <div className="mb-4">
+              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full bg-indigo-500 transition-all" style={{ width: `${(progress / Math.max(total, 1)) * 100}%` }} />
+              </div>
+              <p className="text-xs text-gray-400 mt-1">正在拉取智堡研报（外部接口较慢）…</p>
+            </div>
+          )}
+
+          {/* AI 全池整理结果 */}
+          {aiAll.state === 'running' && (
+            <div className="mb-4 p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-sm text-indigo-600 animate-pulse">
+              🤖 claude 正在做全池横向整理（约 1-3 分钟）…
+            </div>
+          )}
+          {aiAll.state === 'done' && aiAll.result?.markdown && (
+            <div className="mb-4 bg-indigo-50/40 border border-indigo-100 rounded-xl p-4">
+              <p className="text-xs font-semibold text-indigo-600 mb-2">🤖 AI 全池整理</p>
+              <div dangerouslySetInnerHTML={{ __html: renderMarkdown(aiAll.result.markdown) }} />
+            </div>
+          )}
+          {aiAll.state === 'error' && aiAll.error && (
+            <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
+              ⚠️ AI 整理失败：{aiAll.error}
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {list.map(x => {
+              const s = x.sources;
+              const isExp = !!expanded[x.code];
+              return (
+                <div key={x.code} className="border border-gray-100 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <span className="text-sm font-semibold text-gray-900">
+                      {x.name} <span className="text-xs font-mono text-gray-400">{x.code}</span>
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] text-gray-400">
+                        研报 {s.research.length} · 快讯 {s.news.length} · 政策 {s.policy.length} · 智堡 {s.wisburg.length}
+                      </span>
+                      <button
+                        onClick={() => setExpanded(prev => ({ ...prev, [x.code]: !prev[x.code] }))}
+                        className="text-[10px] text-indigo-500 hover:text-indigo-700 font-medium shrink-0"
+                      >
+                        {isExp ? '收起' : '展开全部'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+                    {renderBrief('研报', s.research, it => `${it.title}${it.rating ? `（${it.rating}）` : ''}`, isExp)}
+                    {renderBrief('快讯', s.news, it => it.title, isExp)}
+                    {renderBrief('政策', s.policy, it => it.title, isExp)}
+                    {renderBrief('智堡', s.wisburg, it => it.title, isExp)}
+                  </div>
+                  {/* iFinD 实时体检（⚡ 按钮触发后显示，优先于落库） */}
+                  {(() => {
+                    const rt = realtimeCheckups[x.code];
+                    if (!rt || ((rt.issues?.length || 0) === 0 && (rt.highlights?.length || 0) === 0)) return null;
+                    return (
+                      <div className="mt-3 pt-3 border-t border-gray-100">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-[10px] font-semibold text-blue-600">⚡ iFinD 实时体检</span>
+                          {rt.change_pct != null && (
+                            <span className={`text-xs font-semibold ${rt.change_pct >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                              {rt.change_pct >= 0 ? '+' : ''}{rt.change_pct.toFixed(2)}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+                          {(rt.issues?.length || 0) > 0 && (
+                            <div className="text-xs">
+                              <span className="font-semibold text-amber-600">⚠️ 问题提醒</span>
+                              <div className="mt-1 space-y-1">
+                                {rt.issues.map((t: string, i: number) => (
+                                  <div key={i} className="text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 leading-relaxed">{t}</div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {(rt.highlights?.length || 0) > 0 && (
+                            <div className="text-xs">
+                              <span className="font-semibold text-emerald-600">✦ 优势亮点</span>
+                              <div className="mt-1 space-y-1">
+                                {rt.highlights.map((t: string, i: number) => (
+                                  <div key={i} className="text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-lg px-2 py-1.5 leading-relaxed">{t}</div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 股池动态分析的逐股体检（问题提醒 / 优势亮点） */}
+                  {x.checkup && ((x.checkup.issues?.length || 0) > 0 || (x.checkup.highlights?.length || 0) > 0) && (
+                    <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+                      {(x.checkup.issues?.length || 0) > 0 && (
+                        <div className="text-xs">
+                          <span className="font-semibold text-amber-600">⚠️ 问题提醒</span>
+                          <div className="mt-1 space-y-1">
+                            {x.checkup.issues.map((t: string, i: number) => (
+                              <div key={i} className="text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 leading-relaxed">
+                                {t}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {(x.checkup.highlights?.length || 0) > 0 && (
+                        <div className="text-xs">
+                          <span className="font-semibold text-emerald-600">✦ 优势亮点</span>
+                          <div className="mt-1 space-y-1">
+                            {x.checkup.highlights.map((t: string, i: number) => (
+                              <div key={i} className="text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-lg px-2 py-1.5 leading-relaxed">
+                                {t}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WatchlistPanel({
   running,
   onTrigger,
@@ -92,6 +565,11 @@ function WatchlistPanel({
   const [quoteUpdatedAt, setQuoteUpdatedAt] = useState<string | null>(null);
   const [bridgeState, setBridgeState] = useState<string | null>(null);
   const quoteTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 个股情报弹窗
+  const [intelStock, setIntelStock] = useState<{ code: string; name: string } | null>(null);
+  // 全池情报总览（一键整理）
+  const [overviewOpen, setOverviewOpen] = useState(false);
 
   // 池管理
   const [manageOpen, setManageOpen] = useState(false);
@@ -389,6 +867,17 @@ function WatchlistPanel({
           >
             {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Star className="w-3.5 h-3.5" />}
             股池动态分析{currentPool !== '全部' && ` · ${currentPool}`}
+          </button>
+          <button
+            onClick={() => setOverviewOpen(true)}
+            disabled={items.length === 0}
+            title="一键整理全部关注股票的情报（研报/快讯/政策/智堡）一起看"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold
+                       bg-indigo-100 text-indigo-700 hover:bg-indigo-200 ring-1 ring-indigo-300
+                       transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            一键整理
           </button>
         </div>
       </div>
@@ -689,6 +1178,15 @@ function WatchlistPanel({
                 </div>
 
                 <button
+                  onClick={() => setIntelStock({ code: item.code, name: item.name || item.code })}
+                  title="查看情报（研报/快讯/政策/智堡聚合 + AI 简报）"
+                  className="shrink-0 p-1.5 rounded-lg text-gray-300
+                             hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                </button>
+
+                <button
                   onClick={() => handleRemove(item)}
                   title={`移出「${item.pool}」池`}
                   className="shrink-0 p-1.5 rounded-lg text-gray-300
@@ -714,6 +1212,23 @@ function WatchlistPanel({
             </span>
           )}
         </div>
+      )}
+
+      {/* 个股情报弹窗 */}
+      {intelStock && (
+        <IntelModal
+          code={intelStock.code}
+          name={intelStock.name}
+          onClose={() => setIntelStock(null)}
+        />
+      )}
+
+      {/* 全池情报总览 */}
+      {overviewOpen && (
+        <IntelOverviewModal
+          stocks={items}
+          onClose={() => setOverviewOpen(false)}
+        />
       )}
     </div>
   );
