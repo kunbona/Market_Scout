@@ -862,6 +862,16 @@ def compute_advance_decline(trade_date: str) -> None:
 
 # ── 统一入口 ──────────────────────────────────────────────────────────────────
 
+def compute_industry_trend(trade_date: str) -> None:
+    """行业趋势50列截面存档 + 与上一存档日对比(quant/industry_trend_daily.py)。
+
+    industry_ma_trend.py 以子进程重跑(耗时1-3分钟); 存档键=归一化交易日,
+    与 daily_compute 的 trade_date 可能差一天(9:00 跑的是昨日截面), 幂等覆盖。
+    """
+    from quant.industry_trend_daily import run_industry_trend
+    run_industry_trend(trade_date, force_recompute=False)
+
+
 def run_daily_compute(trade_date: str = None) -> None:
     """
     执行所有每日批量计算任务。
@@ -894,6 +904,7 @@ def run_daily_compute(trade_date: str = None) -> None:
         ("turnover_stats",              compute_turnover_stats),
         ("market_cap_dist",             compute_market_cap_dist),
         ("advance_decline",             compute_advance_decline),
+        ("industry_trend",              compute_industry_trend),
     ]
 
     for name, fn in tasks:
@@ -904,3 +915,49 @@ def run_daily_compute(trade_date: str = None) -> None:
             logger.error("[daily_compute] %s 失败: %s", name, e)
 
     logger.info("[daily_compute] 全部任务执行完毕，日期=%s", trade_date)
+
+
+# ── 新鲜度检查（复盘 / 定时任务共用，避免重复计算）─────────────────────────
+
+def is_computed(trade_date: str) -> bool:
+    """判断当日核心静态数据表是否已算出。
+
+    检查 4 张核心表（market_emotion / advance_decline / turnover_stats /
+    market_cap_dist），任一缺当日数据即视为未算完，返回 False。
+    复盘重算和 21:00 定时任务据此跳过重复计算。
+    """
+    from db.storage import (
+        get_market_emotion_summary,
+        get_advance_decline,
+        get_turnover_stats,
+        get_market_cap_dist,
+    )
+    try:
+        checks = (
+            get_market_emotion_summary(trade_date),
+            get_advance_decline(trade_date),
+            get_turnover_stats(trade_date),
+            get_market_cap_dist(trade_date),
+        )
+    except Exception as e:
+        logger.warning("[daily_compute] is_computed 检查失败(按未算处理): %s", e)
+        return False
+    return all(bool(c) for c in checks)
+
+
+def run_daily_compute_if_stale(trade_date: str = None) -> None:
+    """市场数据管线的补漏入口：当日核心表已有数据则跳过，缺则补算。
+
+    供定时任务(21:00)与复盘前置调用，避免与 20:30 复盘链路重复计算
+    同一批 15 个 compute。
+    """
+    if trade_date is None:
+        trade_date = get_latest_trade_date()
+    if not trade_date:
+        logger.warning("[daily_compute] if_stale: 无法获取最新交易日期，跳过")
+        return
+    if is_computed(trade_date):
+        logger.info("[daily_compute] %s 核心表已是最新，跳过重复计算", trade_date)
+        return
+    logger.info("[daily_compute] %s 核心表缺失，补算", trade_date)
+    run_daily_compute(trade_date)
