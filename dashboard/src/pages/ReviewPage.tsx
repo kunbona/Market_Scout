@@ -57,8 +57,11 @@ export function ReviewPage() {
   const [error, setError] = useState('');
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState('');
+  const selectedDateRef = useRef('');   // 供后台轮询闭包读到最新选中日期
+  useEffect(() => { selectedDateRef.current = selectedDate; }, [selectedDate]);
   const [activeTab, setActiveTab] = useState('flow');
   const [recomputing, setRecomputing] = useState(false);  // ⚠️ 必须放 top-level, 早 return 之前
+  const [jobProgress, setJobProgress] = useState('');      // 后台重算任务进度 (轮询 /api/review/v2/job)
 
   const fetchData = async (date?: string) => {
     setLoading(true);
@@ -88,44 +91,60 @@ export function ReviewPage() {
     }).catch(() => fetchData());
   }, []);
 
+  // 页面刷新/重进后: 若后台重算任务仍在跑, 自动恢复进度显示和轮询
+  // (进度条是 React 内存 state, 刷新即丢; 后端 job 是独立线程, 刷新页面不影响它)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s0 = await apiFetch<any>('/api/review/v2/job');
+        if (cancelled || s0.state !== 'running') return;
+        setRecomputing(true);
+        setJobProgress(s0.progress || '后台重算进行中...');
+        for (let i = 0; i < 360 && !cancelled; i++) {
+          await new Promise(res => setTimeout(res, 5000));
+          if (cancelled) return;
+          const s = await apiFetch<any>('/api/review/v2/job');
+          setJobProgress(s.progress || s.state || '运行中...');
+          if (s.state === 'done') {
+            // 完成: 刷新日期列表 + 重载当前选中日期
+            const newDates = await apiFetch<string[]>('/api/review/dates');
+            setDates(newDates);
+            await fetchData(selectedDateRef.current || newDates[0]);
+            break;
+          }
+          if (s.state === 'error') {
+            setError(`后台重算失败: ${s.error || '未知错误'}`);
+            break;
+          }
+        }
+      } catch { /* 状态查询失败静默忽略, 不打扰页面 */ }
+      finally { if (!cancelled) { setRecomputing(false); setJobProgress(''); } }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleDateChange = (d: string) => {
     setSelectedDate(d);
     fetchData(d);
   };
 
-  const handleRecompute = async () => {
+  const handleSyncLatest = async () => {
     if (recomputing) return;
-    // 调 review_v2.run(), 不传 trade_date: 后端自动从 Exodia 拿 stock-trading-data-pro-daily 最新日
-    // 强 force=true 跳过 cache, 跑 14 compute + L4 sector + compute_daily_analysis 写 review_daily
-    if (!confirm('按 Exodia 最新日重算复盘?\n后端从 exodia/code/data/products-status.json 拿 stock-trading-data-pro-daily 最新日,\n跑 14 compute + L4 + compute_daily_analysis (5-7 分钟), 期间页面会卡住')) return;
+    // 只做一件事: 从 Exodia products-status.json 拿 stock-trading-data-pro-daily 最新日,
+    // 放进日期下拉并选中 — 不触发任何计算 (计算统一走「重算选中日期」)
     setRecomputing(true);
     setError('');
     try {
-      const r = await fetch('/api/review/v2/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force: true }),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({ message: r.statusText }));
-        throw new Error(err.message || err.error || `HTTP ${r.status}`);
-      }
-      const result = await r.json();
-      const usedDate = result?.data?.trade_date;
-      // 重算完: 重新拉 dates + 跳到算出来的最新日 + 重载数据
       const newDates = await apiFetch<string[]>('/api/review/dates');
       setDates(newDates);
-      if (usedDate) {
-        setSelectedDate(usedDate);
-        await fetchData(usedDate);
-      } else if (newDates.length > 0) {
+      if (newDates.length > 0) {
         setSelectedDate(newDates[0]);
         await fetchData(newDates[0]);
-      } else {
-        await fetchData();
       }
     } catch (e: any) {
-      setError(e.message || '重算失败');
+      setError(e.message || '取最新日期失败');
     } finally {
       setRecomputing(false);
     }
@@ -133,13 +152,18 @@ export function ReviewPage() {
 
   const handleRecomputeSelected = async () => {
     if (recomputing) return;
-    // 重算当前选中的日期 (按 select 选的, 而不是 exodia 最新)
+    // 重算当前选中的日期 (上面 select 选哪个就算哪个; 「取最新日期」后就是 Exodia 最新日)
     const targetDate = selectedDate || data?.trade_date || '';
-    if (!targetDate) return;
-    if (!confirm(`重算 ${targetDate} 的复盘数据?\n跑 14 compute + L4 + compute_daily_analysis (5-7 分钟), 期间页面会卡住`)) return;
+    if (!targetDate) {
+      setError('请先选择日期 (或点「取最新日期」)');
+      return;
+    }
+    if (!confirm(`重算 ${targetDate} 的复盘数据?\nL4 板块效应 + 级联刷新行业趋势页同日期截面 (含增量拉申万指数/资金流) + DM-kun 6 个 tab。\n后台运行约 3-10 分钟, 页面不会卡住, 按钮旁会显示进度。`)) return;
     setRecomputing(true);
     setError('');
+    setJobProgress('启动重算任务...');
     try {
+      // 后台启动 (立即返回), 轮询 /api/review/v2/job 拿进度 — 页面不阻塞
       const r = await fetch('/api/review/v2/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -149,11 +173,31 @@ export function ReviewPage() {
         const err = await r.json().catch(() => ({ message: r.statusText }));
         throw new Error(err.message || err.error || `HTTP ${r.status}`);
       }
+      // 轮询任务状态 (5s 一次, 上限 20 分钟)
+      let final: any = null;
+      for (let i = 0; i < 240; i++) {
+        await new Promise(res => setTimeout(res, 5000));
+        const s = await apiFetch<any>('/api/review/v2/job');
+        setJobProgress(s.progress || s.state || '运行中...');
+        if (s.state === 'done') { final = s; break; }
+        if (s.state === 'error') throw new Error(s.error || '重算失败');
+      }
+      if (!final) throw new Error('重算超时 (20 分钟), 请查看后端日志');
+      // 完成: 刷新日期列表 + 重载数据; n_err > 0 时明确提示
+      const nErr = Number(final?.result?.n_err ?? 0);
+      const nOk = Number(final?.result?.n_ok ?? 0);
+      const dmErr = Object.values(final?.dm_kun || {}).filter((v: any) => String(v).startsWith('error')).length;
+      const newDates = await apiFetch<string[]>('/api/review/dates');
+      setDates(newDates);
       await fetchData(targetDate);
+      if (nErr > 0 || dmErr > 0) {
+        setError(`重算完成但有失败项: ${nOk} ok / ${nErr} 项 compute 失败${dmErr ? `, DM-kun ${dmErr} 个 tab 失败` : ''} (详情见后端日志)`);
+      }
     } catch (e: any) {
       setError(e.message || '重算失败');
     } finally {
       setRecomputing(false);
+      setJobProgress('');
     }
   };
 
@@ -182,21 +226,22 @@ export function ReviewPage() {
             {dates.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
           <button
-            onClick={handleRecompute}
+            onClick={handleSyncLatest}
             disabled={recomputing || loading}
             className="ml-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-500 text-white border border-amber-600 hover:bg-amber-600 disabled:opacity-50"
-            title="重算本地 CSV 最新交易日 — 永远扫 stock-trading-data-pro 找最新, 不依赖 dates 列表"
+            title="从 Exodia products-status.json 读 stock-trading-data-pro-daily 最新日, 放进下拉并选中 (不触发计算)"
           >
-            {recomputing ? '⏳ 重算中…' : '📥 读 CSV 最新重算'}
+            {recomputing ? '⏳ 处理中…' : '📅 取最新日期'}
           </button>
           <button
             onClick={handleRecomputeSelected}
             disabled={recomputing || loading}
-            className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
-            title="重算当前选中的日期 (上面 select 选哪个, 就重算哪个)"
+            className="ml-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white border border-blue-700 hover:bg-blue-700 disabled:opacity-50"
+            title="重算当前选中的日期 (上面 select 选哪个, 就算哪个)"
           >
-            🔁 重算当前
+            🔁 重算选中日期
           </button>
+          {recomputing && jobProgress && <span className="text-xs text-blue-500 animate-pulse">{jobProgress}</span>}
           {loading && <span className="text-xs text-amber-500">加载中...</span>}
           {error && <span className="text-xs text-red-500">{error}</span>}
         </div>
@@ -272,14 +317,22 @@ export function ReviewPage() {
             {activeTab === 'style' && <StyleTab data={data} />}
             {activeTab === 'structure' && <StructureTab data={data} />}
             {activeTab === 'sentiment' && <SentimentTab data={data} />}
-            {activeTab === 'regime' && <DmMarkdownTab name="market-regime" title="市场状态 (4 维: 趋势/波动/风格/宽度)" hint="10s 跑 12 指数 + 2839 股票" />}
-            {activeTab === 'sentiment-cycle' && <DmMarkdownTab name="sentiment-cycle" title="情绪周期 (涨停/连板/炸板/涨跌停比)" hint="60s 跑 5879 只股票" />}
-            {activeTab === 'industry-crowding' && <DmMarkdownTab name="industry-crowding" title="行业拥挤度 (成交占比 × 近 1 年分位)" hint="5s 跑 5477 只 × 31 行业" />}
-            {activeTab === 'industry-enhanced' && <DmMarkdownTab name="industry-enhanced" title="行业增强分析 (BIAS20 热力 + 抱团检测 + 二级热点 + 持续性)" hint="30s 跑 5477 只" />}
-            {activeTab === 'theme-ladder' && <DmMarkdownTab name="theme-ladder" title="主题阶梯 (广发机构视角: 题材热度梯次)" hint="10s 跑 31 行业" />}
-            {activeTab === 'stock-recommender' && <DmMarkdownTab name="stock-recommender" title="选股推荐 (按拥挤区 top 5 行业筛强势股)" hint="5s 自动选 top 5 拥挤行业" />}
+            {activeTab === 'regime' && <DmMarkdownTab date={selectedDate} name="market-regime" title="市场状态 (4 维: 趋势/波动/风格/宽度)" hint="10s 跑 12 指数 + 2839 股票" />}
+            {activeTab === 'sentiment-cycle' && <DmMarkdownTab date={selectedDate} name="sentiment-cycle" title="情绪周期 (涨停/连板/炸板/涨跌停比)" hint="60s 跑 5879 只股票" />}
+            {activeTab === 'industry-crowding' && <DmMarkdownTab date={selectedDate} name="industry-crowding" title="行业拥挤度 (成交占比 × 近 1 年分位)" hint="5s 跑 5477 只 × 31 行业" />}
+            {activeTab === 'industry-enhanced' && <DmMarkdownTab date={selectedDate} name="industry-enhanced" title="行业增强分析 (BIAS20 热力 + 抱团检测 + 二级热点 + 持续性)" hint="30s 跑 5477 只" />}
+            {activeTab === 'theme-ladder' && <DmMarkdownTab date={selectedDate} name="theme-ladder" title="主题阶梯 (广发机构视角: 题材热度梯次)" hint="10s 跑 31 行业" />}
+            {activeTab === 'stock-recommender' && <DmMarkdownTab date={selectedDate} name="stock-recommender" title="选股推荐 (按拥挤区 top 5 行业筛强势股)" hint="5s 自动选 top 5 拥挤行业" />}
           </div>
         </>
+      )}
+
+      {!data && !loading && !error && (
+        <div className="px-4 py-12 text-center text-sm text-gray-500">
+          {selectedDate
+            ? `${selectedDate} 尚未计算复盘数据 — 点「🔁 重算选中日期」生成 (5-7 分钟)`
+            : '暂无复盘数据 — 点「📅 取最新日期」后重算'}
+        </div>
       )}
     </div>
   );
@@ -2053,6 +2106,7 @@ function RegimeHeader({ meta }: { meta: RegimeMeta }) {
 function RegimeIndices({ rows }: { rows: IndexRow[] }) {
   if (!rows.length) return null;
   const cols: { key: keyof IndexRow; label: string }[] = [
+    { key: 'day', label: '当日' },
     { key: 'd5', label: '5日' },
     { key: 'd10', label: '10日' },
     { key: 'd20', label: '20日' },
@@ -2064,7 +2118,7 @@ function RegimeIndices({ rows }: { rows: IndexRow[] }) {
     <div className="bg-white border border-gray-100 rounded-xl p-4">
       <div className="text-xs text-gray-500 mb-3 flex items-center gap-2">
         <span className="font-semibold text-gray-700">📊 12 大指数多周期</span>
-        <span className="text-[10px] text-gray-400">MA5/10/20/60/120 方向 + 6 周期涨幅</span>
+        <span className="text-[10px] text-gray-400">MA5/10/20/60/120 方向 + 当日及 5 周期涨幅</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -2975,9 +3029,11 @@ interface DmCache {
   data_date?: string | null;  // 数据时间 (从 markdown 标题 parse), 跟 computed_at (重算时间) 区分
   loading: boolean;
   error: string | null;
+  archived?: boolean;         // true=来自 dm_kun_daily 按日期存档; false=内存 cache(最新)
+  trade_date?: string | null; // 存档对应的交易日
 }
 
-function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentiment-cycle' | 'industry-crowding' | 'industry-enhanced' | 'theme-ladder' | 'stock-recommender'; title: string; hint: string }) {
+function DmMarkdownTab({ name, title, hint, date }: { name: 'market-regime' | 'sentiment-cycle' | 'industry-crowding' | 'industry-enhanced' | 'theme-ladder' | 'stock-recommender'; title: string; hint: string; date?: string }) {
   const [cache, setCache] = useState<DmCache | null>(null);
   const [loading, setLoading] = useState(true);
   const [recomputing, setRecomputing] = useState(false);
@@ -2985,14 +3041,16 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await apiFetch<DmCache>(`/api/dm-kun/${name}`);
+      // 统一管理: 复盘页切日期 → 6 个 DM-kun tab 同步读该日期存档
+      const url = date ? `/api/dm-kun/${name}?date=${date}` : `/api/dm-kun/${name}`;
+      const d = await apiFetch<DmCache>(url);
       setCache(d);
     } catch (e: any) {
       setCache({ markdown: null, computed_at: null, loading: false, error: e.message || '加载失败' });
     } finally {
       setLoading(false);
     }
-  }, [name]);
+  }, [name, date]);
 
   useEffect(() => {
     load();
@@ -3000,17 +3058,22 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
 
   const handleRecompute = async () => {
     if (recomputing) return;
-    if (!confirm(`重算 ${title}?\n${hint}\n跑完会自动刷新当前数据`)) return;
+    const td = date ? ` ${date} ` : '最新 ';
+    if (!confirm(`重算${td}${title}?\n${hint}\n按该日期切片计算并存档, 跑完会自动刷新`)) return;
     setRecomputing(true);
     try {
-      await fetch(`/api/dm-kun/${name}/recompute`, { method: 'POST' });
-      // poll 最多 90s, 每 2s 拉一次, loading=false 就 break
+      await fetch(`/api/dm-kun/${name}/recompute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(date ? { date } : {}),
+      });
+      // poll 最多 90s, 每 2s 拉一次该日期存档, loading=false 且有内容就 break
       const start = Date.now();
       while (Date.now() - start < 90000) {
         await new Promise(r => setTimeout(r, 2000));
-        const fresh = await apiFetch<DmCache>(`/api/dm-kun/${name}`);
+        const fresh = await apiFetch<DmCache>(date ? `/api/dm-kun/${name}?date=${date}` : `/api/dm-kun/${name}`);
+        if (fresh.markdown && !fresh.loading) { setCache(fresh); break; }
         setCache(fresh);
-        if (!fresh.loading) break;
       }
     } catch (e: any) {
       setCache(prev => prev ? { ...prev, error: e.message || '重算失败' } : { markdown: null, computed_at: null, loading: false, error: e.message || '重算失败' });
@@ -3033,6 +3096,7 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
             ) : (
               <span>未计算</span>
             )}
+            {cache?.archived && <span className="px-1.5 py-px rounded bg-indigo-50 text-indigo-600 text-[10px]">存档</span>}
             {cache?.computed_at && (
               <span className="text-gray-300" title="脚本重算时间 (非数据时间)">· 重算于 {cache.computed_at}</span>
             )}
@@ -3078,7 +3142,9 @@ function DmMarkdownTab({ name, title, hint }: { name: 'market-regime' | 'sentime
         )
       ) : !loading ? (
         <div className="text-center text-gray-400 text-sm py-12">
-          暂无数据, 点 🔄 重算 跑一次
+          {date
+            ? <>{date} 暂无该 tab 存档, 点 🔄 重算 按该日期计算并存档</>
+            : <>暂无数据, 点 🔄 重算 跑一次</>}
         </div>
       ) : null}
     </div>

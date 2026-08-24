@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import copy
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -500,35 +501,53 @@ def run(trade_date: str | None = None, force: bool = False):
     if not os.environ.get("QUANT_DATA_ROOT"):
         raise FileNotFoundError("QUANT_DATA_ROOT 未设置 (server 启动时 .env.local 应已注入)")
 
-    # 3. 缓存检查: review_daily 已有该 trade_date → 直接返回 (< 1s)
+    # 3. 缓存检查: review_daily 已有该 trade_date 且是完整 v2 记录 → 直接返回 (< 1s)
+    #    完整 = payload 含 _v2_dimensions。只有 legacy 半成品 (~8.5KB, 老路径写的) 视为无效,
+    #    继续往下重算覆盖 — 否则 16:00 定时任务会命中半成品跳过 14 compute。
     if not force:
         cached = get_review_daily(trade_date)
         if cached and cached.get("payload"):
-            print(f"[review_v2] {trade_date} 已在 review_daily (created {cached['created_at']}), 跳过 compute, 读 SQLite", flush=True)
             try:
                 payload = json.loads(cached["payload"])
             except Exception:
                 payload = {}
-            return {
-                "trade_date": trade_date,
-                "summary": payload.get("sentiment", {}).get("score", "") or "cached",
-                "n_ok": "n/a (cached)",
-                "n_err": "n/a (cached)",
-                "html_path": "n/a (cached)",
-                "cached": True,
-                "created_at": cached["created_at"],
-            }
+            if payload.get("_v2_dimensions"):
+                print(f"[review_v2] {trade_date} 已在 review_daily (created {cached['created_at']}), 跳过 compute, 读 SQLite", flush=True)
+                return {
+                    "trade_date": trade_date,
+                    "summary": payload.get("_v2_summary") or payload.get("sentiment", {}).get("score", "") or "cached",
+                    "n_ok": "n/a (cached)",
+                    "n_err": "n/a (cached)",
+                    "html_path": "n/a (cached)",
+                    "cached": True,
+                    "created_at": cached["created_at"],
+                }
+            print(f"[review_v2] {trade_date} 缓存是 legacy 半成品 (无 _v2_dimensions), 重算覆盖", flush=True)
 
-    # Step 1: 跑 14 个 daily_compute
-    print(f"[review_v2] running 14 daily_computes...", flush=True)
-    compute_results = run_daily_computes(trade_date)
-    n_ok = sum(1 for L in compute_results.values() for s in L.values() if s == "ok")
-    n_err = sum(1 for L in compute_results.values() for s in L.values() if s != "ok")
-    print(f"[review_v2] daily_computes: {n_ok} ok, {n_err} err", flush=True)
+    # Step 1: (2026-08-19 彻底解耦) 复盘不跑 15 个 daily_compute ——
+    # 那是市场数据页(历史静态数据)管线的活, 由 scheduler 9:00 全量 + 21:00 补漏负责。
+    # 复盘只算自己页面显示的: L4 板块效应(legacy) + 汇总 + DM-kun + AI。
+    # 9 维度仍从表里读(collect_dimensions), 表没数据则对应维度为空, 不影响复盘主流程。
+    print(f"[review_v2] 复盘与静态数据管线已解耦, 跳过 15 compute", flush=True)
+    compute_results = {
+        layer: {name: "skip(归市场数据管线)"
+                for _l, name, _f in DAILY_COMPUTES if _l == layer}
+        for layer, _n, _f in DAILY_COMPUTES
+    }
+    n_ok = n_err = 0
 
-    # Step 1b: 跑 L4 板块效应 (慢任务)
-    print(f"[review_v2] running L4 sector effect (slow, ~30-60s)...", flush=True)
-    sector_data = run_sector_effect(trade_date)
+    # Step 1b: compute_daily_analysis 只跑一次, 结果双用:
+    #   - sector_data: L4 板块效应维度 (原 run_sector_effect 内部就是调它)
+    #   - legacy: 写 review_daily 的前端结构 (Step 4 复用, 不再二次调用)
+    # (修复: 原实现跑 2 次, 白等 30-60s)
+    print(f"[review_v2] running compute_daily_analysis (L4 sector + legacy, ~30-60s)...", flush=True)
+    from quant.review_compute import compute_daily_analysis as _cda
+    try:
+        legacy = _cda(trade_date)
+    except Exception as e:
+        logger.warning("[review_v2] compute_daily_analysis failed: %s", e)
+        legacy = None
+    sector_data = legacy
     if sector_data:
         print(f"[review_v2] L4 sector: {len(sector_data)} top-level keys", flush=True)
 
@@ -536,7 +555,7 @@ def run(trade_date: str | None = None, force: bool = False):
     print(f"[review_v2] collecting 9 dimensions...", flush=True)
     dims = collect_dimensions(trade_date)
     if sector_data:
-        dims["L4_sector"] = sector_data  # L4 单独
+        dims["L4_sector"] = copy.deepcopy(sector_data)  # 断开与 legacy 的引用: 否则 legacy["_v2_dimensions"]["L4_sector"] 指回 legacy 自身 → json.dumps 循环引用 → review_daily 落库失败
 
     # Step 3: 综合判断 (在 render_html 内调用)
     # Step 4: 渲染 + 落库
@@ -555,16 +574,17 @@ def run(trade_date: str | None = None, force: bool = False):
     try:
         # 全部写到一个表: review_daily (前端只读这个)
         # 9 维度数据塞 _v2_dimensions 字段, 前端忽略, 保留以备 v2 切换
-        from quant.review_compute import compute_daily_analysis
+        # legacy 结构已在 Step 1b 算好, 直接复用
         from db.storage import insert_review_daily as _insert_legacy
-        print(f"[review_v2] 写 review_daily (调 compute_daily_analysis 拿前端结构)...", flush=True)
-        legacy = compute_daily_analysis(trade_date)
         if legacy:
+            print(f"[review_v2] 写 review_daily (复用 Step 1b 的 legacy 结构)...", flush=True)
             legacy["_v2_dimensions"] = {k: v for k, v in dims.items() if k != "trade_date"}
             legacy["_v2_summary"] = summary_text
             legacy["_v2_compute_results"] = compute_results
             _insert_legacy(trade_date, json.dumps(legacy, ensure_ascii=False, default=str))
             print(f"[review_v2] review_daily upserted for {trade_date} (前端可见)", flush=True)
+        else:
+            print("[review_v2] legacy 结构为空, 跳过 review_daily 写入", flush=True)
     except Exception as e:
         print(f"[review_v2] review_daily write failed: {e}", flush=True)
 

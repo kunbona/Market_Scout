@@ -107,7 +107,31 @@ interface IntradayReport {
   new_catalyst: boolean;
 }
 
-type AgentReport = FullReport | IntradayReport;
+interface ReviewKpis {
+  limit_up?: number;
+  limit_down?: number;
+  limit_up_trend?: Array<{ date: string; count: number }>;
+  limit_up_sectors?: Array<{ sector: string; count: number }>;
+  total_amount_yi?: number;
+  amount_ratio?: number | null;
+  main_net_yi?: number;
+  retail_net_yi?: number;
+  up_count?: number;
+  down_count?: number;
+}
+
+interface MdReport {
+  run_type?: string;
+  run_time?: string;
+  summary_time?: string;
+  id?: number;
+  has_html?: boolean;
+  analysis_md: string;
+  trade_date?: string;
+  kpis?: ReviewKpis;
+}
+
+type AgentReport = FullReport | IntradayReport | MdReport;
 
 interface HistoryItem {
   id: number | string;
@@ -124,6 +148,11 @@ type TriggerRunType = 'intraday' | 'morning' | 'evening' | 'policy' | 'research'
 
 function isFullReport(r: AgentReport): r is FullReport {
   return r.run_type === 'evening' || r.run_type === 'morning';
+}
+
+// Markdown 型报告（如 review_ai 复盘 AI 总结）：只有 analysis_md，无结构化字段
+function isMdReport(r: AgentReport): r is MdReport {
+  return Boolean((r as MdReport).analysis_md) && !(r as IntradayReport).market_status && !(r as FullReport).core_narrative;
 }
 
 // ─── Badge helpers ────────────────────────────────────────────────────────────
@@ -415,6 +444,81 @@ function StrategistPanel({
           className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-white border border-slate-800 hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {running ? '⏳ 生成中...' : '🌙 盘后版（推荐）'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Review AI Panel (复盘 AI 总结 手动触发) ────────────────────────────────
+
+function ReviewAiPanel({ onDone }: { onDone: () => void }) {
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState('');
+  const [failMsg, setFailMsg] = useState<string | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  const stopPoll = () => {
+    if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null; }
+  };
+  useEffect(() => stopPoll, []);
+
+  const startPoll = () => {
+    stopPoll();
+    timerRef.current = window.setInterval(async () => {
+      const job = await safeFetch<{ state: string; progress?: string; error?: string | null }>('/api/agent/review_ai/job');
+      if (!job) return;
+      setProgress(job.progress || '');
+      if (job.state !== 'running') {
+        stopPoll();
+        setRunning(false);
+        if (job.state === 'error') setFailMsg(job.error || '生成失败，请看后端日志');
+        else setFailMsg(null);
+        onDone();
+      }
+    }, 3000);
+  };
+
+  const trigger = async () => {
+    setFailMsg(null);
+    setRunning(true);
+    setProgress('启动中...');
+    try {
+      const resp = await fetch('/api/agent/review_ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const json = await resp.json().catch(() => null);
+      if (!resp.ok || !json?.success) {
+        setRunning(false);
+        setFailMsg(json?.error ?? `HTTP ${resp.status}`);
+        return;
+      }
+      startPoll();
+    } catch {
+      setRunning(false);
+      setFailMsg('请求失败，请检查后端服务');
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 mb-6 p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-200">
+      <div className="flex items-center gap-2 mr-2">
+        <div className={`w-2 h-2 rounded-full ${running ? 'bg-indigo-500 animate-pulse' : 'bg-indigo-700'}`} />
+        <span className="text-xs font-semibold text-indigo-900">复盘 AI 总结</span>
+        <span className="text-xs text-indigo-500">
+          {running ? (progress || '正在生成中, 约需 1 分钟...') : '9 维度复盘 + DM-kun 6 专题 → AI 交叉总结'}
+        </span>
+        {failMsg && <span className="text-xs text-red-500">⚠️ {failMsg}</span>}
+      </div>
+      <div className="flex items-center gap-2 ml-auto">
+        <button
+          onClick={trigger}
+          disabled={running}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white border border-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? '⏳ 生成中...' : '🧠 生成复盘 AI 总结'}
         </button>
       </div>
     </div>
@@ -722,12 +826,218 @@ function SummaryCard({ text }: { text: string }) {
   );
 }
 
+// ─── Markdown Report (review_ai 等) ──────────────────────────────────────────
+
+function renderMdInline(text: string): ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
+    p.startsWith('**') && p.endsWith('**') && p.length > 4
+      ? <strong key={i} className="font-semibold text-gray-900">{p.slice(2, -2)}</strong>
+      : <span key={i}>{p}</span>
+  );
+}
+
+// ─── KPI Cards (review_ai 图文并茂) ─────────────────────────────────────────
+
+function KpiCard({ label, value, unit, tone, sub }: {
+  label: string; value: string; unit?: string; tone?: 'up' | 'down' | 'neutral'; sub?: string;
+}) {
+  const toneCls = tone === 'up' ? 'text-red-600' : tone === 'down' ? 'text-green-600' : 'text-gray-900';
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 px-4 py-3 shadow-[var(--shadow-sm)]">
+      <div className="text-xs text-gray-400 mb-1">{label}</div>
+      <div className={`text-lg font-bold leading-tight ${toneCls}`}>
+        {value}{unit && <span className="text-xs font-medium text-gray-400 ml-0.5">{unit}</span>}
+      </div>
+      {sub && <div className="text-[11px] text-gray-400 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function fmtYi(v?: number | null): string {
+  if (v == null || Number.isNaN(v)) return '--';
+  if (Math.abs(v) >= 10000) return (v / 10000).toFixed(2);
+  return v.toFixed(0);
+}
+function yiUnit(v?: number | null): string {
+  if (v == null || Number.isNaN(v)) return '';
+  return Math.abs(v) >= 10000 ? '万亿' : '亿';
+}
+
+function ReviewKpiSection({ k }: { k: ReviewKpis }) {
+  const up = k.up_count ?? 0;
+  const down = k.down_count ?? 0;
+  const total = up + down;
+  const upPct = total > 0 ? Math.round((up / total) * 100) : 0;
+
+  const sectors = (k.limit_up_sectors ?? []).filter(s => s.count > 0);
+  const maxSec = sectors.length ? Math.max(...sectors.map(s => s.count)) : 1;
+  const trend = (k.limit_up_trend ?? []).slice(-6);
+  const maxTrend = trend.length ? Math.max(...trend.map(t => t.count), 1) : 1;
+  const trendW = 320, trendH = 88;
+
+  return (
+    <div className="space-y-4">
+      {/* KPI 卡片行 */}
+      <div className="grid grid-cols-4 gap-3">
+        <KpiCard label="涨停" value={k.limit_up != null ? String(k.limit_up) : '--'} unit="家" tone="up" />
+        <KpiCard label="跌停" value={k.limit_down != null ? String(k.limit_down) : '--'} unit="家" tone="down" />
+        <KpiCard
+          label="主力净流入" value={(k.main_net_yi ?? 0) >= 0 ? `+${fmtYi(k.main_net_yi)}` : fmtYi(k.main_net_yi)}
+          unit={yiUnit(k.main_net_yi)} tone={(k.main_net_yi ?? 0) >= 0 ? 'up' : 'down'} />
+        <KpiCard
+          label="散户净流入" value={(k.retail_net_yi ?? 0) >= 0 ? `+${fmtYi(k.retail_net_yi)}` : fmtYi(k.retail_net_yi)}
+          unit={yiUnit(k.retail_net_yi)} tone={(k.retail_net_yi ?? 0) >= 0 ? 'up' : 'down'} />
+        <KpiCard label="成交额" value={fmtYi(k.total_amount_yi)} unit={yiUnit(k.total_amount_yi)}
+          sub={k.amount_ratio != null ? `量比 ${k.amount_ratio}` : undefined} />
+        <KpiCard label="上涨家数" value={up ? String(up) : '--'} tone="up" />
+        <KpiCard label="下跌家数" value={down ? String(down) : '--'} tone="down" />
+        <KpiCard label="涨跌比" value={total > 0 ? `${upPct}% : ${100 - upPct}%` : '--'} tone="up" />
+      </div>
+
+      {/* 涨跌家数红绿比例条 */}
+      {total > 0 && (
+        <div className="bg-white rounded-xl border border-gray-100 px-4 py-3 shadow-[var(--shadow-sm)]">
+          <div className="flex justify-between text-xs mb-1.5">
+            <span className="text-red-600 font-semibold">↑ 上涨 {up}</span>
+            <span className="text-green-600 font-semibold">下跌 {down} ↓</span>
+          </div>
+          <div className="h-2.5 rounded-full overflow-hidden flex bg-gray-100">
+            <div className="bg-red-500 h-full" style={{ width: `${upPct}%` }} />
+            <div className="bg-green-500 h-full" style={{ width: `${100 - upPct}%` }} />
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        {/* 涨停板块分布 */}
+        {sectors.length > 0 && (
+          <div className="bg-white rounded-xl border border-gray-100 px-4 py-3 shadow-[var(--shadow-sm)]">
+            <div className="flex items-center gap-1.5 mb-2.5">
+              <TrendingUp className="w-3.5 h-3.5 text-red-500" />
+              <span className="text-xs font-semibold text-gray-700">涨停板块分布</span>
+            </div>
+            <div className="space-y-1.5">
+              {sectors.map(s => (
+                <div key={s.sector} className="flex items-center gap-2">
+                  <span className="text-[11px] text-gray-600 w-16 shrink-0 truncate">{s.sector}</span>
+                  <div className="flex-1 h-3.5 bg-gray-50 rounded overflow-hidden">
+                    <div className="h-full rounded bg-gradient-to-r from-red-400 to-red-500"
+                         style={{ width: `${Math.max(6, (s.count / maxSec) * 100)}%` }} />
+                  </div>
+                  <span className="text-[11px] font-semibold text-red-600 w-6 text-right shrink-0">{s.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 近几日涨停趋势 */}
+        {trend.length > 1 && (
+          <div className="bg-white rounded-xl border border-gray-100 px-4 py-3 shadow-[var(--shadow-sm)]">
+            <div className="flex items-center gap-1.5 mb-1">
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              <span className="text-xs font-semibold text-gray-700">近 {trend.length} 日涨停数</span>
+            </div>
+            <svg viewBox={`0 0 ${trendW} ${trendH}`} className="w-full" role="img">
+              {trend.map((t, i) => {
+                const bw = trendW / trend.length - 10;
+                const x = i * (trendW / trend.length) + 5;
+                const h = Math.max(4, (t.count / maxTrend) * (trendH - 26));
+                const y = trendH - 16 - h;
+                const isLast = i === trend.length - 1;
+                return (
+                  <g key={t.date}>
+                    <rect x={x} y={y} width={bw} height={h} rx="3"
+                          fill={isLast ? '#ef4444' : '#fca5a5'} />
+                    <text x={x + bw / 2} y={y - 4} textAnchor="middle"
+                          className="fill-gray-600" style={{ fontSize: 10 }}>{t.count}</text>
+                    <text x={x + bw / 2} y={trendH - 4} textAnchor="middle"
+                          className="fill-gray-400" style={{ fontSize: 9 }}>
+                      {t.date.slice(5)}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MdReportView({ r }: { r: MdReport }) {
+  const lines = (r.analysis_md || '').split('\n');
+  const blocks: ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = (key: string) => {
+    if (!listItems.length) return;
+    blocks.push(
+      <ul key={`ul-${key}`} className="space-y-1.5 list-disc pl-5">
+        {listItems.map((it, i) => <li key={i} className="text-sm text-gray-700 leading-relaxed">{renderMdInline(it)}</li>)}
+      </ul>
+    );
+    listItems = [];
+  };
+
+  lines.forEach((raw, idx) => {
+    const t = raw.trim();
+    if (!t) { flushList(String(idx)); return; }
+    if (t.startsWith('### ')) {
+      flushList(String(idx));
+      blocks.push(<h4 key={idx} className="text-sm font-semibold text-gray-800 border-l-4 border-indigo-200 pl-3">{renderMdInline(t.slice(4))}</h4>);
+      return;
+    }
+    if (t.startsWith('## ')) {
+      flushList(String(idx));
+      blocks.push(
+        <div key={idx} className="flex items-center gap-2 pt-2">
+          <Brain className="w-4 h-4 text-indigo-500" />
+          <h3 className="text-base font-bold text-gray-900">{renderMdInline(t.slice(3))}</h3>
+        </div>
+      );
+      return;
+    }
+    if (t.startsWith('# ')) {
+      flushList(String(idx));
+      blocks.push(<h3 key={idx} className="text-lg font-bold text-gray-900">{renderMdInline(t.slice(2))}</h3>);
+      return;
+    }
+    if (/^[-*]\s+/.test(t)) { listItems.push(t.replace(/^[-*]\s+/, '')); return; }
+    if (/^\d+[.、]\s+/.test(t)) { listItems.push(t.replace(/^\d+[.、]\s+/, '')); return; }
+    flushList(String(idx));
+    blocks.push(<p key={idx} className="text-sm text-gray-700 leading-relaxed">{renderMdInline(t)}</p>);
+  });
+  flushList('end');
+
+  return (
+    <div className="space-y-4">
+      {(r.trade_date || r.run_time) && (
+        <div className="bg-white rounded-2xl border border-gray-100 px-6 py-4 shadow-[var(--shadow-sm)] flex items-center gap-2">
+          <FileText className="w-4 h-4 text-indigo-500" />
+          <span className="text-sm font-semibold text-gray-800">
+            复盘 AI 总结{r.trade_date ? ` · ${r.trade_date}` : ''}
+          </span>
+          <span className="text-xs text-gray-400 font-mono ml-auto">{r.run_time || r.summary_time}</span>
+        </div>
+      )}
+      {r.kpis && (r.kpis.limit_up != null || r.kpis.up_count != null) && (
+        <ReviewKpiSection k={r.kpis} />
+      )}
+      <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
+        <div className="space-y-3">{blocks}</div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Intraday Report ──────────────────────────────────────────────────────────
 
 function IntradayReportView({ r }: { r: IntradayReport }) {
   return (
     <div className="space-y-4">
-      <MarketStatusCard ms={r.market_status} />
+      {r.market_status && <MarketStatusCard ms={r.market_status} />}
 
       <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-[var(--shadow-sm)]">
         <div className="flex items-center gap-2 mb-4">
@@ -735,7 +1045,7 @@ function IntradayReportView({ r }: { r: IntradayReport }) {
           <h3 className="text-sm font-semibold text-gray-800">盘感摘要</h3>
         </div>
         <div className="bg-amber-50 border border-amber-100 rounded-2xl px-6 py-5">
-          <p className="text-base text-amber-900 leading-relaxed font-medium">{r.intraday_pulse}</p>
+          <p className="text-base text-amber-900 leading-relaxed font-medium">{r.intraday_pulse ?? '--'}</p>
         </div>
       </div>
 
@@ -805,6 +1115,7 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
     research: '研报解读',
     notice:   '公告解读',
     watchlist: '股池动态',
+    review_ai: '复盘 AI 总结',
   };
 
   const handleToggle = async (item: HistoryItem) => {
@@ -910,9 +1221,11 @@ function HistoryPanel({ items }: { items: HistoryItem[] }) {
                         ) : detail ? (
                           detail.has_html && detail.id
                             ? <HtmlReportView reportId={detail.id} />
-                            : isFullReport(detail)
-                              ? <FullReportView r={detail} />
-                              : <IntradayReportView r={detail} />
+                            : isMdReport(detail)
+                              ? <MdReportView r={detail} />
+                              : isFullReport(detail)
+                                ? <FullReportView r={detail} />
+                                : <IntradayReportView r={detail} />
                         ) : (
                           <div className="py-6 text-center text-sm text-gray-400">加载失败，请重试</div>
                         )}
@@ -1186,12 +1499,16 @@ function AgentPageInner() {
 
       <StrategistPanel running={isRunning || strategistLoading} onTrigger={handleStrategist} hasInfoBrief={hasInfoBrief} />
 
+      <ReviewAiPanel onDone={() => { loadLatest(); loadHistory(); }} />
+
       {report ? (
         report.has_html && report.id
           ? <HtmlReportView reportId={report.id} />
-          : isFullReport(report)
-            ? <FullReportView r={report} />
-            : <IntradayReportView r={report} />
+          : isMdReport(report)
+            ? <MdReportView r={report} />
+            : isFullReport(report)
+              ? <FullReportView r={report} />
+              : <IntradayReportView r={report} />
       ) : (
         <div className="bg-white rounded-2xl border border-gray-100 p-12 shadow-[var(--shadow-sm)]
                         flex flex-col items-center justify-center gap-3 text-center mb-6">

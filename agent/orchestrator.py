@@ -88,14 +88,27 @@ def _find_claude() -> str:
     if found:
         return found
     # launchd 等精简 PATH 环境（/usr/bin:/bin:...）下，补充常见安装位置
-    for candidate in (
+    candidates = [
         Path("/opt/homebrew/bin/claude"),            # Homebrew (Apple Silicon)
         Path("/usr/local/bin/claude"),               # Homebrew (Intel) / npm global
-        Path.home() / ".nvm/versions/node/v20.20.2/bin/claude",
-    ):
+    ]
+    # nvm 多版本动态扫描，取版本号最高者（避免写死版本号过时找不到）
+    nvm_root = Path.home() / ".nvm/versions/node"
+    if nvm_root.is_dir():
+        def _ver_key(p: Path) -> tuple:
+            try:
+                return tuple(int(x) for x in p.name.lstrip("v").split("."))
+            except Exception:
+                return (0,)
+        nvm_claudes = sorted(
+            (d / "bin" / "claude" for d in nvm_root.iterdir() if (d / "bin" / "claude").is_file()),
+            key=_ver_key,
+        )
+        candidates = nvm_claudes + candidates
+    for candidate in candidates:
         if candidate.is_file():
             return str(candidate)
-    return str(Path.home() / ".nvm/versions/node/v20.20.2/bin/claude")
+    return str(candidates[0]) if candidates else "claude"
 
 
 def _wait_wallclock(proc: subprocess.Popen, timeout: float) -> None:
@@ -283,13 +296,26 @@ def _set_phase(phase: str, detail: str) -> None:
         _agent_state["phase_detail"] = detail
 
 
-def _finish_pipeline(ok: bool, error_msg: str) -> None:
+def _finish_pipeline(ok: bool, error_msg: str, run_type: str = "") -> None:
     with _state_lock:
         if ok:
             _agent_state["last_run"] = datetime.now().strftime("%H:%M:%S")
             _agent_state["last_error"] = None
         else:
             _agent_state["last_error"] = error_msg
+    # 失败也落一条可见记录：前端能区分「触发了但失败」vs「没触发」，避免像今天一样静默消失
+    if not ok and run_type:
+        try:
+            from db.storage import insert_agent_summary
+            data = {"run_type": run_type, "failed": True, "error": error_msg}
+            insert_agent_summary(
+                f"⚠️ 本次分析失败：{error_msg}（skill 超时或执行出错，可稍后手动重试）",
+                json.dumps(data, ensure_ascii=False),
+                run_type=run_type,
+            )
+            logger.info("[orchestrator] failure record written run_type=%s error=%s", run_type, error_msg)
+        except Exception as exc:
+            logger.warning("[orchestrator] failure record write failed: %s", exc)
 
 
 # run_type → (skill 名, 阶段描述)。单 skill 轻量专项管道，跳过数据健康门禁（不依赖行情数据）。
@@ -321,9 +347,9 @@ def _run_pipeline(run_type: str, run_id: str, pool: str | None = None) -> None:
                 phase_detail = f"{phase_detail}（{pool}）"
             _set_phase("analysts", phase_detail)
             ok = _run_skill(skill_name, run_id, run_type, timeout=900, pool=pool)
-            _finish_pipeline(ok, f"{phase_detail.replace('中', '')}失败")
+            _finish_pipeline(ok, f"{phase_detail.replace('中', '')}失败", run_type)
         finally:
-            _cleanup_after_pipeline(run_id)
+            _cleanup_after_pipeline(run_id, run_type)
         return
 
     _set_phase("preflight", "数据健康检查中")
@@ -343,10 +369,10 @@ def _run_pipeline(run_type: str, run_id: str, pool: str | None = None) -> None:
         else:
             _run_full(run_type, run_id)
     finally:
-        _cleanup_after_pipeline(run_id)
+        _cleanup_after_pipeline(run_id, run_type)
 
 
-def _cleanup_after_pipeline(run_id: str) -> None:
+def _cleanup_after_pipeline(run_id: str, run_type: str) -> None:
     """管道结束后的状态复位与临时目录清理。"""
     global _stop_requested
     with _state_lock:
@@ -566,7 +592,7 @@ def _run_watchlist(run_type: str, run_id: str, pool: str | None) -> None:
 
     _set_phase("chief", "汇总股池报告中")
     ok = _run_skill("mra-watchlist", run_id, run_type, timeout=_WATCHLIST_AGG_TIMEOUT, pool=pool)
-    _finish_pipeline(ok, "股池汇总失败")
+    _finish_pipeline(ok, "股池汇总失败", run_type)
 
 
 def _run_intraday(run_type: str, run_id: str) -> None:
@@ -576,7 +602,7 @@ def _run_intraday(run_type: str, run_id: str) -> None:
 
     _set_phase("chief", "生成盘中盘感摘要")
     ok = _run_skill("mra-intraday", run_id, run_type, timeout=600)
-    _finish_pipeline(ok, "盘中汇总失败")
+    _finish_pipeline(ok, "盘中汇总失败", run_type)
 
 
 def _run_full(run_type: str, run_id: str) -> None:
@@ -599,7 +625,7 @@ def _run_full(run_type: str, run_id: str) -> None:
 
     _set_phase("chief", "首席裁决，生成最终报告")
     ok = _run_skill(chief_skill, run_id, run_type, timeout=900)
-    _finish_pipeline(ok, "首席裁决阶段失败")
+    _finish_pipeline(ok, "首席裁决阶段失败", run_type)
 
 
 def _run_parallel(skills: list, run_id: str, run_type: str, timeout: int) -> list:
