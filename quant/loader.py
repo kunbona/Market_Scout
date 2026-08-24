@@ -19,6 +19,8 @@ quant/loader.py — 本地量价数据读取工具
 
 import logging
 import os
+import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN as _ROUND_DOWN
 from pathlib import Path
@@ -26,6 +28,68 @@ from pathlib import Path
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# ── 窗口级缓存 ───────────────────────────────────────────────────────────────
+# review_v2 / review_compute 会在同一次计算中对同一 trade_date 反复调用
+# load_daily_snapshot / load_daily_range（14 个 daily_compute 各自调用），
+# 每次都重新并行读 5000+ CSV 代价极高。此缓存把"读盘 + _enrich 派生列计算"
+# 的结果缓存在内存，命中时只做一次拷贝。
+#
+# 键只有 trade_date（每个交易日一份），窗口取该日请求过的最大 lookback：
+# 大窗口 ⊇ 小窗口（多带历史行），调用方（snapshot 取当日行 / range 自行截断
+# days 天）只会用到子集，因此 13 个 30 天请求 + 1 个 40 天请求共用一份 40 天窗口，
+# 全程只读一次盘。
+#
+# 边界控制:
+#   - 最多 _WINDOW_CACHE_MAX 条（每条约 100-200MB），FIFO 淘汰最旧的
+#   - 超过 _WINDOW_CACHE_TTL 秒视为过期重新读盘（Exodia 更新后最多滞后一个 TTL）
+#   - clear_loader_cache() 供外部在数据更新后主动失效
+_WINDOW_CACHE: "dict[str, tuple[float, int, pd.DataFrame]]" = {}  # trade_date -> (ts, lookback, df)
+_WINDOW_CACHE_MAX = 3
+_WINDOW_CACHE_TTL = 1800  # 秒
+_WINDOW_MIN_LOOKBACK = 45  # 首次加载的窗口下限（覆盖已知最大请求 40），保证一天只读一次盘
+_WINDOW_CACHE_LOCK = threading.Lock()
+
+
+def clear_loader_cache() -> None:
+    """清空窗口缓存。Exodia 数据更新后可调用，保证下次读取拿到新数据。"""
+    with _WINDOW_CACHE_LOCK:
+        n = len(_WINDOW_CACHE)
+        _WINDOW_CACHE.clear()
+        logger.info("[loader] 窗口缓存已清空 (%d 条)", n)
+
+
+def _cache_get(trade_date: str, lookback: int) -> "tuple[pd.DataFrame, int] | None":
+    """命中返回 (df拷贝, 缓存里的lookback)；未命中/过期返回 None。"""
+    with _WINDOW_CACHE_LOCK:
+        entry = _WINDOW_CACHE.get(trade_date)
+        if entry is None:
+            return None
+        ts, cached_lb, df = entry
+        if time.monotonic() - ts > _WINDOW_CACHE_TTL:
+            _WINDOW_CACHE.pop(trade_date, None)
+            logger.info("[loader] 窗口缓存过期: %s，将重新读盘", trade_date)
+            return None
+        if cached_lb < lookback:
+            # 现有窗口不够宽，需要重新读更大的窗口（由调用方处理）
+            logger.info("[loader] 窗口缓存不够宽: %s 缓存=%d天 < 请求=%d天，将扩窗重读",
+                        trade_date, cached_lb, lookback)
+            return None
+        logger.info("[loader] 窗口缓存命中: %s (缓存=%d天, 请求=%d天, age=%.0fs)",
+                    trade_date, cached_lb, lookback, time.monotonic() - ts)
+        return df.copy(), cached_lb
+
+
+def _cache_put(trade_date: str, lookback: int, df: pd.DataFrame) -> None:
+    with _WINDOW_CACHE_LOCK:
+        old = _WINDOW_CACHE.get(trade_date)
+        if old is not None and old[1] >= lookback:
+            return  # 已有等宽或更宽的缓存，不覆盖
+        _WINDOW_CACHE[trade_date] = (time.monotonic(), lookback, df)
+        while len(_WINDOW_CACHE) > _WINDOW_CACHE_MAX:
+            oldest = min(_WINDOW_CACHE, key=lambda k: _WINDOW_CACHE[k][0])
+            _WINDOW_CACHE.pop(oldest, None)
+            logger.info("[loader] 窗口缓存淘汰: %s (超过 %d 条)", oldest, _WINDOW_CACHE_MAX)
 
 _data_root_env = os.environ.get("QUANT_DATA_ROOT", "").strip()
 DATA_ROOT = Path(_data_root_env) if _data_root_env else None
@@ -130,8 +194,6 @@ def load_daily_snapshot(trade_date: str, lookback: int = 30) -> pd.DataFrame:
             logger.warning("[loader] load_daily_snapshot: %s 无数据", trade_date)
             return pd.DataFrame()
 
-        df_window = _enrich(df_window)
-
         result = df_window[df_window["trade_date"] == trade_date].copy()
         result = result.reset_index(drop=True)
 
@@ -165,8 +227,6 @@ def load_daily_range(trade_date: str, days: int = 25) -> pd.DataFrame:
         df_window = _load_window(trade_date, lookback)
         if df_window.empty:
             return pd.DataFrame()
-
-        df_window = _enrich(df_window)
 
         sorted_dates = sorted(df_window["trade_date"].unique())
         if trade_date in sorted_dates:
@@ -207,13 +267,28 @@ def _read_one_csv(args: tuple) -> "pd.DataFrame | None":
 
 
 def _load_window(trade_date: str, lookback: int) -> pd.DataFrame:
-    """从 stock-trading-data-pro 并行读取 lookback 天窗口数据。
+    """从 stock-trading-data-pro 并行读取 lookback 天窗口数据（含 _enrich 派生列），带窗口缓存。
+
+    缓存: 每个 trade_date 只存一份，窗口宽度取请求过的最大 lookback。
+    review_v2 的 14 个 daily_compute（13 个 lookback=30 + 1 个 40）全程只读一次盘。
+    注意: 返回的窗口可能比请求的 lookback 更宽（多带历史行），调用方自行截取所需子集。
 
     并发后端选择策略:
       - WSL 环境: ThreadPoolExecutor（多线程），避免 fork-after-threads 死锁
       - 其他系统: ProcessPoolExecutor（多进程），充分利用多核 CPU
       - workers == 0: 串行模式（单线程）
     """
+    cached = _cache_get(trade_date, lookback)
+    if cached is not None:
+        return cached[0]
+
+    # 现有缓存不够宽时，用"已有宽度与本次请求的较大者"重读，避免之后又被更宽的请求打回
+    with _WINDOW_CACHE_LOCK:
+        _existing_lb = _WINDOW_CACHE.get(trade_date, (0, 0, None))[1]
+    # 下限 45 天：已知最大的业务请求是 40（days=35 的 range），首次加载直接给足宽度，
+    # 保证一个交易日只读一次盘（后续 30/40 请求全部命中）
+    effective_lookback = max(lookback, _existing_lb, _WINDOW_MIN_LOOKBACK)
+
     trading_dir = DATA_ROOT / "stock-trading-data-pro" if DATA_ROOT else None
     if not trading_dir or not trading_dir.exists():
         logger.warning("[loader] stock-trading-data-pro 目录不存在: %s", trading_dir)
@@ -224,10 +299,10 @@ def _load_window(trade_date: str, lookback: int) -> pd.DataFrame:
     use_threads = _RUNNING_IN_WSL
     backend = "thread" if use_threads else "process"
     logger.info("[loader] 读取 %d 个 CSV，窗口: %s 前 %d 天，workers=%d，backend=%s%s",
-                len(csv_files), trade_date, lookback, workers, backend,
+                len(csv_files), trade_date, effective_lookback, workers, backend,
                 "（WSL 检测到，使用多线程避免 fork 死锁）" if use_threads else "")
 
-    task_args = [(str(p), trade_date, lookback, _USECOLS, _TRADING_COL_MAP) for p in csv_files]
+    task_args = [(str(p), trade_date, effective_lookback, _USECOLS, _TRADING_COL_MAP) for p in csv_files]
 
     all_dfs = []
     if workers == 0:
@@ -265,7 +340,12 @@ def _load_window(trade_date: str, lookback: int) -> pd.DataFrame:
     for col in ["open", "high", "low", "close", "pre_close", "amount", "circ_mv", "total_mv"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
+
+    # 派生列计算（涨跌停价/连板/滚动均值）与窗口一一对应，一并缓存
+    df = _enrich(df)
+
+    _cache_put(trade_date, effective_lookback, df)
+    return df.copy()
 
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
@@ -307,7 +387,14 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _calc_zdt_price_vectorized(df: pd.DataFrame) -> pd.DataFrame:
-    """向量化计算涨跌停价格。规则与 market_essentials.cal_zdt_price 一致。"""
+    """向量化计算涨跌停价格。规则与 market_essentials.cal_zdt_price 一致。
+
+    ST 规则（修复 2026-08-20）:
+    - 沪深主板 ST/*ST: 2026-07-06 起与普通股并轨 ±10%（此前 ±5%），见 xtquant_limit_down.py 注释
+    - 创业板/科创板/北交所 ST: 涨跌幅不受 ST 影响（20%/20%/30%）
+    老代码把 ST 一律按 ±5% 算 → 8/19 大跌日 29 只跌 5%~9.9% 的主板 ST 股被误判跌停
+    （情绪周期 dt=156 vs 复盘 128，其中 29 只就是 ST 误判）。
+    """
     pre = df["pre_close"].fillna(0)
     code = df["code"].fillna("").astype(str)
     name = df["name"].fillna("").astype(str)
@@ -321,15 +408,20 @@ def _calc_zdt_price_vectorized(df: pd.DataFrame) -> pd.DataFrame:
     zt_ratio = pd.Series(1.1, index=df.index)
     dt_ratio = pd.Series(0.9, index=df.index)
 
-    zt_ratio[is_st] = 1.05
-    dt_ratio[is_st] = 0.95
-
-    merge_rule = (is_kcb | is_cyb_new) & ~is_st
+    # 创业板/科创板（含 ST）±20%
+    merge_rule = is_kcb | is_cyb_new
     zt_ratio[merge_rule] = 1.2
     dt_ratio[merge_rule] = 0.8
 
+    # 北交所（含 ST）±30%
     zt_ratio[is_bj] = 1.3
     dt_ratio[is_bj] = 0.7
+
+    # ST 只影响沪深主板: 2026-07-06 前 ±5%, 之后并轨 ±10%（与普通股一致, 即保持默认 1.1/0.9）
+    st_main = is_st & ~merge_rule & ~is_bj
+    st_old = st_main & (trade_date_s < "2026-07-06")
+    zt_ratio[st_old] = 1.05
+    dt_ratio[st_old] = 0.95
 
     zt_raw = pre * zt_ratio
     dt_raw = pre * dt_ratio

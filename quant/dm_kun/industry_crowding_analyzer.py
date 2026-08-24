@@ -82,15 +82,10 @@ ASSET_RULE_HINT = {
 
 def process_stock_file(args_tuple: tuple) -> pd.DataFrame | None:
     """单文件处理（供 ProcessPoolExecutor 调用）：取交易日/成交额/一级行业。"""
-    file_path, end_date_str = args_tuple
+    code, df, end_date_str = args_tuple
     try:
-        # 探测跳过版权行（首行不含表头则跳过）
-        skip_rows = 0
-        with open(file_path, "r", encoding="gbk", errors="ignore") as f:
-            first_line = f.readline()
-            if "股票代码" not in first_line and "交易日期" not in first_line:
-                skip_rows = 1
-        df = pd.read_csv(file_path, encoding="gbk", skiprows=skip_rows)
+        # 2026-08-18 起数据来自 quant/snapshot.py 日快照 (df 已含尾部 1900 行,
+        # 交易日期已是 datetime), 不再逐文件直读 gbk CSV
         if df.empty or COL_DATE not in df.columns or COL_AMOUNT not in df.columns:
             return None
         if COL_INDUSTRY1 not in df.columns:
@@ -111,17 +106,23 @@ def process_stock_file(args_tuple: tuple) -> pd.DataFrame | None:
 
 
 def load_panel(data_dir: str, analysis_date: str, n_jobs: int = 12) -> pd.DataFrame:
-    """并行加载全量股票的 日期×成交额×行业 面板。"""
-    all_files = sorted(
-        os.path.join(data_dir, f)
-        for f in os.listdir(data_dir)
-        if f.endswith(".csv") and not f.startswith("bj")
-    )
-    print(f"[拥挤度] 股票文件数: {len(all_files)}, 并行进程: {n_jobs}")
+    """并行加载全量股票的 日期×成交额×行业 面板。
+
+    2026-08-18 起改读日快照 (quant/snapshot.py): 父进程读一次 parquet 按
+    股票切片, 进程池只做过滤, 不再逐文件读 CSV (data_dir 参数保留仅为
+    兼容旧签名, 已不再使用)。
+    """
+    from ..snapshot import iter_stock_frames
+    cols = [COL_DATE, COL_AMOUNT, COL_INDUSTRY1]
+    # 快照含北交所, 这里按旧行为排除 (旧代码 listdir 过滤 bj*)
+    frames = [(c, d) for c, d in iter_stock_frames(cols)
+              if not c.lower().startswith("bj")]
+    print(f"[拥挤度] 快照股票数: {len(frames)}, 并行进程: {n_jobs}")
     t0 = datetime.now()
     parts = []
     with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-        futures = {executor.submit(process_stock_file, (f, analysis_date)): f for f in all_files}
+        futures = {executor.submit(process_stock_file, (c, d, analysis_date)): c
+                   for c, d in frames}
         for fut in as_completed(futures):
             try:
                 r = fut.result()

@@ -21,41 +21,25 @@ MAX_STALENESS_DAYS = 90  # 股票最新交易日距分析日超过此天数视�
 # ============================================================
 # 1. 股票数据读取（只读需要的列）
 # ============================================================
-def read_stock(file_path, min_days=120, max_staleness_days=90, ref_date=None):
-    """读取单只股票数据，只提取打分需要的列。
-    min_days: 最少上市交易天数（过滤新股）
+def read_stock(args, min_days=120, max_staleness_days=90, ref_date=None):
+    """处理单只股票数据（2026-08-18 起数据来自日快照切片, args = (code, df)，
+    df 已含 13 个所需列并沿用旧英文别名, 不再逐文件直读 gbk CSV）。
+    min_days: 最少上市交易天数（过滤新股; 注意快照每股最多 1900 行,
+              min_days > 1900 时该过滤会失效——现役默认 120, 无影响）
     max_staleness_days: 最新交易日超过此天数视为退市/停更（过滤僵尸股）
-    ref_date: 参考日期，用于计算staleness。None则自动取全市场最新日期
+    ref_date: 参考日期，用于计算staleness。None则自动取当前日期
     """
+    code, df = args
     try:
-        fname = os.path.basename(file_path)
-        code_prefix = fname.lower()[:2]
-        # 过滤北交所
-        if code_prefix == 'bj':
-            return None
-
-        # 探测跳过行
-        skip_rows = 0
-        with open(file_path, 'r', encoding='gbk', errors='ignore') as f:
-            if '股票代码' not in f.readline():
-                skip_rows = 1
-
-        # 只读需要的列（用列索引避免编码问题）
-        # 0:股票代码 1:股票名称 2:交易日期 6:收盘价 8:成交量 9:成交额
-        # 10:流通市值 11:总市值 12:净利润TTM
-        # 18:机构资金买入额 19:机构资金卖出额
-        # 20:大户资金买入额 21:大户资金卖出额
-        # 32:申万一级行业
-        df = pd.read_csv(file_path, encoding='gbk', skiprows=skip_rows,
-                         usecols=[0, 1, 2, 6, 8, 9, 10, 11, 18, 19, 20, 21, 32],
-                         dtype={18: float, 19: float, 20: float, 21: float})
-        df.columns = ['code', 'name', 'date', 'close', 'volume', 'amount',
-                      'float_mv', 'total_mv', 'inst_buy', 'inst_sell',
-                      'big_buy', 'big_sell', 'industry']
-
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.dropna(subset=['date', 'close'])
         df = df.sort_values('date')
+
+        # 复盘统一管理: 指定 ref_date 时把数据切片到该日或之前(各指标按历史日回看, 不偷看未来)
+        if ref_date is not None:
+            df = df[df['date'] <= pd.Timestamp(ref_date)]
+            if df.empty:
+                return None
 
         # --- 过滤退市/停更（僵尸股）---
         last_trade_date = df['date'].max()
@@ -280,6 +264,8 @@ def main():
     parser.add_argument('--strength', type=str, default=None,
                         help='行业强势占比，如: "电子:55.6,有色金属:52.2"')
     parser.add_argument('--output', type=str, default=None, help='输出文件路径')
+    parser.add_argument('--date', type=str, default=None,
+                        help='分析截止日期 YYYY-MM-DD（默认自动检测最新交易日，用于复盘按历史日回看）')
     args = parser.parse_args()
 
     # 解析行业强势度
@@ -292,19 +278,36 @@ def main():
     print(f"🔍 扫描行业: {args.industries}")
     print(f"📊 行业强势度: {industry_strength if industry_strength else '未提供'}")
 
-    # 扫描股票文件
-    files = list(Path(STOCK_PATH).glob('*.csv'))
-    print(f"📂 共 {len(files)} 个股票文件，筛选目标行业...")
+    # 扫描股票文件 (2026-08-18 起改读日快照, 不再逐文件 glob+read_csv;
+    # 全量 1900 行切片保留给 worker 数上市天数, 北交所在提交前过滤)
+    from ..snapshot import iter_stock_frames
+    _col_map = {'股票代码': 'code', '股票名称': 'name', '交易日期': 'date',
+                '收盘价': 'close', '成交量': 'volume', '成交额': 'amount',
+                '流通市值': 'float_mv', '总市值': 'total_mv',
+                '中户资金买入额': 'inst_buy', '中户资金卖出额': 'inst_sell',
+                '大户资金买入额': 'big_buy', '大户资金卖出额': 'big_sell',
+                '新版申万一级行业名称': 'industry'}
+    _frames_all = [(c, d.rename(columns=_col_map))
+                   for c, d in iter_stock_frames(list(_col_map.keys()))]
+    total = len(_frames_all)
+    frames = [(c, d) for c, d in _frames_all
+              if not c.lower().startswith('bj')]
+    del _frames_all
+    print(f"📂 共 {total} 个股票文件，筛选目标行业...")
 
     # 复用 sentiment_cycle 同一份 lookback 逻辑: 凌晨 02:50 跑应该用 8/12 而不是 8/13
     # pd.Timestamp.now() 会显示当天 — CSV 8/13 还没开盘实际数据是 8/12
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # 让 import quant.loader 找得到
-    try:
-        from quant.loader import get_latest_trade_date as _gltd
-        _analysis_date = _gltd() or pd.Timestamp.now().strftime('%Y-%m-%d')
-    except Exception:
-        _analysis_date = pd.Timestamp.now().strftime('%Y-%m-%d')
+    if args.date:
+        # 复盘统一管理: 指定历史日切片, 各指标按该日回看
+        _analysis_date = pd.Timestamp(args.date).strftime('%Y-%m-%d')
+    else:
+        try:
+            from quant.loader import get_latest_trade_date as _gltd
+            _analysis_date = _gltd() or pd.Timestamp.now().strftime('%Y-%m-%d')
+        except Exception:
+            _analysis_date = pd.Timestamp.now().strftime('%Y-%m-%d')
 
     def _resolve_analysis_date() -> str:
         return _analysis_date
@@ -313,9 +316,10 @@ def main():
     max_workers = max(1, min(12, (os.cpu_count() or 4) - 2))
     results = []
     read_func = partial(read_stock, min_days=args.min_days,
-                        max_staleness_days=args.max_staleness)
+                        max_staleness_days=args.max_staleness,
+                        ref_date=_analysis_date)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for r in executor.map(read_func, files):
+        for r in executor.map(read_func, frames):
             if r and r['industry'] in args.industries:
                 results.append(r)
 
@@ -325,7 +329,6 @@ def main():
 
     df = pd.DataFrame(results)
     kept = len(df)
-    total = len(files)
     print(f"✅ 找到 {kept} 只目标行业股票（全市场{total}只，已过滤退市/ST/停更>{args.max_staleness}天个股）")
 
     # 基础过滤

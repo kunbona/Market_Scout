@@ -84,21 +84,14 @@ def limit_threshold(code: str) -> float:
     return 9.95
 
 
-def process_stock_file(file_path: str, target_date: str | None = None) -> dict | None:
-    """单文件处理：近3日涨停标记 + 今日/昨日连板数 + 今日成交额/涨幅
+def process_stock_file(code: str, df: pd.DataFrame) -> dict | None:
+    """单股票处理（2026-08-18 起数据来自日快照切片, 不再直读 CSV）：
+    近3日涨停标记 + 今日/昨日连板数 + 今日成交额/涨幅
     + 五类结构/观察池所需字段（秒板、近5日/3日涨幅、放量、均线、20日涨停史）。"""
     try:
-        code = os.path.basename(file_path).replace(".csv", "")
-        skip = 0
-        with open(file_path, "r", encoding="gbk", errors="ignore") as f:
-            if "股票代码" not in f.readline():
-                skip = 1
-        df = pd.read_csv(file_path, encoding="gbk", skiprows=skip)
         if df.empty or COL_DATE not in df.columns:
             return None
         df[COL_DATE] = pd.to_datetime(df[COL_DATE])
-        if target_date:
-            df = df[df[COL_DATE] <= pd.Timestamp(target_date)]
         df = df.tail(DAYS_TO_KEEP)
         if len(df) < 6:
             return None
@@ -353,14 +346,17 @@ def main():
     parser.add_argument("--summary-only", action="store_true")
     args = parser.parse_args()
 
-    files = sorted(
-        os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
-        if f.endswith(".csv") and not f.startswith("bj")
-    )
+    # 2026-08-18 起改读日快照: 父进程读一次 parquet 切片, 不再逐文件读 CSV
+    from ..snapshot import iter_stock_frames
+    need_cols = [COL_DATE, COL_CLOSE, COL_PREV_CLOSE, COL_NAME, COL_AMOUNT,
+                 COL_INDUSTRY1, COL_INDUSTRY2, COL_0935]
+    frames = [(c, d) for c, d in iter_stock_frames(need_cols, tail_rows=DAYS_TO_KEEP + 10,
+                                                    end_date=args.date)
+              if not c.lower().startswith("bj")]  # 旧代码 listdir 过滤 bj*
     t0 = datetime.now()
     recs = []
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(process_stock_file, f, args.date): f for f in files}
+        futs = {ex.submit(process_stock_file, c, d): c for c, d in frames}
         for fut in as_completed(futs):
             try:
                 r = fut.result()

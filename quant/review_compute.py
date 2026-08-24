@@ -50,38 +50,23 @@ def _latest_trade_date() -> str:
 
 def _load_all_stocks(target_date: str | None = None) -> pd.DataFrame:
     """批量加载全市场股票日线数据（排除北交所），返回合并后的 DataFrame。"""
-    data_root = _loader.DATA_ROOT
-    if not data_root or not data_root.exists():
-        raise FileNotFoundError("QUANT_DATA_ROOT 未配置或路径不存在")
+    # 2026-08-18 起改读日快照 (quant/snapshot.py): 全市场 CSV 一天只从盘读一遍,
+    # L4 与 DM-kun 6 个脚本共用同一份 parquet。此前是 7 个消费方各自全量读
+    # ~5900 个 gbk CSV (~4.6GB), 一次复盘重算合计约 6.5 遍全市场扫描。
+    from quant.snapshot import load_snapshot, KEEP_ROWS
 
-    trading_dir = data_root / "stock-trading-data-pro"
-    files = sorted(trading_dir.glob("*.csv"))
-    logger.info("[review] 扫描到 %d 个股票文件", len(files))
-
-    frames: list[pd.DataFrame] = []
-    skipped_bj = 0
-    for fp in files:
-        name = fp.name.lower()
-        if name.startswith("bj"):
-            skipped_bj += 1
-            continue
-        try:
-            df = pd.read_csv(fp, encoding="gbk", skiprows=1)
-        except Exception:
-            continue
-        if df.empty:
-            continue
-        if "交易日期" not in df.columns:
-            continue
-        df["交易日期"] = pd.to_datetime(df["交易日期"], errors="coerce")
-        df = df.dropna(subset=["交易日期"]).sort_values("交易日期").tail(HISTORY_DAYS)
-        frames.append(df)
-
-    if not frames:
-        raise RuntimeError("未成功读取任何股票数据")
-
-    full = pd.concat(frames, ignore_index=True)
-    logger.info("[review] 加载完成: %d 只股票, 跳过 %d 只北交所", len(frames), skipped_bj)
+    full = load_snapshot()
+    # 与旧实现一致: 排除北交所 (快照收全量含 bj, 由消费方过滤)
+    full = full[~full["股票代码"].str.lower().str.startswith("bj")]
+    if HISTORY_DAYS < KEEP_ROWS:
+        # 与旧实现语义一致: 每股保留尾部 HISTORY_DAYS 行
+        full = full.sort_values(["股票代码", "交易日期"], kind="stable")
+        full = full.groupby("股票代码", sort=False).tail(HISTORY_DAYS)
+    full = full.reset_index(drop=True)
+    if full.empty:
+        raise RuntimeError("快照为空, 未成功读取任何股票数据")
+    logger.info("[review] 快照加载完成: %d 只股票 / %d 行",
+                full["股票代码"].nunique(), len(full))
 
     if target_date:
         cutoff = pd.to_datetime(target_date)
@@ -136,26 +121,35 @@ def _load_all_stocks(target_date: str | None = None) -> pd.DataFrame:
     if "前收盘价" in full.columns:
         full["涨跌幅"] = (full["收盘价"] / full["前收盘价"] - 1) * 100
 
-    # 涨停判定
+    # 涨停判定（板块阈值: 沪深主板 10% / 创业板·科创板 20% / 北交所 30%）
+    # 修复 2026-08-20: 快照里股票代码带前缀 (sz300131/sh688535),
+    # 老代码 startswith("3")/startswith("688") 永远匹配不到 → 创业板/科创板被按主板
+    # 10% 阈值判定, 大跌日跌 10%~19.9% 的双创股被大量误判为跌停 (8/19 复盘 331 vs 东财 118)。
+    # 改用真实涨跌停价 (round(前收*(1±比例),2)) 判定, 消除"差一分钱"边缘误判。
     full["涨停"] = False
     full["跌停"] = False
     for idx, row in full.iterrows():
-        code = str(row.get("股票代码", ""))
+        code = str(row.get("股票代码", "")).lower()
         try:
-            chg = row["涨跌幅"]
+            prev_close = row["前收盘价"]
+            close = row["收盘价"]
         except (KeyError, TypeError):
             continue
-        if pd.isna(chg):
+        if pd.isna(prev_close) or prev_close <= 0 or pd.isna(close):
             continue
-        if code.startswith("3") or code.startswith("688"):
-            threshold = 20.0
-        elif code.startswith("8") or code.startswith("4") or code.startswith("bj"):
-            threshold = 30.0
+        if code.startswith("sz3") or code.startswith("300"):
+            threshold = 20.0  # 创业板
+        elif code.startswith("sh688") or code.startswith("688"):
+            threshold = 20.0  # 科创板
+        elif code.startswith("bj") or code.startswith("8") or code.startswith("43"):
+            threshold = 30.0  # 北交所
         else:
-            threshold = 10.0
-        if chg >= threshold * 0.995:
+            threshold = 10.0  # 沪深主板
+        up_limit = round(prev_close * (1 + threshold / 100), 2)
+        down_limit = round(prev_close * (1 - threshold / 100), 2)
+        if close >= up_limit - 0.001:
             full.at[idx, "涨停"] = True
-        if chg <= -threshold * 0.995:
+        if close <= down_limit + 0.001:
             full.at[idx, "跌停"] = True
 
     return full

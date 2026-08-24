@@ -241,12 +241,25 @@ def main(analysis_date=None):
     else:
         recent_start = pd.Timestamp('2026-03-01')
 
+    # 2026-08-18 起改读日快照 (quant/snapshot.py): 不再对 3000 个抽样文件
+    # 逐个 read_csv 整文件; 采样名单保持与旧实现一致 (seed 42 + listdir 顺序)
+    from ..snapshot import iter_stock_frames
+    _sampled_codes = {str(f).replace('.csv', '') for f in sample_files}
+    _cols = ['股票代码', '交易日期', '收盘价', '新版申万一级行业名称']
+    frame_map = {c: d for c, d in iter_stock_frames(_cols)
+                 if c in _sampled_codes}
+
     width_data = []
     for fname in sample_files:
         try:
-            fp = os.path.join(STOCK_PATH, fname)
-            df = pd.read_csv(fp, encoding='gbk', header=1, usecols=[0, 2, 6, 32])
-            df.columns = ['code', 'date', 'close', 'industry']
+            code = str(fname).replace('.csv', '')
+            df = frame_map.get(code)
+            if df is None:
+                continue
+            df = df.rename(columns={'交易日期': 'date', '收盘价': 'close',
+                                    '新版申万一级行业名称': 'industry'})
+            if 'industry' not in df.columns:
+                df['industry'] = np.nan
             df['date'] = pd.to_datetime(df['date'])
             df = df.dropna(subset=['date', 'close'])
             df = df.sort_values('date')
@@ -268,7 +281,7 @@ def main(analysis_date=None):
             if industry in ('nan', '', '未知'):
                 industry = '未知'
             width_data.append({
-                'code': fname.replace('.csv', ''),
+                'code': code,
                 'ret5': ret5, 'ret20': ret20,
                 'above_ma10': cur_close > ma10 if not pd.isna(ma10) else None,
                 'above_ma20': cur_close > ma20 if not pd.isna(ma20) else None,

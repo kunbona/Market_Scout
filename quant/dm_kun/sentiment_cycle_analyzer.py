@@ -183,11 +183,14 @@ def read_tail_csv(file_path, n_lines=40, encoding='gbk'):
         return None
 
 
-def process_stock_sentiment(file_path):
-    """处理单只股票的情绪指标（含烂板分析所需数据）"""
+def process_stock_sentiment(args):
+    """处理单只股票的情绪指标（含烂板分析所需数据）。
+
+    2026-08-18 起数据来自 quant/snapshot.py 日快照切片 (args = (code, df)),
+    不再逐文件直读 gbk CSV。df 已含尾部 DAYS_TO_KEEP+10 行。
+    """
+    code, df = args
     try:
-        code = os.path.basename(file_path).replace('.csv', '')
-        df = read_tail_csv(file_path, n_lines=DAYS_TO_KEEP + 10)
         if df is None or df.empty:
             return None
 
@@ -457,17 +460,18 @@ def _run_analysis(analysis_date=None):
 
     print(f"\n## 短线情绪周期分析 ({analysis_date})\n")
 
-    # 获取所有股票文件
-    stock_files = []
-    for fname in os.listdir(STOCK_PATH):
-        if fname.endswith('.csv'):
-            stock_files.append(os.path.join(STOCK_PATH, fname))
+    # 2026-08-18 起改读日快照: 父进程读一次 parquet 切片 (含北交所,
+    # 与旧 listdir 不过滤 bj 的行为一致), 不再逐文件读 CSV
+    from ..snapshot import iter_stock_frames
+    _need_cols = ['交易日期', '收盘价', '最高价', '最低价', '前收盘价', '股票名称',
+                  '成交额', '成交量', '09:55收盘价', '流通市值', '新版申万一级行业名称']
+    stock_frames = list(iter_stock_frames(_need_cols, tail_rows=DAYS_TO_KEEP + 10))
 
-    if not stock_files:
+    if not stock_frames:
         print("**错误**: 未找到股票数据文件")
         return
 
-    total_stocks = len(stock_files)
+    total_stocks = len(stock_frames)
     print(f"*全市场 {total_stocks} 只股票，并行处理中...*\n")
 
     # 并行处理
@@ -476,7 +480,7 @@ def _run_analysis(analysis_date=None):
     completed = 0
 
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(process_stock_sentiment, f): f for f in stock_files}
+        futures = {executor.submit(process_stock_sentiment, sf): sf for sf in stock_frames}
         for future in as_completed(futures):
             completed += 1
             if completed % 1000 == 0:
@@ -493,6 +497,10 @@ def _run_analysis(analysis_date=None):
 
     # 按日期组织数据
     df_all = pd.DataFrame(all_records)
+    # 修复 2026-08-20: 排除北交所 (bj, ±30% 涨跌停) —— 与东财跌停池/复盘页 limit_analysis
+    # (沪深口径) 对齐。老代码含北交所 → 8/19 跌停 140 (含 13 只 bj920xxx) vs 复盘 128,
+    # 且北交所 ±30% 与沪深 ±10%/20% 不可比, 会扭曲涨跌停比/炸板率/涨停质量统计。
+    df_all = df_all[~df_all['code'].astype(str).str.lower().str.startswith('bj')].copy()
     df_all['date'] = pd.to_datetime(df_all['date'])
     all_dates = sorted(df_all['date'].unique())
     latest_date = all_dates[-1]

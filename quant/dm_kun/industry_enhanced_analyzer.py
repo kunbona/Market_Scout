@@ -119,12 +119,12 @@ def read_csv_safe(file_path: str, n_days: int = 400) -> pd.DataFrame | None:
 
 
 def process_stock_file(args_tuple: tuple) -> dict | None:
-    """单文件处理（供 ProcessPoolExecutor 调用）。
-    返回该股票的 BIAS20 序列 + 每日涨跌幅 + 行业信息。
+    """单股票处理（供 ProcessPoolExecutor 调用）。
+    2026-08-18 起数据来自 quant/snapshot.py 日快照切片 (args = (code, df, end_date)),
+    不再逐文件直读 gbk CSV。返回该股票的 BIAS20 序列 + 每日涨跌幅 + 行业信息。
     """
-    file_path, end_date_str = args_tuple
+    code, df, end_date_str = args_tuple
     try:
-        df = read_csv_safe(file_path, n_days=LOOKBACK_CALENDAR + 30)
         if df is None or df.empty:
             return None
 
@@ -201,24 +201,21 @@ def process_stock_file(args_tuple: tuple) -> dict | None:
 
 
 def detect_analysis_date(data_dir: str, target_date: str | None) -> str:
-    """检测最新交易日或使用指定日期。"""
+    """检测最新交易日或使用指定日期。
+
+    2026-08-18 起改用日快照 meta 的 data_date (全市场最大交易日期),
+    不再抽样 50 个文件逐个读尾部探测。
+    """
     if target_date:
         return target_date
 
-    # 抽样几个文件检测最新日期
-    files = sorted([f for f in os.listdir(data_dir)
-                    if f.endswith(".csv") and not f.startswith("bj")])[:50]
-    latest = None
-    for fname in files:
-        fp = os.path.join(data_dir, fname)
-        df = read_csv_safe(fp, n_days=5)
-        if df is not None and not df.empty:
-            df[COL_DATE] = pd.to_datetime(df[COL_DATE])
-            max_d = df[COL_DATE].max()
-            if latest is None or max_d > latest:
-                latest = max_d
-    if latest:
-        return latest.strftime("%Y-%m-%d")
+    try:
+        from ..snapshot import snapshot_meta
+        d = snapshot_meta().get("data_date")
+        if d:
+            return d
+    except Exception:
+        pass
     return datetime.now().strftime("%Y-%m-%d")
 
 
@@ -358,19 +355,21 @@ def compute_bias20_heat(data_dir: str, analysis_date: str, n_jobs: int = 12,
     if verbose:
         print(f"[行业增强分析] 开始加载数据...")
 
-    # 收集所有股票文件
-    all_files = sorted([
-        os.path.join(data_dir, f) for f in os.listdir(data_dir)
-        if f.endswith(".csv") and not f.startswith("bj")
-    ])
+    # 2026-08-18 起改读日快照: 父进程读一次 parquet 切片, 不再逐文件读 CSV
+    # (旧 read_csv_safe 对 bj* 返回 None, 这里同样跳过 bj)
+    from ..snapshot import iter_stock_frames
+    _cols = [COL_DATE, COL_CLOSE, COL_PREV_CLOSE, COL_CODE, COL_NAME,
+             COL_HIGH, COL_VOLUME, COL_INDUSTRY1, COL_AMOUNT, COL_INDUSTRY2]
+    args_list = [(c, d, analysis_date)
+                 for c, d in iter_stock_frames(_cols, tail_rows=LOOKBACK_CALENDAR + 30)
+                 if not c.lower().startswith("bj")]
 
     if verbose:
-        print(f"  股票文件数: {len(all_files)}")
+        print(f"  股票文件数: {len(args_list)}")
         print(f"  分析截止日期: {analysis_date}")
         print(f"  并行进程数: {n_jobs}")
 
-    # 并行处理
-    args_list = [(f, analysis_date) for f in all_files]
+    # 并行处理 (args_list 已在上面由快照切片构建)
     all_results = []
     failed = 0
 
