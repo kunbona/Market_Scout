@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "echarts": "^6.1.0",
     "lucide-react": "^1.17.0",
     "plotly.js-basic-dist-min": "^3.7.0",
     "react": "^19.2.6",

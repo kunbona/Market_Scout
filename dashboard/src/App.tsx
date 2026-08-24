@@ -12,8 +12,10 @@ import { QmtDataPage } from './pages/QmtDataPage';
 import { ExodiaDataPage } from './pages/ExodiaDataPage';
 import { CyclePage } from './pages/CyclePage';
 import { ReviewPage } from './pages/ReviewPage';
+import { IndustryTrendPage } from './pages/IndustryTrendPage';
 import { WatchlistPage } from './pages/WatchlistPage';
 import { AgentPage } from './pages/AgentPage';
+import { WisburgPage } from './pages/WisburgPage';
 import { useSettings } from './lib/useSettings';
 
 import type { AppSettings } from './lib/useSettings';
@@ -698,7 +700,7 @@ function SettingsPage({ settings, onUpdate }: {
   );
 }
 
-type TabId = 'news' | 'policy' | 'market' | 'qmt' | 'exodia' | 'cycle' | 'review' | 'watchlist' | 'research' | 'ai-analysis' | 'settings';
+type TabId = 'news' | 'policy' | 'market' | 'qmt' | 'exodia' | 'cycle' | 'review' | 'industry-trend' | 'watchlist' | 'research' | 'wisburg' | 'ai-analysis' | 'settings';
 
 interface DataAlert {
   level: 'error' | 'warning';
@@ -765,10 +767,14 @@ export default function App() {
         return <CyclePage />;
       case 'review':
         return <ReviewPage />;
+      case 'industry-trend':
+        return <IndustryTrendPage />;
       case 'watchlist':
         return <WatchlistPage />;
       case 'research':
         return <ResearchPage />;
+      case 'wisburg':
+        return <WisburgPage />;
       case 'ai-analysis':
         return <AgentPage />;
       case 'settings':

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Activity, BarChart3, BookOpen, Database, FileText, Star, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle, Waves } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Database, FileText, Star, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle, Waves, Globe, LineChart } from 'lucide-react';
 import { QmtBreakerStatus } from './QmtBreakerStatus';
 
 interface FetchResult { name: string; ok: boolean; error?: string; }
@@ -88,10 +88,12 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
     { id: 'exodia',      icon: Database,   label: '数据更新' },
     { id: 'cycle',       icon: Waves,      label: '市场周期' },
     { id: 'review',      icon: BookOpen,   label: '复盘数据' },
+    { id: 'industry-trend', icon: LineChart, label: '行业趋势' },
     { id: 'watchlist',   icon: Star,       label: '关注股池' },
     { id: 'news',        icon: FileText,   label: '财经快讯' },
     { id: 'policy',      icon: BarChart3,  label: '政策动态' },
     { id: 'research',    icon: FileText,   label: '研究报告' },
+    { id: 'wisburg',     icon: Globe,      label: '智堡投研' },
     { id: 'ai-analysis', icon: Sparkles, label: 'AI智能分析' },
     { id: 'settings',    icon: Settings, label: '设置' },
   ];
