@@ -14,6 +14,7 @@
     earningscalls     GET /api/earningscalls    GET /api/earningscalls/:id   （url+summary）
     images            GET /api/images           —（图片流无详情页）
     am-reports        GET /api/am-reports       GET /api/am-reports/:id      （url+summary+meta）
+    mikko-logs        GET /api/mikko-logs       GET /api/mikko-logs/:id      （markdown content+images, 无标题）
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ RESOURCES = (
     "earningscalls",
     "images",
     "am-reports",
+    "mikko-logs",
 )
 
 # 有详情接口（GET /api/<resource>/:id）的资源
@@ -46,6 +48,7 @@ DETAIL_RESOURCES = (
     "company-reports",
     "earningscalls",
     "am-reports",
+    "mikko-logs",
 )
 
 
