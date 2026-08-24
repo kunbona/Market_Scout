@@ -11,7 +11,7 @@ from fetcher.qmt_data_api import (
     list_a_shares,
 )
 from fetcher.xtquant_limit_down import compute_down_limit, compute_up_limit
-from quant.loader import get_trading_data
+from quant.loader import DATA_ROOT, _TRADING_COL_MAP, _normalize_code, get_trading_data
 
 
 def _is_st_stock_name(stock_name: str) -> bool:
@@ -176,6 +176,7 @@ def normalize_industry_stats_row(row: dict) -> dict | None:
         "data_date": str(row.get("data_date") or "").strip(),
         "ma10_source": str(row.get("ma10_source") or "CSV").strip(),
         "ma10_qmt": ma10_qmt,  # 透传, KPI 卡 count 这个 (QMT 备选可用度)
+        "hist_daily": row.get("hist_daily") or [],  # 透传, 20 日均值率用
     }
 
 
@@ -213,6 +214,21 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
             (str(item.get("data_date") or "") for item in group),
             default="",
         )
+        # 大肉率/大面率的 20 日均值：按日期聚合该行业所有股票的日涨跌幅，
+        # 每个交易日算一次"涨≥5% 占比 / 跌≥5% 占比"，再对最近 20 个交易日取平均。
+        from collections import defaultdict as _defaultdict
+        _daily: dict[str, dict] = _defaultdict(lambda: {"meat": 0, "loss": 0, "total": 0})
+        for item in group:
+            for _d, _p in (item.get("hist_daily") or []):
+                _daily[_d]["total"] += 1
+                if _p >= 5:
+                    _daily[_d]["meat"] += 1
+                elif _p <= -5:
+                    _daily[_d]["loss"] += 1
+        _meat_ratios = [b["meat"] / b["total"] for b in _daily.values() if b["total"] > 0]
+        _loss_ratios = [b["loss"] / b["total"] for b in _daily.values() if b["total"] > 0]
+        meat_ratio_ma20 = (sum(_meat_ratios) / len(_meat_ratios)) if _meat_ratios else 0.0
+        big_loss_ratio_ma20 = (sum(_loss_ratios) / len(_loss_ratios)) if _loss_ratios else 0.0
         items.append(
             {
                 "sector": sector,
@@ -233,6 +249,11 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
                 ),
                 "meat_count": meat_count,
                 "big_loss_count": big_loss_count,
+                # 大肉率/大面率 (当天截面占比) + 各自 20 日均值率
+                "meat_ratio": meat_count / stock_count if stock_count else 0.0,
+                "big_loss_ratio": big_loss_count / stock_count if stock_count else 0.0,
+                "meat_ratio_ma20": meat_ratio_ma20,
+                "big_loss_ratio_ma20": big_loss_ratio_ma20,
                 "limit_up_count": limit_up_count,
                 "limit_down_count": limit_down_count,
                 "yesterday_main_inflow": yesterday_main_inflow,
@@ -310,6 +331,47 @@ def _normalize_local_code_for_loader(stock_code: str) -> str:
     return value
 
 
+def get_trading_data_tail(code: str, rows: int = 30) -> pd.DataFrame:
+    """只读单股 CSV 尾部 rows 行 (warmup 快速路径)。
+
+    背景: 全量 get_trading_data 读 26 年历史(单只 ~2MB, 5213 只 ≈ 8GB CSV 解析,
+    实测 ~37s), 而 build_qmt_industry_stats_source_rows 只消费最后 ~20 行
+    (ma10 需 10 行 / 20 日涨跌需 20 行 / 资金流需 2 行)。
+    实现: 跳过文件头两行(注释+表头), seek 到文件尾只读最后 ~rows*600 字节,
+    去掉 seek 落点造成的残缺首行, 与表头拼回再 read_csv。
+    实测: 5213 只 32 线程 7.3s (热 cache), 冷 cache(外置盘) 收益更大; 全量路径 ~37s。
+    rows 默认 30 仅供小样本调用; 生产调用方传 250 (覆盖未来 60/120 日均线需求)。
+    仅适用于"最新日期"场景; 历史日期切片仍走 get_trading_data 全量。
+    """
+    if not DATA_ROOT:
+        return pd.DataFrame()
+    csv_path = DATA_ROOT / "stock-trading-data-pro" / f"{_normalize_code(_normalize_local_code_for_loader(code))}.csv"
+    if not csv_path.exists():
+        return pd.DataFrame()
+    try:
+        with open(csv_path, "rb") as f:
+            f.readline()                     # 第 1 行: 数据说明注释
+            header = f.readline()            # 第 2 行: 表头
+            f.seek(0, 2)
+            size = f.tell()
+            chunk = min(size, rows * 600 + 4096)   # 单行 ~250-500 字节, 600 留余量
+            f.seek(size - chunk)
+            body = f.read()
+        lines = body.decode("gbk", errors="replace").splitlines()
+        if chunk < size and lines:
+            lines = lines[1:]                # 去掉 seek 落点造成的残缺首行
+        if not lines:
+            return pd.DataFrame()
+        text = header.decode("gbk").rstrip("\r\n") + "\n" + "\n".join(lines[-rows:])
+        import io as _io
+        df = pd.read_csv(_io.StringIO(text)).rename(columns=_TRADING_COL_MAP)
+        if "trade_date" in df.columns:
+            df["trade_date"] = df["trade_date"].astype(str)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def _prepare_local_history_for_trade_date(local_df: pd.DataFrame, target_trade_date: str | None) -> pd.DataFrame:
     if local_df is None or local_df.empty:
         return local_df
@@ -331,14 +393,18 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
         return rows
 
     # 阶段 1：并发读所有股票 CSV（I/O 密集，32 线程足够把 ~10 分钟压到 1 分钟内）
-    # CSV 解析是 GIL-bound 但读盘和解析 pandas 释放 GIL，ThreadPool 也能拿满吞吐
+    # 快速路径: get_trading_data_tail 只读 CSV 尾部 35 行 (聚合只需最后 ~20 行),
+    #   5213 只实测 7s vs 全量 37s (热 cache); 冷 cache 外置盘收益更大。
+    # 历史日期回退: 阶段 2 里若 tail 最新日期 > target 再对单只补全量读。
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     workers = int(os.environ.get("INDUSTRY_STATS_WORKERS", "32"))
     code_to_df: dict[str, pd.DataFrame] = {}
     with ThreadPoolExecutor(max_workers=workers) as executor:
+        # 窗口 250 行(≈1 年): 当前聚合最长只用 21 行, 250 留足余量
+        # 未来加 60/120 日均线也不需改读取; 实测 250 行与 35 行耗时几乎无差
         future_to_code = {
-            executor.submit(get_trading_data, _normalize_local_code_for_loader(code)): code
+            executor.submit(get_trading_data_tail, code, 250): code
             for code in stock_codes
         }
         for future in as_completed(future_to_code):
@@ -386,6 +452,15 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
         local_df = code_to_df.get(stock_code)
         if local_df is None or local_df.empty:
             continue
+        # 历史日期回退: tail 窗口(35 行≈7 周)覆盖不到 target → 该只补全量读
+        # (tests/backfill 走此路径; 正常最新日 0 回退, 不损失快速路径收益)
+        if (target_trade_date and "trade_date" in local_df.columns
+                and len(local_df.index)
+                and str(local_df["trade_date"].iloc[0])[:10] > str(target_trade_date)[:10]):
+            full_df = get_trading_data(_normalize_local_code_for_loader(stock_code))
+            if full_df is None or full_df.empty:
+                continue
+            local_df = full_df
 
         history = _prepare_local_history_for_trade_date(local_df, target_trade_date)
         if history is None or history.empty or len(history.index) < 2:
@@ -472,6 +547,20 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
         except (TypeError, ValueError):
             today_main_inflow = 0.0
 
+        # 最近 20 个交易日的日涨跌幅 (close 对 close)，用于行业大肉率/大面率的 20 日均值。
+        # 口径: 历史收盘价算，含最近 20 个已收盘交易日（不含今天——今天在实时 change_pct 里）。
+        hist_daily: list[tuple[str, float]] = []
+        if "close" in history.columns and "trade_date" in history.columns:
+            try:
+                _closes = history["close"].astype(float)
+                _pcts = (_closes.pct_change() * 100).tolist()
+                _dates = history["trade_date"].astype(str).str.slice(0, 10).tolist()
+                for _d, _p in list(zip(_dates, _pcts))[-20:]:
+                    if _p == _p:  # 排除 NaN (每只股票第一天 pct_change 无前值)
+                        hist_daily.append((_d, float(_p)))
+            except (TypeError, ValueError):
+                hist_daily = []
+
         rows.append(
             {
                 "stock_code": stock_code,
@@ -492,6 +581,8 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
                 # 数据截面日期（CSV 最后一行的 trade_date），用于 staleness 计算
                 # 注意：CSV 是 T+1 截面，所以 data_date 通常 = 上一交易日
                 "data_date": str(latest_date)[:10] if latest_date is not None else "",
+                # 最近 20 个交易日的日涨跌幅 [(date, pct%)...]，payload 阶段按行业按日期聚合算 20 日均值率
+                "hist_daily": hist_daily,
             }
         )
 

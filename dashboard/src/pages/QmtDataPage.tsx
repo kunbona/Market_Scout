@@ -130,6 +130,10 @@ interface QmtIndustryStats {
     ma10_csv: number;       // 组内个股 ma10_csv 算术平均（参考值）
     meat_count: number;
     big_loss_count: number;
+    meat_ratio: number;          // 大肉率 = 涨≥5% 个股占比 (0~1)
+    big_loss_ratio: number;      // 大面率 = 跌≥5% 个股占比 (0~1)
+    meat_ratio_ma20: number;     // 大肉率 20 日均值
+    big_loss_ratio_ma20: number; // 大面率 20 日均值
     limit_up_count: number;
     limit_down_count: number;
     yesterday_main_inflow: number;
@@ -755,7 +759,7 @@ export function QmtDataPage() {
             })()}
           </div>
 
-          <div className="grid grid-cols-10 px-4 py-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-t-xl">
+          <div className="grid grid-cols-14 px-4 py-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-t-xl">
             {(() => {
               const csvDate = industryStatsData?.summary.data_date;
               const csvDateShort = csvDate ? csvDate.slice(5) : '昨';
@@ -778,9 +782,13 @@ export function QmtDataPage() {
                   '实时占比 − 昨日(本地CSV)占比。>0 今日盘口比昨天强，<0 弱，单位 pp（百分点）。',
                 ],
                 ['大肉数', 'meat_count'],
+                ['大肉率', 'meat_ratio', '行业里涨≥5% 的个股占比（当天截面）'],
                 ['涨停数', 'limit_up_count'],
                 ['大面数', 'big_loss_count'],
+                ['大面率', 'big_loss_ratio', '行业里跌≥5% 的个股占比（当天截面）'],
                 ['跌停数', 'limit_down_count'],
+                ['肉率20日均', 'meat_ratio_ma20', '大肉率最近 20 个交易日的均值（历史收盘口径）'],
+                ['面率20日均', 'big_loss_ratio_ma20', '大面率最近 20 个交易日的均值（历史收盘口径）'],
                 [
                   `主力·T+1 (${csvDateShort})`,
                   'today_main_inflow',
@@ -811,7 +819,7 @@ export function QmtDataPage() {
           ) : (
             <div className="divide-y divide-gray-50 border-x border-b border-gray-100 rounded-b-xl">
               {sortedIndustryStats.map((row) => (
-                <div key={row.sector} className="grid grid-cols-10 px-4 py-3 text-xs text-gray-700 hover:bg-gray-50">
+                <div key={row.sector} className="grid grid-cols-14 px-4 py-3 text-xs text-gray-700 hover:bg-gray-50">
                   <span>{row.sector}</span>
                   <span className="text-center">{row.stock_count}</span>
                   <span className={`text-center font-semibold ${ratioColor(row.above_ma10_ratio_realtime)}`}>
@@ -824,9 +832,13 @@ export function QmtDataPage() {
                     {fmtDelta(row.above_ma10_ratio_delta)}
                   </span>
                   <span className="text-center">{row.meat_count}</span>
+                  <span className="text-center font-medium text-red-600">{fmtPercent(row.meat_ratio)}</span>
                   <span className="text-center">{row.limit_up_count}</span>
                   <span className="text-center">{row.big_loss_count}</span>
+                  <span className="text-center font-medium text-green-600">{fmtPercent(row.big_loss_ratio)}</span>
                   <span className="text-center">{row.limit_down_count}</span>
+                  <span className="text-center">{fmtPercent(row.meat_ratio_ma20)}</span>
+                  <span className="text-center">{fmtPercent(row.big_loss_ratio_ma20)}</span>
                   <span className="text-center">{fmtAmountYi(row.today_main_inflow)}</span>
                 </div>
               ))}
