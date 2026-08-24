@@ -35,7 +35,7 @@ def _ensure_sys_path() -> None:
         sys.path.insert(0, str(algo_dir))
 
 
-def fetch_akshare() -> Dict[str, Any]:
+def fetch_akshare(load_xbx_data_enabled: bool = True) -> Dict[str, Any]:
     """
     拉 6 个 akshare 源 (股权溢价 / 4 PE / 中美国债 / 4 指数日线 / 破净 / 股东增减)
     + 通过 load_xbx_data 拉 XBX, 全部写到自管目录:
@@ -43,14 +43,20 @@ def fetch_akshare() -> Dict[str, Any]:
     - config.RAW_DATA_DIR (= self/data/raw/) 写 xbx parquet + akshare raw csv
     - config.PROCESSED_DATA_DIR (= self/data/processed/) 写 processed csv
 
+    Args:
+        load_xbx_data_enabled: 是否在 fetch_all_data 内部再扫一遍 XBX CSV 目录。
+            run_full_refresh 的 step1 已经单独跑过 fetch_xbx, 传 False 避免
+            重复全量重扫 (~5500 CSV × 2 遍)。
+
     Returns:
         {
             "success": bool,
             "summary": {success_count, failed_count, ...},
             "written_files": [...],
+            "failed_apis": [失败 API 名列表],
             "raw_dir": str,
             "processed_dir": str,
-            "error": str | None,
+            "error": str | None,   # 部分失败时是汇总字符串, 全成功为 None
         }
     """
     _ensure_sys_path()
@@ -67,23 +73,30 @@ def fetch_akshare() -> Dict[str, Any]:
         stock_index_pe_symbols=["上证50", "沪深300", "中证500", "中证1000"],
         bond_zh_us_rate_start_date="20050101",
         stock_zh_index_daily_symbols=["sh000001", "sz399006", "sh000300", "sz399303", "sh000852", "sh000688"],
+        load_xbx_data_enabled=load_xbx_data_enabled,
     )
 
     summary = result.get("summary", {})
     written = []
+    failed_apis = []
     for name, r in (result.get("results") or {}).items():
+        if not r.get("success"):
+            failed_apis.append(name)
         for key in ("raw_file_path", "processed_file_path"):
             p = r.get(key)
             if p:
                 written.append(p)
 
+    error = f"部分 akshare 源失败: {', '.join(failed_apis)}" if failed_apis else None
+
     return {
         "success": bool(result.get("success")),
         "summary": summary,
         "written_files": written,
+        "failed_apis": failed_apis,
         "raw_dir": str(DATA_ROOT / "raw"),
         "processed_dir": str(DATA_ROOT / "processed"),
-        "error": None,
+        "error": error,
     }
 
 

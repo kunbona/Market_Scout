@@ -258,26 +258,36 @@ def run_full_refresh() -> Dict[str, Any]:
         return {
             "success": False,
             "step": "fetch_xbx",
-            "error": xbx_r.get("error"),
+            "error": str(xbx_r.get("error") or "XBX 拉取失败"),
             "log": log_lines,
         }
 
     # step 2: akshare
+    # 注意 load_xbx_data_enabled=False: step1 已单独跑过 fetch_xbx 并写好 parquet,
+    # fetch_all_data 内部不需要再全量重扫 XBX CSV 目录 (省 ~一半时间)。
     log("=" * 70)
     log("步骤 2/4: 拉取 akshare 6 源 (→ self/raw/akshare/)")
     log("=" * 70)
     from fetcher.cycle_akshare_data import fetch_akshare
-    ak_r = fetch_akshare()
+    ak_r = fetch_akshare(load_xbx_data_enabled=False)
     log(f"  akshare success={ak_r.get('success')}")
     log(f"  akshare summary={ak_r.get('summary')}")
     log(f"  akshare written_files={len(ak_r.get('written_files', []))}")
     if not ak_r.get("success"):
-        return {
-            "success": False,
-            "step": "fetch_akshare",
-            "error": ak_r.get("error"),
-            "log": log_lines,
-        }
+        # 部分源失败: 只要有文件写出来 (PE/指数/bond 等), 继续算指标 —
+        # 指标会复用磁盘上已有的旧 csv (上一轮成功拉的), 比整体中断 + fallback
+        # 重算一遍划算得多。全部失败才中断。
+        if ak_r.get("written_files"):
+            failed = ak_r.get("failed_apis") or []
+            log(f"  ⚠ akshare 部分失败 {len(failed)} 个: {', '.join(failed)}")
+            log("  ⚠ 继续用已写文件 + 磁盘旧数据计算指标 (不中断)")
+        else:
+            return {
+                "success": False,
+                "step": "fetch_akshare",
+                "error": str(ak_r.get("error") or "akshare 全部源失败且无文件写出"),
+                "log": log_lines,
+            }
 
     # step 3: 指标
     log("=" * 70)

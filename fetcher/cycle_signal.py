@@ -299,18 +299,34 @@ def _normalize_indicator_df(
     status_col = _coerce_col(meta.get("status_col"))
 
     out_rows: List[Dict[str, Any]] = []
-    for _, row in df.iterrows():
-        rec: Dict[str, Any] = {
-            "date": row[date_col].strftime("%Y-%m-%d"),
-            "value": float(row[value_col]) if value_col and pd.notnull(row[value_col]) else None,
-            "percentile": float(row[pct_col]) if pct_col and pd.notnull(row[pct_col]) else None,
-            "risk_percentage": float(row[risk_col]) if risk_col and pd.notnull(row[risk_col]) else None,
-            "status": str(row[status_col]) if status_col and pd.notnull(row[status_col]) else None,
-        }
-        out_rows.append(rec)
+    # 向量化构造 (原 iterrows 每行构造 Series, 3000 行级别时慢一个数量级)
+    n = len(df)
+    dates = df[date_col].dt.strftime("%Y-%m-%d").tolist()
+    values = df[value_col].tolist() if value_col else [None] * n
+    pcts = df[pct_col].tolist() if pct_col else [None] * n
+    risks = df[risk_col].tolist() if risk_col else [None] * n
+    statuses = df[status_col].tolist() if status_col else [None] * n
+    for i in range(n):
+        v, p, r = values[i], pcts[i], risks[i]
+        out_rows.append(
+            {
+                "date": dates[i],
+                "value": float(v) if v is not None and pd.notnull(v) else None,
+                "percentile": float(p) if p is not None and pd.notnull(p) else None,
+                "risk_percentage": float(r) if r is not None and pd.notnull(r) else None,
+                "status": str(statuses[i]) if statuses[i] is not None and pd.notnull(statuses[i]) else None,
+            }
+        )
 
     latest = out_rows[-1] if out_rows else {}
     return out_rows, latest
+
+
+# composite PE 结果缓存: 按 4 个 PE CSV 的 mtime 组合键失效 (join+ffill 全史计算 ~秒级)
+_composite_pe_cache: Dict[str, Any] = {"key": None, "series": None, "latest": None}
+
+# unified score 结果缓存: 按 7 指标 CSV mtime 组合键失效
+_unified_score_cache: Dict[str, Any] = {"key": None, "rows": None}
 
 
 def _composite_pe_series() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -321,6 +337,19 @@ def _composite_pe_series() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         "pe_valuation_中证500_滚动市盈率.csv",
         "pe_valuation_中证1000_滚动市盈率.csv",
     ]
+
+    # mtime 组合键: 任一文件更新则重算
+    try:
+        cache_key = ",".join(
+            str((_safe_resolve(f"data/processed/{f}")).stat().st_mtime)
+            for f in pe_files
+            if (_safe_resolve(f"data/processed/{f}")).exists()
+        )
+    except ValueError:
+        cache_key = None
+    if cache_key and _composite_pe_cache["key"] == cache_key and _composite_pe_cache["series"] is not None:
+        return _composite_pe_cache["series"], _composite_pe_cache["latest"]
+
     dfs = []
     for f in pe_files:
         d = _read_csv_cached(f)
@@ -363,20 +392,26 @@ def _composite_pe_series() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
             status_map = hs300["valuation_status"].to_dict()
 
     out_rows: List[Dict[str, Any]] = []
-    for idx, row in merged.iterrows():
-        ts = pd.Timestamp(idx)
-        d_str = ts.strftime("%Y-%m-%d")
-        cp = row.get("composite_pe")
+    # 向量化构造 (原 iterrows 慢)
+    ts_list = [pd.Timestamp(i) for i in merged.index]
+    d_strs = [ts.strftime("%Y-%m-%d") for ts in ts_list]
+    cp_list = merged["composite_pe"].tolist()
+    risk_keys = set(risk_map.keys())
+    status_keys = set(status_map.keys())
+    for i, ts in enumerate(ts_list):
+        cp = cp_list[i]
         out_rows.append(
             {
-                "date": d_str,
-                "value": float(cp) if pd.notnull(cp) else None,
+                "date": d_strs[i],
+                "value": float(cp) if cp is not None and pd.notnull(cp) else None,
                 "percentile": None,
-                "risk_percentage": float(risk_map.get(ts, 0)) if ts in risk_map else None,
-                "status": str(status_map.get(ts, "")) if ts in status_map else None,
+                "risk_percentage": float(risk_map[ts]) if ts in risk_keys else None,
+                "status": str(status_map[ts]) if ts in status_keys else None,
             }
         )
     latest = out_rows[-1] if out_rows else {}
+    if cache_key:
+        _composite_pe_cache.update(key=cache_key, series=out_rows, latest=latest)
     return out_rows, latest
 
 
@@ -477,14 +512,23 @@ def build_cycle_summary() -> Dict[str, Any]:
 
 
 def build_indicator_meta() -> Dict[str, Any]:
-    """8 指标的最新值（轻量，用于卡片）。"""
+    """8 指标的最新值（轻量，用于卡片）。
+
+    性能: 卡片只需要 latest 一行, 普通指标只 normalize 末尾几行
+    (normalize 内部会按日期排序, tail 后最后一行即最新), 不做全史转换。
+    """
     items: List[Dict[str, Any]] = []
     for meta in INDICATOR_META:
         if meta.get("use_composite"):
             series, latest = _composite_pe_series()
+            series_len = len(series)
         else:
             df = _read_csv_cached(meta["file"])
-            series, latest = _normalize_indicator_df(df, meta)
+            if df is None or df.empty:
+                series, latest, series_len = [], {}, 0
+            else:
+                series, latest = _normalize_indicator_df(df.tail(3), meta)
+                series_len = len(df)
         # 截断 series 不返回，前端用单独 endpoint 拉
         items.append(
             {
@@ -493,7 +537,7 @@ def build_indicator_meta() -> Dict[str, Any]:
                 "category": meta["category"],
                 "latest": latest,
                 "has_series": bool(series),
-                "series_length": len(series),
+                "series_length": series_len,
             }
         )
     return {
@@ -612,6 +656,31 @@ def build_unified_score_series(max_points: int = 3000) -> Dict[str, Any]:
         "price_percentile",
     ]
     meta_by_key = {m["key"]: m for m in INDICATOR_META}
+
+    # mtime 组合键结果缓存 (7 CSV 全量聚合 ~1.4s, 刷新不频繁)
+    try:
+        ukey = ",".join(
+            str((_safe_resolve(f"data/processed/{meta_by_key[k]['file']}")).stat().st_mtime)
+            for k in keys
+            if (_safe_resolve(f"data/processed/{meta_by_key[k]['file']}")).exists()
+        )
+    except (ValueError, KeyError):
+        ukey = None
+    if ukey and _unified_score_cache.get("key") == ukey and _unified_score_cache.get("rows"):
+        rows = _unified_score_cache["rows"]
+        if len(rows) > max_points:
+            step = max(1, len(rows) // max_points)
+            sampled = rows[::step]
+            if sampled[-1] != rows[-1]:
+                sampled.append(rows[-1])
+            rows = sampled
+        return {
+            "available": True,
+            "series": rows,
+            "last_date": rows[-1]["date"] if rows else None,
+            "last_score": rows[-1]["score"] if rows else None,
+        }
+
     series_by_date: Dict[str, List[float]] = {}
 
     for k in keys:
@@ -659,6 +728,9 @@ def build_unified_score_series(max_points: int = 3000) -> Dict[str, Any]:
 
     if not rows:
         return {"available": False, "reason": "无可用行"}
+
+    if ukey:
+        _unified_score_cache.update(key=ukey, rows=rows)
 
     if len(rows) > max_points:
         step = max(1, len(rows) // max_points)
@@ -846,8 +918,9 @@ class _RefreshStream:
             if not line:
                 continue
             self._buffer.append(line[:200])
-            if len(self._buffer) > 30:
-                self._buffer = self._buffer[-30:]
+            # 保留 200 行: 30 行太短, 出错时关键上下文 (Traceback 起点等) 常被冲掉
+            if len(self._buffer) > 200:
+                self._buffer = self._buffer[-200:]
             with self._lock:
                 self._state["last_log"] = line[:500]
                 self._state["log_tail"] = list(self._buffer)
@@ -1063,13 +1136,18 @@ def _run_subprocess_full(
 
     # 跟 _run_subprocess_fallback 同样一行 code (subprocess -c 单行), 调顶层 run_full_refresh
     # run_full_refresh 已含 install() + 4 步全流程, 输出逐行 flush
+    # 注意 (r.get('error') or ''): error 键可能存在但值为 None, 直接 [:300] 会 TypeError
+    # 末尾按 success 设 exit code: _run_subprocess_step 只认 returncode,
+    # 不显式退出的话优雅失败 (return dict) 也会 exit 0 被误判成功
+    # (注意是 sys.exit 不是 os.exit — os 模块没有 exit 属性)
     full_code = (
         "import sys; "
         "sys.path.insert(0, '.'); "
         "from fetcher.cycle_self_runner import run_full_refresh; "
         "r = run_full_refresh(); "
         "import json as _j; "
-        "print('[full_subprocess]', _j.dumps({'success': r.get('success'), 'step': r.get('step'), 'error': r.get('error', '')[:300]}, ensure_ascii=False), flush=True); "
+        "print('[full_subprocess]', _j.dumps({'success': r.get('success'), 'step': r.get('step'), 'error': (r.get('error') or '')[:300]}, ensure_ascii=False), flush=True); "
+        "sys.exit(0 if r.get('success') else 1)"
     )
     ok = _run_subprocess_step(py, full_code, data_root, env, stream)
     if not ok:

@@ -43,6 +43,41 @@ DEFAULT_XBX_CSV_DIR = f"{_QDR}/stock-trading-data-pro"
 # 自管 XBX parquet 路径 (config.RAW_DATA_DIR / "xbx_stock_data.parquet")
 DEFAULT_XBX_PARQUET = DATA_ROOT / "raw" / "xbx_stock_data.parquet"
 
+# 增量签名文件: 记录上次重建 parquet 时源 CSV 目录的指纹 (文件数/总大小/最新 mtime)。
+# 指纹不变 → 跳过重扫 (全量重扫 5500+ CSV 要 ~25 min, 指纹计算 <1s)。
+_XBX_SIGNATURE_FILE = DATA_ROOT / "raw" / "xbx_stock_data.signature.json"
+
+
+def _csv_dir_signature(csv_dir: str) -> Optional[Dict[str, Any]]:
+    """快速扫描 csv_dir 生成指纹: {count, total_size, max_mtime}。失败返回 None。"""
+    try:
+        count = 0
+        total_size = 0
+        max_mtime = 0.0
+        with os.scandir(csv_dir) as it:
+            for entry in it:
+                if not entry.name.lower().endswith(".csv"):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                count += 1
+                total_size += st.st_size
+                if st.st_mtime > max_mtime:
+                    max_mtime = st.st_mtime
+        return {"count": count, "total_size": total_size, "max_mtime": round(max_mtime, 3)}
+    except Exception:
+        return None
+
+
+def _write_xbx_signature(sig: Dict[str, Any]) -> None:
+    try:
+        _XBX_SIGNATURE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _XBX_SIGNATURE_FILE.write_text(json.dumps(sig, ensure_ascii=False))
+    except Exception as e:
+        logger.warning("[xbx] 写签名文件失败(不影响主流程): %s", e)
+
 
 def _ensure_sys_path() -> None:
     """确保自管算法根在 sys.path, 让 load_xbx_data 可 import。"""
@@ -89,6 +124,30 @@ def fetch_xbx(
     _ensure_sys_path()
     _ensure_self_paths()  # 再次确认 config 已 override
 
+    # 增量跳过: 源 CSV 目录指纹与上次重建一致 → 复用现有 parquet, 不重扫
+    sig = _csv_dir_signature(csv_dir)
+    if (
+        sig
+        and DEFAULT_XBX_PARQUET.exists()
+        and _XBX_SIGNATURE_FILE.exists()
+    ):
+        try:
+            old_sig = json.loads(_XBX_SIGNATURE_FILE.read_text())
+        except Exception:
+            old_sig = None
+        if old_sig == sig:
+            logger.info("[xbx] 源 CSV 无变化 (count=%d), 跳过重扫, 复用 %s", sig["count"], DEFAULT_XBX_PARQUET)
+            return {
+                "success": True,
+                "skipped": True,
+                "data": None,
+                "file_count": sig["count"],
+                "row_count": 0,
+                "csv_dir": csv_dir,
+                "output_parquet": str(DEFAULT_XBX_PARQUET),
+                "error": None,
+            }
+
     from program.api.load_xbx_data import load_xbx_data
 
     # save_to_file=True 让自管算法默认行为写 parquet 到 config.RAW_DATA_DIR
@@ -102,6 +161,10 @@ def fetch_xbx(
 
     df = result.get("data")
     saved_path = str(DEFAULT_XBX_PARQUET) if DEFAULT_XBX_PARQUET.exists() else None
+
+    # 重建成功 → 记录源目录指纹, 供下次增量跳过
+    if result.get("success", False) and saved_path and sig:
+        _write_xbx_signature(sig)
 
     return {
         "success": result.get("success", False) and saved_path is not None,

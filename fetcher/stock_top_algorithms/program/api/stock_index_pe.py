@@ -76,6 +76,11 @@ _LEGULEGU_HEADERS = {
     ),
 }
 
+# legulegu 熔断器 (进程内): 站点挂掉/反爬时连续失败计数达到阈值,
+# 后续请求 (含 akshare 原生兜底) 快速失败, 避免 4 个指数 × 多轮超时白等 15+ 分钟。
+# 成功一次即复位。每个刷新 subprocess 是新进程, 熔断状态不跨次保留。
+_LEGU_BREAKER = {"fails": 0, "threshold": 3}
+
 
 def _get_cookie_csrf(url: str) -> dict:
     """自实现版 get_cookie_csrf。
@@ -113,6 +118,15 @@ def _fetch_stock_index_pe_lg_fallback(symbol: str) -> pd.DataFrame:
     """
     import time
     import random
+
+    # legulegu 熔断器: 站点整体挂掉时 (连接错误/反爬), 每个指数要 3 次重试
+    # + akshare 原生兜底 (内部也请求 legulegu, 无超时控制), 4 个指数白等 15+ 分钟。
+    # 连续失败达到阈值后, 本进程内后续请求直接快速失败, 复用磁盘旧数据。
+    if _LEGU_BREAKER["fails"] >= _LEGU_BREAKER["threshold"]:
+        raise ConnectionError(
+            f"legulegu 熔断中 (前面已连续失败 {_LEGU_BREAKER['fails']} 次), "
+            f"跳过 {symbol} 的请求, 复用磁盘旧数据"
+        )
 
     try:
         import py_mini_racer
@@ -160,9 +174,11 @@ def _fetch_stock_index_pe_lg_fallback(symbol: str) -> pd.DataFrame:
             r = requests.get(url, params=params, timeout=15, **cookie_csrf)
             data_json = r.json()
             last_error = None
+            _LEGU_BREAKER["fails"] = 0  # 成功即复位熔断计数
             break
         except Exception as e:
             last_error = e
+            _LEGU_BREAKER["fails"] += 1
             print(f"[WARNING] legulegu 请求失败 (尝试 {attempt+1}/{max_attempts}, symbol={symbol}): {e}")
 
     if last_error is not None:
@@ -233,6 +249,16 @@ def fetch_stock_index_pe(
         try:
             df = _fetch_stock_index_pe_lg_fallback(symbol=symbol)
         except Exception as e:
+            if _LEGU_BREAKER["fails"] >= _LEGU_BREAKER["threshold"]:
+                # 熔断打开: akshare 原生 stock_index_pe_lg 内部同样请求 legulegu
+                # 且无超时控制 (会挂 2-3 分钟), 熔断时直接放弃, 复用磁盘旧数据
+                print(f"[WARNING] legulegu 熔断中, 跳过 akshare 原生兜底 ('{symbol}'): {e}")
+                return {
+                    'success': False,
+                    'data': None,
+                    'raw_file_path': None,
+                    'error': f"legulegu 熔断: {e}",
+                }
             print(f"[WARNING] legulegu 直连实现失败 ('{symbol}'): {e}")
             print(f"[INFO] 反向兜底：尝试 akshare 原生 stock_index_pe_lg ...")
             df = ak.stock_index_pe_lg(symbol=symbol)
