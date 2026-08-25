@@ -211,7 +211,7 @@ def start_scheduler() -> None:
                     return
                 # 1. 先跑「数据更新」页的 增量更新全部 (exodia all_data), 等它完成
                 try:
-                    from server import exodia_update_all_and_wait
+                    from api.exodia import exodia_update_all_and_wait
                     _st = exodia_update_all_and_wait(timeout_sec=1500)
                     logging.getLogger(__name__).info(
                         "[scheduler] Exodia 增量更新: %s", _st)
