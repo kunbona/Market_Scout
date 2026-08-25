@@ -124,7 +124,7 @@ def start_scheduler() -> None:
     # (扫 5200+ 只 stock CSV 期间所有 waitress thread 全卡 PyThread_acquire_lock)
     # 启动 warmup 仍走 in-process 同步 (一次性 30-60s OK, 不抢 GIL 周期性 scheduler 才是元凶)
     def _warm_industry_stats() -> None:
-        from server import _refresh_qmt_industry_stats_cache_subprocess, _current_qmt_trade_date
+        from core.qmt_hub import _refresh_qmt_industry_stats_cache_subprocess, _current_qmt_trade_date
         try:
             _refresh_qmt_industry_stats_cache_subprocess(_current_qmt_trade_date())
         except Exception as e:

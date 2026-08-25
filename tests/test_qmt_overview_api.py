@@ -2,23 +2,27 @@ import unittest
 from unittest import mock
 
 import server
+from core import qmt_hub
+from db import storage
 
 
 class QmtOverviewApiTests(unittest.TestCase):
     def test_current_qmt_trade_date_uses_qmt_trading_calendar(self) -> None:
         with mock.patch.object(
-            server,
+            qmt_hub,
             "_today",
             return_value="2026-06-27",
         ), mock.patch(
             "fetcher.qmt_data_api.get_current_qmt_trade_date",
             return_value="2026-06-26",
         ):
-            self.assertEqual(server._current_qmt_trade_date(), "2026-06-26")
+            self.assertEqual(qmt_hub._current_qmt_trade_date(), "2026-06-26")
 
     # 注: 旧私有函数 _get_qmt_overview_focus_list 已被 _get_qmt_limit_down_rows 取代
     # (2026 重构, 端点响应体也不再包含 focus_list 键), 语义等价: 优先目标交易日
     # 数据, 否则返回最新快照并在 QMT 已连接时调度后台刷新。
+    # 2026-08-25: QMT 枢纽拆出 server.py → core/qmt_hub.py, 懒导入的存储函数
+    # 改 mock db.storage (调用时才解析, patch 生效)。
 
     def test_get_qmt_limit_down_rows_returns_stale_rows_and_schedules_refresh(self) -> None:
         stale_rows = [
@@ -34,20 +38,19 @@ class QmtOverviewApiTests(unittest.TestCase):
         ]
 
         with mock.patch.object(
-            server,
+            qmt_hub,
             "_current_qmt_trade_date",
             return_value="2026-06-26",
         ), mock.patch.object(
-            server,
+            storage,
             "get_dt_pool_v3",
             side_effect=lambda trade_date=None: [] if trade_date == "2026-06-26" else stale_rows,
-            create=True,
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_schedule_qmt_background_refresh",
             return_value=True,
         ) as schedule_mock:
-            result = server._get_qmt_limit_down_rows(
+            result = qmt_hub._get_qmt_limit_down_rows(
                 {"enabled": True, "connected": True, "version": "1.0.0"}
             )
 
@@ -89,20 +92,19 @@ class QmtOverviewApiTests(unittest.TestCase):
             return []
 
         with mock.patch.object(
-            server,
+            qmt_hub,
             "_current_qmt_trade_date",
             return_value="2026-06-26",
         ), mock.patch.object(
-            server,
+            storage,
             "get_dt_pool_v3",
             side_effect=_get_dt_pool_v3_side_effect,
-            create=True,
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_schedule_qmt_background_refresh",
             return_value=True,
         ) as schedule_mock:
-            result = server._get_qmt_limit_down_rows(
+            result = qmt_hub._get_qmt_limit_down_rows(
                 {"enabled": True, "connected": True, "version": "1.0.0"}
             )
 
@@ -121,20 +123,19 @@ class QmtOverviewApiTests(unittest.TestCase):
         }
 
         with mock.patch.object(
-            server,
+            qmt_hub,
             "_current_qmt_trade_date",
             return_value="2026-06-26",
         ), mock.patch.object(
-            server,
+            storage,
             "get_market_breadth_latest",
             return_value=[stale_breadth],
-            create=True,
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_schedule_qmt_background_refresh",
             return_value=True,
         ) as schedule_mock:
-            result = server._get_qmt_overview_breadth(
+            result = qmt_hub._get_qmt_overview_breadth(
                 {"enabled": True, "connected": True, "version": "1.0.0"}
             )
 
@@ -167,20 +168,19 @@ class QmtOverviewApiTests(unittest.TestCase):
         ]
 
         with mock.patch.object(
-            server,
+            qmt_hub,
             "_current_qmt_trade_date",
             return_value="2026-06-26",
         ), mock.patch.object(
-            server,
+            storage,
             "get_market_breadth_latest",
             return_value=rows,
-            create=True,
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_schedule_qmt_background_refresh",
             return_value=True,
         ) as schedule_mock:
-            result = server._get_qmt_overview_breadth(
+            result = qmt_hub._get_qmt_overview_breadth(
                 {"enabled": True, "connected": True, "version": "1.0.0"}
             )
 
@@ -191,7 +191,7 @@ class QmtOverviewApiTests(unittest.TestCase):
     def test_api_qmt_overview_uses_total_market_snapshot(self) -> None:
         client = server.app.test_client()
         with mock.patch.object(
-            server,
+            storage,
             "get_market_breadth_latest",
             return_value=[
                 {
@@ -222,14 +222,12 @@ class QmtOverviewApiTests(unittest.TestCase):
                     "total_amount": None,
                 },
             ],
-            create=True,
         ), mock.patch.object(
-            server,
+            storage,
             "get_dt_pool_v3",
             return_value=[],
-            create=True,
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_schedule_qmt_background_refresh",
             return_value=True,
         ), mock.patch.dict(server.os.environ, {"QMT_ENABLED": "true"}, clear=False), mock.patch(
@@ -253,11 +251,11 @@ class QmtOverviewApiTests(unittest.TestCase):
     def test_api_qmt_overview_returns_aggregated_payload(self) -> None:
         client = server.app.test_client()
         with mock.patch.object(
-            server,
+            qmt_hub,
             "_read_qmt_runtime_status",
             return_value={"enabled": True, "connected": True, "version": "1.0.0"},
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_get_qmt_overview_breadth",
             return_value={
                 "fetch_time": "14:35",
@@ -269,7 +267,7 @@ class QmtOverviewApiTests(unittest.TestCase):
                 "total_amount": 1234567890,
             },
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_get_qmt_limit_down_rows",
             return_value=[
                 {
@@ -296,15 +294,15 @@ class QmtOverviewApiTests(unittest.TestCase):
     def test_api_qmt_overview_survives_disconnected_qmt(self) -> None:
         client = server.app.test_client()
         with mock.patch.object(
-            server,
+            qmt_hub,
             "_read_qmt_runtime_status",
             return_value={"enabled": True, "connected": False, "version": "1.0.0"},
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_get_qmt_overview_breadth",
             return_value=None,
         ), mock.patch.object(
-            server,
+            qmt_hub,
             "_get_qmt_limit_down_rows",
             return_value=[],
         ):

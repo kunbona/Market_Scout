@@ -57,7 +57,7 @@ def _save_env_local(updates: dict) -> None:
 def api_config_get():
     """返回当前运行时配置值。"""
     import quant.loader as loader
-    from server import _read_qmt_runtime_status
+    from core.qmt_hub import _read_qmt_runtime_status
     rsshub_global = os.environ.get("RSSHUB_BASE_URL", "")
     data_root = str(loader.DATA_ROOT) if loader.DATA_ROOT else ""
     flask_port = os.environ.get("FLASK_PORT", "20026")
