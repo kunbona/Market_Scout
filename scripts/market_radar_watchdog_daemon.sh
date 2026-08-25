@@ -86,6 +86,12 @@ last_kick=0
 log "v2 已启动 (pid $$, 健康检查: --noproxy + /api/config, 回退: nohup 直启)"
 
 while true; do
+    # 防多实例累积 (v2 加固): 若 pidfile 已被别的存活实例改写, 本实例让位退出。
+    _cur=$(tr -dc '0-9' < "$PIDFILE" 2>/dev/null)
+    if [ -n "$_cur" ] && [ "$_cur" != "$$" ] && kill -0 "$_cur" 2>/dev/null; then
+        log "pidfile 已被实例 ${_cur} 接管, 本实例 ($$) 退出"
+        exit 0
+    fi
     if health_ok; then
         fail=0
     else
