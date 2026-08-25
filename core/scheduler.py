@@ -221,14 +221,14 @@ def start_scheduler() -> None:
                 # 2. 复盘 + 级联刷新 DM-kun 6 个 tab
                 _auto_run("Review-9维", lambda: run_review_v2())
                 try:
-                    from server import dm_kun_recompute_all
+                    from api.dm_kun import dm_kun_recompute_all
                     dm_kun_recompute_all()
                 except Exception:
                     logging.getLogger(__name__).warning(
                         "[scheduler] Review 后 DM-kun 级联刷新失败", exc_info=True)
                 # 3. AI 总结: 9 维度 + DM-kun 数据喂给 claude, 落 agent_summary (run_type=review_ai)
                 try:
-                    from server import review_ai_with_dm_cache
+                    from api.dm_kun import review_ai_with_dm_cache
                     _ai = review_ai_with_dm_cache()
                     logging.getLogger(__name__).info(
                         "[scheduler] 复盘 AI 总结: %s", _ai.get("status"))
