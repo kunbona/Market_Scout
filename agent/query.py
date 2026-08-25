@@ -693,27 +693,11 @@ def lookup_stock_names(codes: list) -> list:
             results.append({"code": raw_code, "name": name_map[raw_code], "source": "db"})
             continue
 
-        # 回落到本地 CSV
+        # 回落到本地 CSV (收口: 统一走 loader.get_stock_name, 只读尾部 1 行)
         name = ""
         if DATA_ROOT:
-            # 尝试几种常见前缀格式
-            for candidate in [raw_code, f"sh{raw_code}", f"sz{raw_code}", f"bj{raw_code}"]:
-                csv_path = DATA_ROOT / "stock-trading-data-pro" / f"{candidate}.csv"
-                if csv_path.exists():
-                    try:
-                        import csv as _csv
-                        with open(csv_path, encoding="gbk") as f:
-                            lines = f.readlines()
-                        # 第2行是表头，最后一行是最新数据
-                        if len(lines) >= 3:
-                            last = lines[-1].strip()
-                            if last:
-                                cols = next(_csv.reader([last]))
-                                name = cols[1] if len(cols) > 1 else ""
-                    except Exception:
-                        pass
-                    if name:
-                        break
+            from quant.loader import get_stock_name
+            name = get_stock_name(raw_code)
 
         if name:
             results.append({"code": raw_code, "name": name, "source": "csv"})

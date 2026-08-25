@@ -30,22 +30,9 @@ def _today_str() -> str:
 
 
 def _latest_trade_date() -> str:
-    """从 loader 的 DATA_ROOT 找最新交易日（扫一个文件即可）。"""
-    data_root = _loader.DATA_ROOT
-    if not data_root or not data_root.exists():
-        return _today_str()
-    trading_dir = data_root / "stock-trading-data-pro"
-    if not trading_dir.exists():
-        return _today_str()
-    # 取一个典型文件读最后一行日期
-    for f in sorted(trading_dir.glob("sh*.csv")):
-        try:
-            df = pd.read_csv(f, encoding="gbk", skiprows=1)
-            if "交易日期" in df.columns and not df.empty:
-                return str(df["交易日期"].iloc[-1])[:10]
-        except Exception:
-            continue
-    return _today_str()
+    """从 loader 抽样获取最新交易日（收口: 不再自己全量读盘找最新日）。"""
+    latest = _loader.get_latest_trade_date()
+    return latest if latest else _today_str()
 
 
 def _load_all_stocks(target_date: str | None = None) -> pd.DataFrame:

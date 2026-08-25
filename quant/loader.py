@@ -153,8 +153,13 @@ _USECOLS = list(_TRADING_COL_MAP.keys())
 
 
 def _normalize_code(code: str) -> str:
-    """将股票代码标准化为带前缀格式 (sh/sz/bj)。"""
+    """将股票代码标准化为带前缀格式 (sh/sz/bj)。
+
+    兼容输入: '600000' / 'sh600000' / '600000.SH' / '000070.SZ' (交易所后缀自动剥离)。
+    """
     code = code.strip().lower()
+    if "." in code:
+        code = code.split(".", 1)[0]
     if code.startswith(("sh", "sz", "bj")):
         return code
     num = code[-6:] if len(code) >= 6 else code
@@ -512,6 +517,61 @@ def get_trading_data(code: str) -> pd.DataFrame:
     except Exception as e:
         logger.error("[loader] 读取 %s 失败: %s", csv_path, e)
         return pd.DataFrame()
+
+
+def get_trading_data_tail(code: str, rows: int = 30) -> pd.DataFrame:
+    """只读单股 CSV 尾部 rows 行 (最新日期场景的快速路径)。
+
+    背景: 全量 get_trading_data 读 26 年历史(单只 ~2MB, 5213 只 ≈ 8GB CSV 解析,
+    实测 ~37s), 而多数实时聚合只消费最后 ~20 行
+    (ma10 需 10 行 / 20 日涨跌需 20 行 / 资金流需 2 行)。
+    实现: 跳过文件头两行(注释+表头), seek 到文件尾只读最后 ~rows*600 字节,
+    去掉 seek 落点造成的残缺首行, 与表头拼回再 read_csv。
+    实测: 5213 只 32 线程 7.3s (热 cache), 冷 cache(外置盘) 收益更大; 全量路径 ~37s。
+    rows 默认 30 仅供小样本调用; 批量聚合调用方传 250 (覆盖 60/120 日均线需求)。
+    仅适用于"最新日期"场景; 历史日期切片仍走 get_trading_data 全量。
+    """
+    if not DATA_ROOT:
+        return pd.DataFrame()
+    normalized = _normalize_code(code)  # 兼容 '600000' / '600000.SH' 等输入
+    csv_path = DATA_ROOT / "stock-trading-data-pro" / f"{normalized}.csv"
+    if not csv_path.exists():
+        return pd.DataFrame()
+    try:
+        with open(csv_path, "rb") as f:
+            f.readline()                     # 第 1 行: 数据说明注释
+            header = f.readline()            # 第 2 行: 表头
+            f.seek(0, 2)
+            size = f.tell()
+            chunk = min(size, rows * 600 + 4096)   # 单行 ~250-500 字节, 600 留余量
+            f.seek(size - chunk)
+            body = f.read()
+        lines = body.decode("gbk", errors="replace").splitlines()
+        if chunk < size and lines:
+            lines = lines[1:]                # 去掉 seek 落点造成的残缺首行
+        if not lines:
+            return pd.DataFrame()
+        text = header.decode("gbk").rstrip("\r\n") + "\n" + "\n".join(lines[-rows:])
+        import io as _io
+        df = pd.read_csv(_io.StringIO(text)).rename(columns=_TRADING_COL_MAP)
+        if "trade_date" in df.columns:
+            df["trade_date"] = df["trade_date"].astype(str)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_stock_name(code: str) -> str:
+    """轻量取单只股票名称: 只读 CSV 尾部 1 行, 不解析全史。
+
+    供 code→name 回落查询 (如 agent/query.lookup_stock_names) 复用,
+    避免各处手搓 readlines + csv.reader 解析。查不到返回空串。
+    """
+    df = get_trading_data_tail(code, rows=1)
+    if df.empty or "name" not in df.columns:
+        return ""
+    name = df["name"].iloc[-1]
+    return str(name) if pd.notna(name) else ""
 
 
 def get_sector_stocks(industry: str) -> list:

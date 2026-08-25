@@ -11,7 +11,7 @@ from fetcher.qmt_data_api import (
     list_a_shares,
 )
 from fetcher.xtquant_limit_down import compute_down_limit, compute_up_limit
-from quant.loader import DATA_ROOT, _TRADING_COL_MAP, _normalize_code, get_trading_data
+from quant.loader import get_trading_data, get_trading_data_tail
 
 
 def _is_st_stock_name(stock_name: str) -> bool:
@@ -324,54 +324,6 @@ def build_qmt_industry_stats_payload(rows: list[dict]) -> dict:
     }
 
 
-def _normalize_local_code_for_loader(stock_code: str) -> str:
-    value = str(stock_code or "").strip()
-    if "." in value:
-        value = value.split(".", 1)[0]
-    return value
-
-
-def get_trading_data_tail(code: str, rows: int = 30) -> pd.DataFrame:
-    """只读单股 CSV 尾部 rows 行 (warmup 快速路径)。
-
-    背景: 全量 get_trading_data 读 26 年历史(单只 ~2MB, 5213 只 ≈ 8GB CSV 解析,
-    实测 ~37s), 而 build_qmt_industry_stats_source_rows 只消费最后 ~20 行
-    (ma10 需 10 行 / 20 日涨跌需 20 行 / 资金流需 2 行)。
-    实现: 跳过文件头两行(注释+表头), seek 到文件尾只读最后 ~rows*600 字节,
-    去掉 seek 落点造成的残缺首行, 与表头拼回再 read_csv。
-    实测: 5213 只 32 线程 7.3s (热 cache), 冷 cache(外置盘) 收益更大; 全量路径 ~37s。
-    rows 默认 30 仅供小样本调用; 生产调用方传 250 (覆盖未来 60/120 日均线需求)。
-    仅适用于"最新日期"场景; 历史日期切片仍走 get_trading_data 全量。
-    """
-    if not DATA_ROOT:
-        return pd.DataFrame()
-    csv_path = DATA_ROOT / "stock-trading-data-pro" / f"{_normalize_code(_normalize_local_code_for_loader(code))}.csv"
-    if not csv_path.exists():
-        return pd.DataFrame()
-    try:
-        with open(csv_path, "rb") as f:
-            f.readline()                     # 第 1 行: 数据说明注释
-            header = f.readline()            # 第 2 行: 表头
-            f.seek(0, 2)
-            size = f.tell()
-            chunk = min(size, rows * 600 + 4096)   # 单行 ~250-500 字节, 600 留余量
-            f.seek(size - chunk)
-            body = f.read()
-        lines = body.decode("gbk", errors="replace").splitlines()
-        if chunk < size and lines:
-            lines = lines[1:]                # 去掉 seek 落点造成的残缺首行
-        if not lines:
-            return pd.DataFrame()
-        text = header.decode("gbk").rstrip("\r\n") + "\n" + "\n".join(lines[-rows:])
-        import io as _io
-        df = pd.read_csv(_io.StringIO(text)).rename(columns=_TRADING_COL_MAP)
-        if "trade_date" in df.columns:
-            df["trade_date"] = df["trade_date"].astype(str)
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-
 def _prepare_local_history_for_trade_date(local_df: pd.DataFrame, target_trade_date: str | None) -> pd.DataFrame:
     if local_df is None or local_df.empty:
         return local_df
@@ -457,7 +409,7 @@ def build_qmt_industry_stats_source_rows(target_trade_date: str | None = None) -
         if (target_trade_date and "trade_date" in local_df.columns
                 and len(local_df.index)
                 and str(local_df["trade_date"].iloc[0])[:10] > str(target_trade_date)[:10]):
-            full_df = get_trading_data(_normalize_local_code_for_loader(stock_code))
+            full_df = get_trading_data(stock_code)
             if full_df is None or full_df.empty:
                 continue
             local_df = full_df
