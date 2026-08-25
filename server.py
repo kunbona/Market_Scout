@@ -2851,6 +2851,16 @@ def api_industry_trend_heatmap():
         return _err(exc)
 
 
+@app.route("/api/industry-trend/categories")
+def api_industry_trend_categories():
+    """31 行业 → 6 大类别映射 (唯一来源: quant/industry_trend_daily.py, 前端只消费不硬编码)。"""
+    try:
+        from quant.industry_trend_daily import INDUSTRY_CATEGORY, CATEGORY_ORDER
+        return _ok({"map": INDUSTRY_CATEGORY, "order": CATEGORY_ORDER})
+    except Exception as exc:
+        return _err(exc)
+
+
 @app.route("/api/industry-trend/category-rotation")
 def api_industry_trend_category_rotation():
     """6 大板块类别轮动时序: 日期 × 类别 多指标均值 (类别轮动标签页用)。"""

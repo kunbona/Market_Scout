@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import Plotly from 'plotly.js-basic-dist-min';
 import { LayoutDashboard, ChartScatter, Table2, CandlestickChart, RefreshCw, CalendarDays, Grid3x3, TrendingUp } from 'lucide-react';
 import { TabHeader } from '../components/TabHeader';
@@ -45,18 +45,29 @@ const CAT_COLOR: Record<string, string> = {
 const CAT_ORDER = ['强势多头', '多头', '多头回踩', '筑底反转', '筑底回踩',
   '震荡粘合', '震荡', '空头反弹', '空头', '强势空头'];
 
-// ─── 板块类别: 申万一级 31 行业 → 6 大投资类别 ─────────────────────────────
-const INDUSTRY_CATEGORY: Record<string, string> = {
-  '电子': '科技TMT', '计算机': '科技TMT', '通信': '科技TMT', '传媒': '科技TMT',
-  '电力设备': '先进制造', '国防军工': '先进制造', '汽车': '先进制造', '机械设备': '先进制造',
-  '食品饮料': '大消费', '家用电器': '大消费', '农林牧渔': '大消费', '纺织服饰': '大消费',
-  '轻工制造': '大消费', '商贸零售': '大消费', '社会服务': '大消费', '美容护理': '大消费', '医药生物': '大消费',
-  '煤炭': '周期资源', '石油石化': '周期资源', '有色金属': '周期资源', '钢铁': '周期资源',
-  '基础化工': '周期资源', '建筑材料': '周期资源', '建筑装饰': '周期资源',
-  '银行': '金融地产', '非银金融': '金融地产', '房地产': '金融地产',
-  '公用事业': '稳定公用', '交通运输': '稳定公用', '环保': '稳定公用', '综合': '稳定公用',
-};
-const CATEGORY_ORDER = ['科技TMT', '先进制造', '大消费', '周期资源', '金融地产', '稳定公用'];
+// ─── 板块类别: 唯一来源 = 后端 quant/industry_trend_daily.py (31行业→6大类别) ──
+// 前端不再硬编码映射: 页面挂载拉一次 /api/industry-trend/categories,
+// 模块级 store + useSyncExternalStore 订阅, 各子页共享同一份数据。
+type CatMeta = { map: Record<string, string>; order: string[] };
+let _catMeta: CatMeta = { map: {}, order: [] };
+const _catSubs = new Set<() => void>();
+let _catFetchStarted = false;
+function loadCatMeta() {
+  if (_catFetchStarted) return;
+  _catFetchStarted = true;
+  apiFetch<CatMeta>('/api/industry-trend/categories')
+    .then(d => { if (d?.map) { _catMeta = d; _catSubs.forEach(f => f()); } })
+    .catch(() => { /* 拉不到映射时类别列显示 '--', 不阻塞页面 */ });
+}
+function useCatMeta(): CatMeta {
+  useEffect(() => { loadCatMeta(); }, []);
+  return useSyncExternalStore(
+    cb => { _catSubs.add(cb); return () => { _catSubs.delete(cb); }; },
+    () => _catMeta,
+  );
+}
+
+// CAT_STYLE: 类别配色 (纯展示样式, 按类别名取色, 不属于映射数据)
 const CAT_STYLE: Record<string, { color: string }> = {
   '科技TMT': { color: '#185FA5' },
   '先进制造': { color: '#534AB7' },
@@ -67,12 +78,12 @@ const CAT_STYLE: Record<string, { color: string }> = {
 };
 
 // 热力图 y 轴: 行业名前加类别色点 (ECharts rich text)
-const CAT_AXIS_RICH = CATEGORY_ORDER.reduce((m, c, i) => {
+const catAxisRich = (order: string[]) => order.reduce((m, c, i) => {
   m[`c${i}`] = { color: CAT_STYLE[c]?.color || '#999', fontSize: 7 };
   return m;
 }, {} as Record<string, { color: string; fontSize: number }>);
-const catAxisLabel = (name: string) => {
-  const i = CATEGORY_ORDER.indexOf(INDUSTRY_CATEGORY[name] || '');
+const catAxisLabel = (name: string, map: Record<string, string>, order: string[]) => {
+  const i = order.indexOf(map[name] || '');
   return i >= 0 ? `{c${i}|●} ${name}` : name;
 };
 
@@ -554,6 +565,7 @@ function DetailTab({ data, selIndustry, onRowClick }: {
   const [colGroup, setColGroup] = useState('all');
   const [sortKey, setSortKey] = useState('');
   const [sortDir, setSortDir] = useState(1);
+  const catMeta = useCatMeta();
 
   // 在所有列组合的"行业"后注入前端派生列"类别"(31行业→6大板块类别)
   const withCategory = (cols: string[]) =>
@@ -571,7 +583,7 @@ function DetailTab({ data, selIndustry, onRowClick }: {
   const catStats = useMemo(() => {
     const agg: Record<string, { n: number; scoreSum: number; scoreN: number; daySum: number; dayN: number; up: number }> = {};
     for (const r of data.table) {
-      const cat = INDUSTRY_CATEGORY[r['行业']];
+      const cat = catMeta.map[r['行业']];
       if (!cat) continue;
       const a = agg[cat] ||= { n: 0, scoreSum: 0, scoreN: 0, daySum: 0, dayN: 0, up: 0 };
       a.n++;
@@ -580,13 +592,13 @@ function DetailTab({ data, selIndustry, onRowClick }: {
       const d = Number(r['当日等权涨幅%']);
       if (!Number.isNaN(d)) { a.daySum += d; a.dayN++; if (d > 0) a.up++; }
     }
-    const list = CATEGORY_ORDER.map(cat => {
+    const list = catMeta.order.map(cat => {
       const a = agg[cat] || { n: 0, scoreSum: 0, scoreN: 0, daySum: 0, dayN: 0, up: 0 };
       return { cat, n: a.n, avgScore: a.scoreN ? a.scoreSum / a.scoreN : null, avgDay: a.dayN ? a.daySum / a.dayN : null, up: a.up };
     });
     // 按平均综合分降序: 第一名=最近占优的类别
     return list.sort((a, b) => (b.avgScore ?? 0) - (a.avgScore ?? 0));
-  }, [data]);
+  }, [data, catMeta]);
 
   // 排序后的表格行 (未点排序时保持存档原序: 分类 → 趋势强度)
   const sortedRows = useMemo(() => {
@@ -596,7 +608,7 @@ function DetailTab({ data, selIndustry, onRowClick }: {
       const va = a[sortKey], vb = b[sortKey];
       if (sortKey === '分类') return (catIdx(va) - catIdx(vb)) * sortDir;
       if (sortKey === '类别') {
-        return (CATEGORY_ORDER.indexOf(String(va)) - CATEGORY_ORDER.indexOf(String(vb))) * sortDir;
+        return (catMeta.order.indexOf(String(va)) - catMeta.order.indexOf(String(vb))) * sortDir;
       }
       const na = Number(va), nb = Number(vb);
       const aOk = va != null && va !== '' && !Number.isNaN(na);
@@ -605,7 +617,7 @@ function DetailTab({ data, selIndustry, onRowClick }: {
       if (aOk !== bOk) return (aOk ? -1 : 1) * sortDir;   // 空值沉底
       return String(va ?? '').localeCompare(String(vb ?? ''), 'zh') * sortDir;
     });
-  }, [data, sortKey, sortDir]);
+  }, [data, sortKey, sortDir, catMeta]);
 
   const toggleSort = (col: string) => {
     if (sortKey === col) {
@@ -697,9 +709,9 @@ function DetailTab({ data, selIndustry, onRowClick }: {
               <tr key={r['行业']} onClick={() => onRowClick(r['行业'])}
                 className={`border-b border-gray-100 cursor-pointer hover:bg-blue-50 ${selIndustry === r['行业'] ? 'bg-blue-50' : ''}`}>
                 {tableCols.map(c => {
-                  // 类别列: 前端派生, 从行业名映射
+                  // 类别列: 映射来自后端 (quant/industry_trend_daily.py)
                   if (c === '类别') {
-                    const cat = INDUSTRY_CATEGORY[r['行业']] || '--';
+                    const cat = catMeta.map[r['行业']] || '--';
                     return (
                       <td key={c} className="py-1 px-2">
                         <span className="inline-flex items-center gap-1" style={{ color: CAT_STYLE[cat]?.color || '#666' }}>
@@ -731,6 +743,7 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
   const [data, setData] = useState<{ dates: string[]; industries: string[]; scores: (number | null)[][] } | null>(null);
   const [loading, setLoading] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
+  const catMeta = useCatMeta();
 
   useEffect(() => {
     apiFetch<{ dates: string[]; industries: string[]; scores: (number | null)[][] }>(
@@ -767,7 +780,7 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
     const n = data.dates.length - 1, prev = n - 1;
     const agg: Record<string, { n: number; sum: number; chgSum: number; chgN: number }> = {};
     data.industries.forEach((ind, i) => {
-      const cat = INDUSTRY_CATEGORY[ind];
+      const cat = catMeta.map[ind];
       if (!cat) return;
       const a = agg[cat] ||= { n: 0, sum: 0, chgSum: 0, chgN: 0 };
       a.n++;
@@ -775,11 +788,11 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       if (now != null) a.sum += now;
       if (now != null && y != null) { a.chgSum += now - y; a.chgN++; }
     });
-    return CATEGORY_ORDER.map(cat => {
+    return catMeta.order.map(cat => {
       const a = agg[cat] || { n: 0, sum: 0, chgSum: 0, chgN: 0 };
       return { cat, n: a.n, score: a.n ? a.sum / a.n : null, chg: a.chgN ? a.chgSum / a.chgN : null };
     }).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  }, [data]);
+  }, [data, catMeta]);
 
   useEffect(() => {
     if (!ref.current || !data?.dates?.length) return;
@@ -795,7 +808,7 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
         formatter: (p: any) => {
           const ind = data.industries[p.data[1]];
           const dt = data.dates[p.data[0]];
-          const cat = INDUSTRY_CATEGORY[ind];
+          const cat = catMeta.map[ind];
           return `${ind} | ${dt} | <b>${cat || '--'}</b><br/>综合分: <b>${p.data[2].toFixed(1)}</b>`;
         },
       },
@@ -808,7 +821,11 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       yAxis: {
         type: 'category' as const,
         data: data.industries,
-        axisLabel: { fontSize: 9, rich: CAT_AXIS_RICH, formatter: catAxisLabel },
+        axisLabel: {
+          fontSize: 9,
+          rich: catAxisRich(catMeta.order),
+          formatter: (name: string) => catAxisLabel(name, catMeta.map, catMeta.order),
+        },
         inverse: true,
       },
       visualMap: {
@@ -853,7 +870,7 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       ro.observe(ref.current!);
       return () => { ro.disconnect(); chart.dispose(); };
     });
-  }, [data, alerts]);
+  }, [data, alerts, catMeta]);
 
   if (loading) return <div className="text-gray-400 text-sm py-12 text-center">加载热力图…</div>;
   if (!data?.dates?.length) return <div className="text-gray-400 text-sm py-12 text-center">暂无历史数据</div>;
@@ -876,6 +893,7 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
   const [period, setPeriod] = useState<'当日' | '5日' | '20日'>('5日');
   const [loading, setLoading] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
+  const catMeta = useCatMeta();
 
   useEffect(() => {
     apiFetch<{ dates: string[]; industries: string[]; rps: Record<string, (number | null)[][]>; vol: (number | null)[][] }>(
@@ -920,7 +938,7 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
     const matrix = data.rps[period] || [];
     const agg: Record<string, { n: number; sum: number; sn: number; chgSum: number; chgN: number }> = {};
     data.industries.forEach((ind, i) => {
-      const cat = INDUSTRY_CATEGORY[ind];
+      const cat = catMeta.map[ind];
       if (!cat) return;
       const a = agg[cat] ||= { n: 0, sum: 0, sn: 0, chgSum: 0, chgN: 0 };
       a.n++;
@@ -928,11 +946,11 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       if (now != null) { a.sum += now; a.sn++; }
       if (now != null && y != null) { a.chgSum += now - y; a.chgN++; }
     });
-    return CATEGORY_ORDER.map(cat => {
+    return catMeta.order.map(cat => {
       const a = agg[cat] || { n: 0, sum: 0, sn: 0, chgSum: 0, chgN: 0 };
       return { cat, n: a.n, score: a.sn ? a.sum / a.sn : null, chg: a.chgN ? a.chgSum / a.chgN : null };
     }).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  }, [data, period]);
+  }, [data, period, catMeta]);
 
   useEffect(() => {
     if (!ref.current || !data?.dates?.length) return;
@@ -948,7 +966,7 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
         formatter: (p: any) => {
           const ind = data.industries[p.data[1]];
           const dt = data.dates[p.data[0]];
-          const cat = INDUSTRY_CATEGORY[ind];
+          const cat = catMeta.map[ind];
           return `${ind} | ${dt} | <b>${cat || '--'}</b><br/>${period} RPS: <b>${p.data[2].toFixed(1)}</b>`;
         },
       },
@@ -961,7 +979,11 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       yAxis: {
         type: 'category' as const,
         data: data.industries,
-        axisLabel: { fontSize: 9, rich: CAT_AXIS_RICH, formatter: catAxisLabel },
+        axisLabel: {
+          fontSize: 9,
+          rich: catAxisRich(catMeta.order),
+          formatter: (name: string) => catAxisLabel(name, catMeta.map, catMeta.order),
+        },
         inverse: true,
       },
       visualMap: {
@@ -1014,7 +1036,7 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       ro.observe(ref.current!);
       return () => { ro.disconnect(); chart.dispose(); };
     });
-  }, [data, period, alerts]);
+  }, [data, period, alerts, catMeta]);
 
   if (loading) return <div className="text-gray-400 text-sm py-12 text-center">加载 RPS 热力图…</div>;
   if (!data?.dates?.length) return <div className="text-gray-400 text-sm py-12 text-center">暂无历史数据</div>;
