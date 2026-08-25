@@ -162,12 +162,24 @@ INDICATOR_META: List[Dict[str, Any]] = [
 
 
 # ---------------------------------------------------------------------------
-# 缓存（按文件 mtime）
+# 缓存（按文件 mtime）— 统一走 core/cache.py 的 MtimeCache
 # ---------------------------------------------------------------------------
 
-_cache_lock = threading.Lock()
-_csv_cache: Dict[str, Tuple[float, pd.DataFrame]] = {}
-_json_cache: Dict[str, Tuple[float, Any]] = {}
+from core.cache import MtimeCache
+
+_csv_cache = MtimeCache()
+_json_cache = MtimeCache()
+
+
+def _load_csv_with_fallback(path: Path) -> Optional[pd.DataFrame]:
+    """utf-8-sig 优先, 失败回落默认编码 (与原实现一致)。"""
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig")
+    except Exception:
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            return None
 
 
 def _read_csv_cached(rel_path: str) -> Optional[pd.DataFrame]:
@@ -176,23 +188,7 @@ def _read_csv_cached(rel_path: str) -> Optional[pd.DataFrame]:
         path = _safe_resolve(f"data/processed/{rel_path}")
     except ValueError:
         return None
-    if not path.exists():
-        return None
-    mtime = path.stat().st_mtime
-    with _cache_lock:
-        cached = _csv_cache.get(rel_path)
-        if cached and cached[0] == mtime:
-            return cached[1].copy()
-    try:
-        df = pd.read_csv(path, encoding="utf-8-sig")
-    except Exception:
-        try:
-            df = pd.read_csv(path)  # fallback
-        except Exception:
-            return None
-    with _cache_lock:
-        _csv_cache[rel_path] = (mtime, df)
-    return df.copy()
+    return _csv_cache.get_or_load(path, _load_csv_with_fallback, clone=lambda d: d.copy())
 
 
 def _read_index_csv() -> Optional[pd.DataFrame]:
@@ -212,24 +208,26 @@ def _read_index_csv() -> Optional[pd.DataFrame]:
             break
     if path is None:
         return None
-    mtime = path.stat().st_mtime
-    cache_key = "_index_sh000001"
-    with _cache_lock:
-        cached = _csv_cache.get(cache_key)
-        if cached and cached[0] == mtime:
-            return cached[1].copy()
-    try:
-        df = pd.read_csv(path, encoding="utf-8-sig")
-    except Exception:
-        try:
-            df = pd.read_csv(path)
-        except Exception:
+
+    def _load_index_csv(p: Path) -> Optional[pd.DataFrame]:
+        df = _load_csv_with_fallback(p)
+        if df is None:
             return None
-    if "date" not in df.columns and "日期" in df.columns:
-        df = df.rename(columns={"日期": "date"})
-    with _cache_lock:
-        _csv_cache[cache_key] = (mtime, df)
-    return df.copy()
+        if "date" not in df.columns and "日期" in df.columns:
+            df = df.rename(columns={"日期": "date"})
+        return df
+
+    return _csv_cache.get_or_load(
+        path, _load_index_csv, clone=lambda d: d.copy(), key="_index_sh000001"
+    )
+
+
+def _load_json_file(path: Path) -> Optional[Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 def _read_json(rel_path: str) -> Optional[Any]:
@@ -237,21 +235,7 @@ def _read_json(rel_path: str) -> Optional[Any]:
         path = _safe_resolve(rel_path)
     except ValueError:
         return None
-    if not path.exists():
-        return None
-    mtime = path.stat().st_mtime
-    with _cache_lock:
-        cached = _json_cache.get(rel_path)
-        if cached and cached[0] == mtime:
-            return cached[1]
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return None
-    with _cache_lock:
-        _json_cache[rel_path] = (mtime, data)
-    return data
+    return _json_cache.get_or_load(path, _load_json_file)
 
 
 # ---------------------------------------------------------------------------
@@ -423,8 +407,8 @@ def _composite_pe_series() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
 XBX_FRESH_MINUTES = 30
 XBX_STALE_MINUTES = 180
 
-# XBX parquet mtime 缓存：避免每次都读 parquet 取 max date
-_xbx_freshness_cache: Dict[str, Any] = {"mtime": 0.0, "data": None}
+# XBX parquet mtime 缓存：避免每次都读 parquet 取 max date (core/cache MtimeCache)
+_xbx_freshness_cache = MtimeCache()
 
 
 def _xbx_data_freshness() -> Dict[str, Any]:
@@ -457,9 +441,30 @@ def _xbx_data_freshness() -> Dict[str, Any]:
             "freshness": "missing",
         }
 
-    try:
-        mtime = parquet.stat().st_mtime
-    except Exception:
+    def _compute_freshness(p: Path) -> Optional[Dict[str, Any]]:
+        try:
+            mtime = p.stat().st_mtime
+        except Exception:
+            return None
+        from datetime import datetime as _dt
+        now = _dt.now().timestamp()
+        minutes = int((now - mtime) / 60)
+        if minutes < XBX_FRESH_MINUTES:
+            freshness = "fresh"
+        elif minutes < XBX_STALE_MINUTES:
+            freshness = "stale"
+        else:
+            freshness = "old"
+        return {
+            "available": True,
+            "path": str(p),
+            "mtime": _dt.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "mtime_ago_minutes": minutes,
+            "freshness": freshness,
+        }
+
+    data = _xbx_freshness_cache.get_or_load(parquet, _compute_freshness)
+    if data is None:
         return {
             "available": False,
             "path": str(parquet),
@@ -467,30 +472,6 @@ def _xbx_data_freshness() -> Dict[str, Any]:
             "mtime_ago_minutes": -1,
             "freshness": "missing",
         }
-
-    # mtime 没变就返回缓存
-    if _xbx_freshness_cache.get("mtime") == mtime and _xbx_freshness_cache.get("data"):
-        return _xbx_freshness_cache["data"]
-
-    from datetime import datetime as _dt
-    now = _dt.now().timestamp()
-    minutes = int((now - mtime) / 60)
-    if minutes < XBX_FRESH_MINUTES:
-        freshness = "fresh"
-    elif minutes < XBX_STALE_MINUTES:
-        freshness = "stale"
-    else:
-        freshness = "old"
-
-    data = {
-        "available": True,
-        "path": str(parquet),
-        "mtime": _dt.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
-        "mtime_ago_minutes": minutes,
-        "freshness": freshness,
-    }
-    _xbx_freshness_cache["mtime"] = mtime
-    _xbx_freshness_cache["data"] = data
     return data
 
 
@@ -1410,9 +1391,8 @@ def _do_run_cycle_refresh(mode: str = "quick") -> None:
             except Exception:
                 pass
         # 强制清空本模块 mtime 缓存，下次 /api/cycle/* 重新读 CSV/JSON
-        with _cache_lock:
-            _csv_cache.clear()
-            _json_cache.clear()
+        _csv_cache.clear()
+        _json_cache.clear()
 
 
 def trigger_cycle_refresh(

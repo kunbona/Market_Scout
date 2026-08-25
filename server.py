@@ -1860,31 +1860,31 @@ def _watchlist_intel_collect(code: str, name: str) -> dict:
     }
 
 
-# 股池动态分析逐股体检缓存（5 分钟，避免每只股票重复查库）
-_checkup_cache: dict = {}
-_checkup_cache_ts: float = 0.0
+# 股池动态分析逐股体检缓存（5 分钟，避免每只股票重复查库）— core/cache TTLCache
+from core.cache import TTLCache as _TTLCache
+
+_checkup_cache = _TTLCache(ttl=300)
 
 
 def _get_stock_checkup(code: str) -> dict:
     """从最近一次「股池动态分析」（agent_summary run_type=watchlist）结果里取该股的
     问题提醒 issues / 优势亮点 highlights / 涨跌幅。返回 {issues, highlights, change_pct}，无则空。"""
-    import time as _t
-    global _checkup_cache, _checkup_cache_ts
-    now = _t.time()
-    if not _checkup_cache or (now - _checkup_cache_ts) > 300:
+    def _load_all() -> dict:
         from db.storage import get_agent_summary_latest_snapshot
-        _checkup_cache = {}
+        cache: dict = {}
         snap = get_agent_summary_latest_snapshot("watchlist")
         if snap and snap.get("stocks"):
             for s in snap["stocks"]:
-                _checkup_cache[str(s.get("code"))] = {
+                cache[str(s.get("code"))] = {
                     "issues": s.get("issues") or [],
                     "highlights": s.get("highlights") or [],
                     "change_pct": s.get("change_pct"),
                     "analyze_ok": s.get("analyze_ok"),
                 }
-        _checkup_cache_ts = now
-    return _checkup_cache.get(str(code)) or {}
+        return cache or None
+
+    all_checkups = _checkup_cache.get_or_set("all", _load_all) or {}
+    return all_checkups.get(str(code)) or {}
 
 
 @app.route("/api/watchlist/intel")
