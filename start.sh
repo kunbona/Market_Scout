@@ -168,21 +168,28 @@ build_dashboard_dist
 
 # ---------- 4. 后台启动 ----------
 # (build 已在 step 0 跑过, 不会重复)
+# 2026-08-25 教训: plist 存在 ≠ 服务已注册(沙箱里 bootstrap 恒失败)。
+# 不能盲信 launchd 分支——先查确实注册才用, 否则回退 nohup 直启,
+# 否则启动"看似成功"实际没人拉起, 页面全崩。
 PLIST="$HOME/Library/LaunchAgents/com.kun.marketradar.plist"
 AGENT_DOMAIN="gui/$(id -u)"
+STARTED=""
 
-if [ -f "$PLIST" ]; then
-    # 优先走 launchd 系统服务：权限稳定、崩溃自动拉起、开机自启
-    if launchctl print "$AGENT_DOMAIN/com.kun.marketradar" >/dev/null 2>&1; then
-        echo "[…] 系统服务已注册，触发重启..."
-        launchctl kickstart -k "$AGENT_DOMAIN/com.kun.marketradar" 2>/dev/null
-    else
-        echo "[…] 注册并启动系统服务（launchd）..."
-        launchctl bootstrap "$AGENT_DOMAIN" "$PLIST" 2>/dev/null \
-            || launchctl kickstart -k "$AGENT_DOMAIN/com.kun.marketradar" 2>/dev/null
-    fi
+if launchctl print "$AGENT_DOMAIN/com.kun.marketradar" >/dev/null 2>&1; then
+    echo "[…] 系统服务已注册，触发重启..."
+    launchctl kickstart -k "$AGENT_DOMAIN/com.kun.marketradar" 2>/dev/null
+    STARTED=1
     NEW_PID="(launchd 托管)"
-else
+elif [ -f "$PLIST" ]; then
+    echo "[…] plist 存在但服务未注册，尝试 bootstrap..."
+    if launchctl bootstrap "$AGENT_DOMAIN" "$PLIST" 2>/dev/null; then
+        STARTED=1
+        NEW_PID="(launchd 托管)"
+    fi
+fi
+
+if [ -z "$STARTED" ]; then
+    echo "[…] launchd 不可用，nohup 直接启动..."
     # 注意: < /dev/null 必须有。控制终端关闭后继承的 fd0 变坏,
     # Python 解释器初始化 (早于任何代码) 会直接 Fatal: Bad file descriptor。
     nohup "$PY" server.py < /dev/null >> "$LOG_FILE" 2>&1 &
