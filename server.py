@@ -4523,6 +4523,44 @@ if __name__ == "__main__":
     except (AttributeError, ValueError):
         pass
 
+    # ── 修复坏 stdin (2026-08-25) ──────────────────────────────────────────
+    # nohup/沙箱会话结束时父进程的控制终端关闭, fd 0 变成无效描述符;
+    # 子进程 (subprocess.run 默认继承) 启动时 Python init_sys_streams 拿不到
+    # 标准流 → "OSError: [Errno 9] Bad file descriptor", 即 /api/data-health
+    # 500 的根因。这里把 fd 0 重定向到 /dev/null, 子进程继承的就是干净的空输入。
+    try:
+        os.fstat(0)
+    except OSError:
+        _devnull_fd = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(_devnull_fd, 0)
+        os.close(_devnull_fd)
+        sys.stdin = os.fdopen(0, "r")
+        print("[server] stdin 为坏描述符, 已重定向到 /dev/null")
+
+    # ── 清理死代理 (2026-08-25) ─────────────────────────────────────────────
+    # 沙箱/临时会话注入的 HTTP(S)_PROXY (如 127.0.0.1:50944) 在服务继承后常驻,
+    # 会话结束代理进程消失 → 所有外网抓取 ProxyError (财联社/东财/同花顺/QMT桥
+    # 全部失败)。启动时探测一次, 不通就全部清掉, 走直连。
+    try:
+        import socket as _socket
+        from urllib.parse import urlparse as _urlparse
+        _proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY") or ""
+        if _proxy_url:
+            _p = _urlparse(_proxy_url if "://" in _proxy_url else "http://" + _proxy_url)
+            _dead = False
+            if _p.hostname in ("127.0.0.1", "localhost", "::1"):
+                try:
+                    with _socket.create_connection((_p.hostname, _p.port or 80), timeout=0.5):
+                        pass
+                except OSError:
+                    _dead = True
+            if _dead:
+                for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+                    os.environ.pop(_k, None)
+                print(f"[server] 检测到死代理 {_proxy_url} (端口无监听), 已清除全部代理环境变量")
+    except Exception as _e:
+        print(f"[server] 代理探测异常(忽略, 不影响启动): {_e}")
+
     _port = int(os.environ.get("FLASK_PORT", 20026))
 
     # 同步预热 industry stats（在 scheduler 启动**之前**）：
