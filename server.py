@@ -133,11 +133,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from db.storage import (
     get_dt_pool_v3,
     get_market_breadth_latest,
-    get_sector_flow_accel,
-    get_volume_breakout,
-    get_turnover_stats,
-    get_market_cap_dist,
-    get_advance_decline,
     get_big_deal_latest,
     get_margin_latest,
     get_block_trade_latest,
@@ -146,8 +141,6 @@ from db.storage import (
     get_dividend_latest,
     get_industry_ranking_latest,
     get_ths_hot_stocks_latest,
-    get_latest_emotion_date,
-    get_research_activity,
 )
 from fetcher.qmt_monitors import (
     build_qmt_industry_draggers_payload,
@@ -182,6 +175,7 @@ from api.review import bp as review_bp
 from api.agent import bp as agent_bp
 from api.market_data import bp as market_data_bp
 from api.watchlist import bp as watchlist_bp, pools_bp as watchlist_pools_bp
+from api.sector_stats import bp as sector_stats_bp
 app.register_blueprint(industry_trend_bp)
 app.register_blueprint(cycle_bp)
 app.register_blueprint(wisburg_bp)
@@ -193,6 +187,7 @@ app.register_blueprint(agent_bp)
 app.register_blueprint(market_data_bp)
 app.register_blueprint(watchlist_bp)
 app.register_blueprint(watchlist_pools_bp)
+app.register_blueprint(sector_stats_bp)
 
 
 _QMT_BACKGROUND_REFRESH_COOLDOWN_SECONDS = 30.0
@@ -265,50 +260,6 @@ def _ok(data):
 
 def _err(msg: str, code: int = 500):
     return jsonify({"success": False, "error": str(msg)}), code
-
-
-def _strip_html(html: str) -> str:
-    """把 HTML 报告剥成纯文本 (保留段落/标题结构, 适合发到企微)."""
-    import re
-    if not html:
-        return ""
-    # 去 <style> / <script>
-    s = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    s = re.sub(r"<script[^>]*>.*?</script>", "", s, flags=re.DOTALL | re.IGNORECASE)
-    # 行级块加换行
-    s = re.sub(r"</?(p|div|br|h[1-6]|li|tr|td|th|blockquote|pre|article|section|header|footer)[^>]*>", "\n", s, flags=re.IGNORECASE)
-    # 去剩余标签
-    s = re.sub(r"<[^>]+>", "", s)
-    # HTML 实体
-    s = (s.replace("&nbsp;", " ")
-           .replace("&amp;", "&")
-           .replace("&lt;", "<")
-           .replace("&gt;", ">")
-           .replace("&quot;", '"')
-           .replace("&#39;", "'"))
-    # 多余空行
-    s = re.sub(r"[ \t]+", " ", s)
-    s = re.sub(r"\n[ \t]+", "\n", s)
-    s = re.sub(r"\n{3,}", "\n\n", s)
-    return s.strip()
-
-
-def _date_param(key: str = "date") -> str:
-    """Return the query-string date param, falling back to today."""
-    val = request.args.get(key, "").strip()
-    return val if val else _today()
-
-
-def _date_or_none(key: str = "date") -> str | None:
-    """Return date param if provided, else None (let storage pick latest)."""
-    val = request.args.get(key, "").strip()
-    return val if val else None
-
-
-def _computed_date(key: str = "date") -> str:
-    """用于历史计算型接口：有参数用参数，无参数回落到最新已计算日期。"""
-    val = request.args.get(key, "").strip()
-    return val if val else (get_latest_emotion_date() or _today())
 
 
 def _read_qmt_runtime_status() -> dict:
@@ -700,159 +651,6 @@ def api_qmt_industry_stats():
 
 
 
-# ---------------------------------------------------------------------------
-# Sector flow acceleration / Volume breakout / Turnover stats / Market cap dist / Advance-decline
-# ---------------------------------------------------------------------------
-
-@app.route("/api/sector-flow-accel")
-def api_sector_flow_accel():
-    try:
-        trade_date = _computed_date()
-        rows = get_sector_flow_accel(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-@app.route("/api/volume-breakout")
-def api_volume_breakout():
-    try:
-        trade_date = _computed_date()
-        rows = get_volume_breakout(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-@app.route("/api/research-activity")
-def api_research_activity():
-    try:
-        trade_date = _computed_date()
-        rows = get_research_activity(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/sector-chip-pressure")
-def api_sector_chip_pressure():
-    try:
-        from db.storage import get_sector_chip_pressure
-        trade_date = _computed_date()
-        rows = get_sector_chip_pressure(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/sector-auction-sentiment")
-def api_sector_auction_sentiment():
-    try:
-        from db.storage import get_sector_auction_sentiment
-        trade_date = _computed_date()
-        rows = get_sector_auction_sentiment(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-@app.route("/api/turnover-stats")
-def api_turnover_stats():
-    try:
-        trade_date = _computed_date()
-        data = get_turnover_stats(trade_date)
-        return _ok(data)
-    except Exception as exc:
-        return _err(exc)
-
-@app.route("/api/market-cap-dist")
-def api_market_cap_dist():
-    try:
-        trade_date = _computed_date()
-        data = get_market_cap_dist(trade_date)
-        return _ok(data)
-    except Exception as exc:
-        return _err(exc)
-
-@app.route("/api/advance-decline")
-def api_advance_decline():
-    try:
-        trade_date = _computed_date()
-        data = get_advance_decline(trade_date)
-        return _ok(data)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/trade-calendar/today")
-def api_trade_calendar_today():
-    try:
-        from agent.query import get_market_session
-        return _ok(get_market_session())
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/agent/time-slot")
-def api_agent_time_slot():
-    """
-    返回当前应显示的 AI 分析时段按钮高亮状态，以及下次切换时间。
-
-    逻辑：
-    - 交易日 00:00–09:15 → morning
-    - 交易日 09:15–15:30 → intraday
-    - 交易日 15:30–24:00 → evening
-    - 非交易日（周末/节假日）→ evening，直到下一个交易日 00:00 切换为 morning
-    """
-    try:
-        from datetime import datetime, timedelta, time as dtime
-        from agent.query import _get_trade_calendar
-
-        now = datetime.now()
-        today = now.date()
-        total_min = now.hour * 60 + now.minute
-
-        try:
-            cal = _get_trade_calendar()
-            trade_dates = sorted(cal["trade_date"].values)
-            is_trade_today = today in trade_dates
-        except Exception:
-            is_trade_today = today.weekday() < 5
-            trade_dates = []
-
-        def _next_trade_date_after(d):
-            """返回 d 之后第一个交易日（不含 d）。"""
-            for td in trade_dates:
-                if td > d:
-                    return td
-            # fallback：跳过周末往后找
-            nxt = d + timedelta(days=1)
-            while nxt.weekday() >= 5:
-                nxt += timedelta(days=1)
-            return nxt
-
-        if is_trade_today:
-            if total_min < 9 * 60 + 15:
-                slot = "morning"
-                # 下次切换：今天 09:15
-                next_change = datetime.combine(today, dtime(9, 15))
-            elif total_min < 15 * 60 + 30:
-                slot = "intraday"
-                next_change = datetime.combine(today, dtime(15, 30))
-            else:
-                slot = "evening"
-                nxt = _next_trade_date_after(today)
-                next_change = datetime.combine(nxt, dtime(0, 0))
-        else:
-            slot = "evening"
-            nxt = _next_trade_date_after(today)
-            next_change = datetime.combine(nxt, dtime(0, 0))
-
-        return _ok({
-            "slot": slot,
-            "is_trade_today": is_trade_today,
-            "next_change_at": next_change.isoformat(),
-            "server_time": now.isoformat(),
-        })
-    except Exception as exc:
-        return _err(exc)
 
 
 @app.route("/api/data-health")
