@@ -183,7 +183,9 @@ if [ -f "$PLIST" ]; then
     fi
     NEW_PID="(launchd 托管)"
 else
-    nohup "$PY" server.py >> "$LOG_FILE" 2>&1 &
+    # 注意: < /dev/null 必须有。控制终端关闭后继承的 fd0 变坏,
+    # Python 解释器初始化 (早于任何代码) 会直接 Fatal: Bad file descriptor。
+    nohup "$PY" server.py < /dev/null >> "$LOG_FILE" 2>&1 &
     NEW_PID=$!
     disown 2>/dev/null || true
 fi
