@@ -131,29 +131,8 @@ from flask_cors import CORS
 # Allow importing db/storage from the project root
 sys.path.insert(0, os.path.dirname(__file__))
 from db.storage import (
-    get_cls_news_by_source,
-    count_cls_news_by_source,
-    get_policy_news_by_source,
-    get_policy_news,
-    count_policy_news_by_source,
-    get_sector_flow_latest,
-    get_lhb_data, get_lhb_seat,
-    get_zt_pool,
-    get_dt_pool,
     get_dt_pool_v3,
-    get_zbgc_pool,
-    get_strong_pool,
-    get_research_reports,
     get_market_breadth_latest,
-    get_market_emotion_summary,
-    get_lianzban_stats,
-    get_sector_zt_density,
-    get_concept_zt_density,
-    get_lianzban_chain,
-    get_hot_rank_up_latest,
-    get_northbound_flow_latest,
-    get_xq_hot_latest,
-    get_concept_flow_latest,
     get_sector_flow_accel,
     get_volume_breakout,
     get_turnover_stats,
@@ -211,6 +190,7 @@ from api.exodia import bp as exodia_bp
 from api.wecom import bp as wecom_bp
 from api.review import bp as review_bp
 from api.agent import bp as agent_bp
+from api.market_data import bp as market_data_bp
 app.register_blueprint(industry_trend_bp)
 app.register_blueprint(cycle_bp)
 app.register_blueprint(wisburg_bp)
@@ -219,6 +199,7 @@ app.register_blueprint(exodia_bp)
 app.register_blueprint(wecom_bp)
 app.register_blueprint(review_bp)
 app.register_blueprint(agent_bp)
+app.register_blueprint(market_data_bp)
 
 
 _QMT_BACKGROUND_REFRESH_COOLDOWN_SECONDS = 30.0
@@ -232,7 +213,6 @@ _qmt_industry_stats_cache: dict[str, object] = {
 
 # 标记 industry stats warmup 是否完成（Flask 启动时等这个 event）
 _industry_stats_warmup_done = threading.Event()
-
 
 
 # ---------------------------------------------------------------------------
@@ -627,189 +607,8 @@ def _save_env_local(updates: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# News & Policy
+# QMT 实时监控 (与 server.py QMT 缓存枢纽纠缠; 纯 DB 池已拆去 api/market_data.py)
 # ---------------------------------------------------------------------------
-
-@app.route("/api/news")
-def api_news():
-    try:
-        source    = request.args.get("source", "财联社")
-        page_size = int(request.args.get("page_size", 30))
-        page      = int(request.args.get("page", 1))
-        offset    = (page - 1) * page_size
-        rows  = get_cls_news_by_source(source, page_size, offset)
-        total = count_cls_news_by_source(source)
-        return _ok({"items": rows, "total": total, "page": page, "page_size": page_size})
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/policy")
-def api_policy():
-    try:
-        source    = request.args.get("source", "全部")
-        page_size = int(request.args.get("page_size", 30))
-        page      = int(request.args.get("page", 1))
-        offset    = (page - 1) * page_size
-        if source == "全部":
-            rows  = get_policy_news(page_size, offset)
-            total = sum(count_policy_news_by_source(s) for s in
-                        ['巨潮公告','财新','发改委','证监会','上交所问询','深交所问询','深交所公告'])
-        else:
-            rows  = get_policy_news_by_source(source, page_size, offset)
-            total = count_policy_news_by_source(source)
-        return _ok({"items": rows, "total": total, "page": page, "page_size": page_size})
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# Research reports
-# ---------------------------------------------------------------------------
-
-@app.route("/api/research")
-def api_research():
-    try:
-        qtype = int(request.args.get("qtype", 0))
-        limit = int(request.args.get("limit", 20))
-        today_only_raw = request.args.get("today_only", "false").lower()
-        today_only = today_only_raw in ("1", "true", "yes")
-        rows = get_research_reports(qtype, limit, today_only)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# Sector / Concept flow
-# ---------------------------------------------------------------------------
-
-@app.route("/api/sector-flow")
-def api_sector_flow():
-    try:
-        source_type = request.args.get("type", "industry")
-        rows = get_sector_flow_latest(source_type)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/concept-flow")
-def api_concept_flow():
-    try:
-        top_n = int(request.args.get("top_n", 30))
-        rows = get_concept_flow_latest(top_n)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# Dragon-Tiger List
-# ---------------------------------------------------------------------------
-
-@app.route("/api/lhb")
-def api_lhb():
-    try:
-        trade_date = _date_or_none()
-        rows = get_lhb_data(trade_date)
-        # 附加席位明细
-        seats = get_lhb_seat(trade_date)
-        seat_map: dict = {}
-        for s in seats:
-            seat_map.setdefault(s["stock_code"], []).append(s)
-        for row in rows:
-            code = row.get("stock_code", "")
-            row_seats = seat_map.get(code, [])
-            row["seats"] = row_seats
-            types = {s.get("seat_type") for s in row_seats}
-            if "游资" in types and "机构" in types:
-                row["seat_nature"] = "游资+机构"
-            elif "机构" in types:
-                row["seat_nature"] = "机构主导"
-            elif "游资" in types:
-                row["seat_nature"] = "游资主导"
-            elif row_seats:
-                row["seat_nature"] = "其他"
-            else:
-                row["seat_nature"] = None
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/lhb-local")
-def api_lhb_local():
-    """龙虎榜本地版：只读 lhb_seat 表（由本地 CSV 写入），无数据返回空列表。"""
-    try:
-        trade_date = _date_or_none()
-        seats = get_lhb_seat(trade_date)
-        # 按 stock_code 聚合席位
-        stock_map: dict = {}
-        for s in seats:
-            code = s["stock_code"]
-            if code not in stock_map:
-                stock_map[code] = {
-                    "stock_code": code,
-                    "seats": [],
-                    "net_buy": 0.0,
-                }
-            stock_map[code]["seats"].append(s)
-            stock_map[code]["net_buy"] += s.get("net_amount") or 0.0
-        # 附加席位性质
-        result = []
-        for row in stock_map.values():
-            types = {s.get("seat_type") for s in row["seats"]}
-            if "游资" in types and "机构" in types:
-                row["seat_nature"] = "游资+机构"
-            elif "机构" in types:
-                row["seat_nature"] = "机构主导"
-            elif "游资" in types:
-                row["seat_nature"] = "游资主导"
-            elif row["seats"]:
-                row["seat_nature"] = "其他"
-            else:
-                row["seat_nature"] = None
-            result.append(row)
-        result.sort(key=lambda r: r["net_buy"], reverse=True)
-        return _ok(result)
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# Pools
-# ---------------------------------------------------------------------------
-
-@app.route("/api/zt-pool")
-def api_zt_pool():
-    try:
-        trade_date = _date_param()
-        rows = get_zt_pool(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/dt-pool")
-def api_dt_pool():
-    try:
-        trade_date = _date_param()
-        rows = get_dt_pool(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/dt-pool-v3")
-def api_dt_pool_v3():
-    try:
-        trade_date = _date_param()
-        rows = get_dt_pool_v3(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
 
 @app.route("/api/qmt-breaker")
 def api_qmt_breaker():
@@ -904,124 +703,6 @@ def api_qmt_industry_stats():
         return _ok(payload)
     except Exception as exc:
         return _err(exc)
-
-
-@app.route("/api/zbgc-pool")
-def api_zbgc_pool():
-    try:
-        trade_date = _date_param()
-        rows = get_zbgc_pool(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/strong-pool")
-def api_strong_pool():
-    try:
-        trade_date = _date_param()
-        rows = get_strong_pool(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# Market emotion & pulse
-# ---------------------------------------------------------------------------
-
-@app.route("/api/market-emotion")
-def api_market_emotion():
-    try:
-        trade_date = _date_or_none()
-        data = get_market_emotion_summary(trade_date)
-        return _ok(data)
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# Lianzban (consecutive limit-up) statistics
-# ---------------------------------------------------------------------------
-
-@app.route("/api/lianzban-stats")
-def api_lianzban_stats():
-    try:
-        days = int(request.args.get("days", 30))
-        data = get_lianzban_stats(days)
-        return _ok(data)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/lianzban-chain")
-def api_lianzban_chain():
-    try:
-        trade_date = _computed_date()
-        rows = get_lianzban_chain(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# ZT density
-# ---------------------------------------------------------------------------
-
-@app.route("/api/sector-zt-density")
-def api_sector_zt_density():
-    try:
-        trade_date = _computed_date()
-        rows = get_sector_zt_density(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/concept-zt-density")
-def api_concept_zt_density():
-    try:
-        trade_date = _computed_date()
-        top_n = int(request.args.get("top_n", 15))
-        rows = get_concept_zt_density(trade_date, top_n)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-# ---------------------------------------------------------------------------
-# Hot rank & Northbound
-# ---------------------------------------------------------------------------
-
-@app.route("/api/hot-rank-up")
-def api_hot_rank_up():
-    try:
-        top_n = int(request.args.get("top_n", 20))
-        rows = get_hot_rank_up_latest(top_n)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/northbound-flow")
-def api_northbound_flow():
-    try:
-        data = get_northbound_flow_latest()
-        return _ok(data)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/xq-hot")
-def api_xq_hot():
-    try:
-        top_n = int(request.args.get("top_n", 30))
-        rows = get_xq_hot_latest(top_n)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1947,14 +1628,6 @@ def api_trade_calendar_today():
         return _err(exc)
 
 
-
-
-
-
-
-
-
-
 @app.route("/api/agent/time-slot")
 def api_agent_time_slot():
     """
@@ -2137,11 +1810,6 @@ def api_compute_status():
     with _compute_lock:
         state = dict(_compute_state)
     return _ok(state)
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -2505,9 +2173,6 @@ def api_holder_count():
         return _err(exc)
 
 
-
-
-
 @app.route("/api/lockup-expiry")
 def api_lockup_expiry():
     try:
@@ -2685,8 +2350,6 @@ def api_fetch_all_status():
     """轮询抓取进度。"""
     with _fetch_lock:
         return _ok(dict(_fetch_state))
-
-
 
 
 # ---------------------------------------------------------------------------

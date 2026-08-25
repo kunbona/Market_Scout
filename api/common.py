@@ -30,3 +30,12 @@ def _date_or_none(key: str = "date"):
     """Return date param if provided, else None (let storage pick latest)."""
     val = request.args.get(key, "").strip()
     return val if val else None
+
+
+def _computed_date(key: str = "date") -> str:
+    """用于历史计算型接口：有参数用参数，无参数回落到最新已计算日期。"""
+    val = request.args.get(key, "").strip()
+    if val:
+        return val
+    from db.storage import get_latest_emotion_date
+    return get_latest_emotion_date() or _today()

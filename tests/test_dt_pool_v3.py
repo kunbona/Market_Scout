@@ -188,11 +188,12 @@ class DtPoolV3FetcherTests(unittest.TestCase):
 class DtPoolV3ApiTests(unittest.TestCase):
     def test_api_dt_pool_v3_returns_rows(self) -> None:
         client = server.app.test_client()
+        # 路由已拆到 api/market_data.py, 函数体内从 db.storage 懒导入 →
+        # mock db.storage.get_dt_pool_v3 (调用时才解析, patch 生效)
         with mock.patch.object(
-            server,
+            storage,
             "get_dt_pool_v3",
             return_value=[{"stock_code": "603022.SH", "last_price": 11.06}],
-            create=True,
         ):
             response = client.get("/api/dt-pool-v3?date=2099-01-02")
 
