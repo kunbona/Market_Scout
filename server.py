@@ -35,6 +35,16 @@ try:
 except ImportError:
     pass
 
+# ── 剥离代理环境变量 (2026-08-25, 智堡投研 Connection refused 事故) ──────────
+# 本服务需要直连公网数据源 (智堡/东财/同花顺/财联社 等)。
+# 若从带代理的会话(如 WorkBuddy 沙箱 HTTP_PROXY=127.0.0.1:50032)拉起,
+# httpx/requests 会自动走代理, 而该代理端口对服务进程不可达 →
+# 所有外部 API 报 Connection refused。这里一律清除, 保证无论以何种方式
+# (start.sh / watchdog / 会话托管) 启动都直连。
+for _proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                   "ALL_PROXY", "all_proxy"):
+    os.environ.pop(_proxy_var, None)
+
 # 强制 line-buffering, 已在 _main() 里 (避免 module-level 触发 reconfigure
 #  在 background thread 调 `from server import ...` 引起 server.py 重 exec 失败)
 
