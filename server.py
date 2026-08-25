@@ -215,8 +215,10 @@ CORS(app)
 # ── Blueprint 注册 (按域拆分自本文件, 一次一域) ─────────────────────────────
 from api.industry_trend import bp as industry_trend_bp
 from api.cycle import bp as cycle_bp
+from api.wisburg import bp as wisburg_bp
 app.register_blueprint(industry_trend_bp)
 app.register_blueprint(cycle_bp)
+app.register_blueprint(wisburg_bp)
 
 
 # ---------------------------------------------------------------------------
@@ -3005,133 +3007,6 @@ def api_dm_kun_list():
                   "error": _DM_KUN_CACHE[k]["error"]}
                  for n, k in _DM_KUN_ENDPOINTS.items()]
     return _ok({"items": items})
-
-
-# ---------------------------------------------------------------------------
-# 智堡 (Wisburg) 投研数据 + AI 分析
-# 数据源: quant.dm_kun._wisburg 直连智堡开放 API (Bearer WISBURG_API_KEY)
-# AI: agent.wisburg_ai 调 claude CLI (分析/整理/总结/预测)
-# ---------------------------------------------------------------------------
-
-_WISBURG_AI_JOB = {
-    "state": "idle",        # idle | running | done | error
-    "type": None,           # analyze | briefing
-    "result": None,         # analyze: {title,datetime,markdown}; briefing: {markdown,count}
-    "error": None,
-    "started_at": None,
-    "finished_at": None,
-}
-_wisburg_ai_lock = threading.Lock()
-
-
-def _wisburg_ai_worker(kind: str, resource: str, **kwargs) -> None:
-    """后台跑 AI 分析 (claude 串行 1-3 分钟, 不能阻塞 HTTP)。"""
-    from agent.wisburg_ai import analyze_item, build_briefing, build_briefing_all, list_resource
-    job = _WISBURG_AI_JOB
-    try:
-        if kind == "analyze":
-            job["result"] = analyze_item(resource, kwargs["item_id"])
-        elif resource == "all":
-            job["result"] = build_briefing_all()
-        else:
-            items, _ = list_resource(resource, first=kwargs.get("first", 50),
-                                     query=kwargs.get("query"))
-            job["result"] = {"markdown": build_briefing(resource, items),
-                             "count": len(items), "resource": resource}
-        job["state"] = "done"
-    except Exception as exc:
-        job["state"] = "error"
-        job["error"] = str(exc)
-        logger.exception("[wisburg-ai] %s 分析失败", kind)
-    finally:
-        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
-
-
-@app.route("/api/wisburg/meta")
-def api_wisburg_meta():
-    try:
-        from agent.wisburg_ai import resources_meta
-        return _ok({"resources": resources_meta()})
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/wisburg/list")
-def api_wisburg_list():
-    try:
-        from agent.wisburg_ai import list_resource
-        resource = request.args.get("resource", "feed").strip()
-        first = int(request.args.get("first", 20))
-        query = request.args.get("query", "").strip() or None
-        after = request.args.get("after", "").strip() or None
-        items, cursor = list_resource(resource, first=first, query=query, after=after)
-        return _ok({"items": items, "after": cursor, "resource": resource})
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/wisburg/detail")
-def api_wisburg_detail():
-    try:
-        from agent.wisburg_ai import get_detail
-        resource = request.args.get("resource", "").strip()
-        item_id = int(request.args.get("id", 0))
-        if not resource or not item_id:
-            return _err("缺少 resource/id 参数", 400)
-        return _ok(get_detail(resource, item_id))
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/wisburg/analyze", methods=["POST"])
-def api_wisburg_analyze():
-    try:
-        body = request.get_json(silent=True) or {}
-        resource = (body.get("resource") or "").strip()
-        item_id = int(body.get("id", 0))
-        if not resource or not item_id:
-            return _err("缺少 resource/id 参数", 400)
-        with _wisburg_ai_lock:
-            if _WISBURG_AI_JOB["state"] == "running":
-                return _ok({"started": False, "state": "running"})
-            _WISBURG_AI_JOB.update(
-                state="running", type="analyze", result=None, error=None,
-                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
-            )
-            threading.Thread(target=_wisburg_ai_worker, args=("analyze", resource),
-                             kwargs={"item_id": item_id}, daemon=True,
-                             name="wisburg-analyze").start()
-        return _ok({"started": True, "state": "running"})
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/wisburg/briefing", methods=["POST"])
-def api_wisburg_briefing():
-    try:
-        body = request.get_json(silent=True) or {}
-        resource = (body.get("resource") or "feed").strip()
-        first = int(body.get("first", 50))
-        query = (body.get("query") or "").strip() or None
-        with _wisburg_ai_lock:
-            if _WISBURG_AI_JOB["state"] == "running":
-                return _ok({"started": False, "state": "running"})
-            _WISBURG_AI_JOB.update(
-                state="running", type="briefing", result=None, error=None,
-                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
-            )
-            threading.Thread(target=_wisburg_ai_worker, args=("briefing", resource),
-                             kwargs={"first": first, "query": query}, daemon=True,
-                             name="wisburg-briefing").start()
-        return _ok({"started": True, "state": "running"})
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/wisburg/ai-job")
-def api_wisburg_ai_job():
-    with _wisburg_ai_lock:
-        return _ok(dict(_WISBURG_AI_JOB))
 
 
 # ---------------------------------------------------------------------------
