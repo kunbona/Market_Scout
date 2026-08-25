@@ -191,7 +191,8 @@ class QmtIndustryStatsHelperTests(unittest.TestCase):
                 "sector": "通信",
                 "last_price": 22.29,
                 "last_close": 24.77,
-                "ma10": 21.50,
+                "ma10_csv": 21.50,
+                "ma10_realtime": 21.50,
                 "up_limit": 27.25,
                 "down_limit": 22.29,
                 "yesterday_main_inflow": 120000000.0,
@@ -202,7 +203,8 @@ class QmtIndustryStatsHelperTests(unittest.TestCase):
                 "sector": "通信",
                 "last_price": 15.80,
                 "last_close": 14.90,
-                "ma10": 15.20,
+                "ma10_csv": 15.20,
+                "ma10_realtime": 15.20,
                 "up_limit": 16.39,
                 "down_limit": 13.41,
                 "yesterday_main_inflow": -20000000.0,
@@ -213,7 +215,8 @@ class QmtIndustryStatsHelperTests(unittest.TestCase):
                 "sector": "环保",
                 "last_price": 7.10,
                 "last_close": 7.25,
-                "ma10": 7.30,
+                "ma10_csv": 7.30,
+                "ma10_realtime": 7.30,
                 "up_limit": 7.98,
                 "down_limit": 6.53,
                 "yesterday_main_inflow": 5000000.0,
@@ -245,7 +248,8 @@ class QmtIndustryStatsHelperTests(unittest.TestCase):
                 "sector": "",
                 "last_price": 10.0,
                 "last_close": 9.8,
-                "ma10": 9.5,
+                "ma10_csv": 9.5,
+                "ma10_realtime": 9.5,
                 "up_limit": 10.78,
                 "down_limit": 8.82,
                 "yesterday_main_inflow": 3000000.0,
@@ -278,8 +282,9 @@ class QmtIndustryStatsSourceTests(unittest.TestCase):
                     "trade_date": "2026-06-25",
                     "name": "特发信息",
                     "industry_l1": "通信",
-                    "inst_buy": 80000000.0,
-                    "inst_sell": 20000000.0,
+                    # CSV 中资金列单位为万元, source_rows 阶段 ×10000 转元
+                    "inst_buy": 8000.0,
+                    "inst_sell": 2000.0,
                     "close": 24.77,
                 },
                 {
@@ -301,10 +306,17 @@ class QmtIndustryStatsSourceTests(unittest.TestCase):
             ]
         )
 
+        # 阶段1 走 get_trading_data_tail(code, 250) 快速路径; 阶段1.5 get_qmt_close_window
+        # 返回 {} → ma10 走 CSV 路径 (ma10_realtime = ma10_csv = tail(10).mean())。
+        # 注: 阶段1.5 若完全抛异常也会降级, 这里返回空 dict 模拟"拉得到但没有数据"。
         with mock.patch("fetcher.qmt_monitors.list_a_shares", return_value=["000070.SZ"]), mock.patch(
             "fetcher.qmt_monitors.get_full_tick_snapshot",
             return_value={"000070.SZ": {"last_price": 22.29, "last_close": 24.77}},
-        ), mock.patch("fetcher.qmt_monitors.get_trading_data", return_value=sample_df), mock.patch(
+        ), mock.patch(
+            "fetcher.qmt_monitors.get_trading_data_tail", return_value=sample_df
+        ), mock.patch(
+            "fetcher.qmt_monitors.get_qmt_close_window", return_value={}
+        ), mock.patch(
             "fetcher.qmt_monitors.compute_down_limit",
             return_value=22.29,
         ), mock.patch("fetcher.qmt_monitors.compute_up_limit", return_value=27.25):
@@ -312,7 +324,9 @@ class QmtIndustryStatsSourceTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["sector"], "通信")
-        self.assertAlmostEqual(rows[0]["ma10"], (25.10 + 24.77 + 22.29) / 3, places=6)
+        # 字段名已改为 ma10_realtime (三档降级链: CSV 默认 → QMT 备选 → CSV+tick 兜底)
+        self.assertAlmostEqual(rows[0]["ma10_realtime"], (25.10 + 24.77 + 22.29) / 3, places=6)
+        self.assertEqual(rows[0]["ma10_source"], "CSV")
         self.assertEqual(rows[0]["yesterday_main_inflow"], 60000000.0)
         self.assertEqual(rows[0]["up_limit"], 27.25)
         self.assertEqual(rows[0]["down_limit"], 22.29)

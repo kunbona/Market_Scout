@@ -16,7 +16,11 @@ class QmtOverviewApiTests(unittest.TestCase):
         ):
             self.assertEqual(server._current_qmt_trade_date(), "2026-06-26")
 
-    def test_get_qmt_overview_focus_list_returns_stale_rows_and_schedules_refresh(self) -> None:
+    # 注: 旧私有函数 _get_qmt_overview_focus_list 已被 _get_qmt_limit_down_rows 取代
+    # (2026 重构, 端点响应体也不再包含 focus_list 键), 语义等价: 优先目标交易日
+    # 数据, 否则返回最新快照并在 QMT 已连接时调度后台刷新。
+
+    def test_get_qmt_limit_down_rows_returns_stale_rows_and_schedules_refresh(self) -> None:
         stale_rows = [
             {
                 "trade_date": "2026-06-27",
@@ -43,7 +47,7 @@ class QmtOverviewApiTests(unittest.TestCase):
             "_schedule_qmt_background_refresh",
             return_value=True,
         ) as schedule_mock:
-            result = server._get_qmt_overview_focus_list(
+            result = server._get_qmt_limit_down_rows(
                 {"enabled": True, "connected": True, "version": "1.0.0"}
             )
 
@@ -53,7 +57,7 @@ class QmtOverviewApiTests(unittest.TestCase):
         self.assertEqual(refresh_name, "dt_pool_v3:2026-06-26")
         self.assertTrue(callable(refresh_fn))
 
-    def test_get_qmt_overview_focus_list_prefers_target_trade_date_rows(self) -> None:
+    def test_get_qmt_limit_down_rows_prefers_target_trade_date_rows(self) -> None:
         latest_rows = [
             {
                 "trade_date": "2026-06-27",
@@ -98,7 +102,7 @@ class QmtOverviewApiTests(unittest.TestCase):
             "_schedule_qmt_background_refresh",
             return_value=True,
         ) as schedule_mock:
-            result = server._get_qmt_overview_focus_list(
+            result = server._get_qmt_limit_down_rows(
                 {"enabled": True, "connected": True, "version": "1.0.0"}
             )
 
@@ -226,8 +230,8 @@ class QmtOverviewApiTests(unittest.TestCase):
             create=True,
         ), mock.patch.object(
             server,
-            "fetch_dt_pool_v3",
-            create=True,
+            "_schedule_qmt_background_refresh",
+            return_value=True,
         ), mock.patch.dict(server.os.environ, {"QMT_ENABLED": "true"}, clear=False), mock.patch(
             "fetcher.xtquant_breadth.connect",
             return_value=True,
@@ -250,22 +254,23 @@ class QmtOverviewApiTests(unittest.TestCase):
         client = server.app.test_client()
         with mock.patch.object(
             server,
-            "get_market_breadth_latest",
-            return_value=[
-                {
-                    "fetch_time": "14:35",
-                    "source": "qmt",
-                    "market": "A股",
-                    "up_count": 1234,
-                    "down_count": 3456,
-                    "flat_count": 78,
-                    "total_amount": 1234567890,
-                }
-            ],
-            create=True,
+            "_read_qmt_runtime_status",
+            return_value={"enabled": True, "connected": True, "version": "1.0.0"},
         ), mock.patch.object(
             server,
-            "get_dt_pool_v3",
+            "_get_qmt_overview_breadth",
+            return_value={
+                "fetch_time": "14:35",
+                "source": "qmt",
+                "market": "A股",
+                "up_count": 1234,
+                "down_count": 3456,
+                "flat_count": 78,
+                "total_amount": 1234567890,
+            },
+        ), mock.patch.object(
+            server,
+            "_get_qmt_limit_down_rows",
             return_value=[
                 {
                     "stock_code": "603022.SH",
@@ -276,17 +281,6 @@ class QmtOverviewApiTests(unittest.TestCase):
                     "sector": "",
                 }
             ],
-            create=True,
-        ), mock.patch.object(
-            server,
-            "fetch_dt_pool_v3",
-            create=True,
-        ), mock.patch.dict(server.os.environ, {"QMT_ENABLED": "true"}, clear=False), mock.patch(
-            "fetcher.xtquant_breadth.connect",
-            return_value=True,
-        ), mock.patch(
-            "fetcher.xtquant_breadth.get_version",
-            return_value="1.0.0",
         ):
             response = client.get("/api/qmt-overview")
 
@@ -295,32 +289,24 @@ class QmtOverviewApiTests(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["data"]["status"]["enabled"], True)
         self.assertEqual(payload["data"]["status"]["connected"], True)
+        # focus_list 键已移除, 跌停家数改从 kpis.limit_down_count 读
         self.assertEqual(payload["data"]["kpis"]["limit_down_count"], 1)
         self.assertEqual(payload["data"]["kpis"]["up_count"], 1234)
-        self.assertEqual(payload["data"]["focus_list"][0]["stock_code"], "603022.SH")
 
     def test_api_qmt_overview_survives_disconnected_qmt(self) -> None:
         client = server.app.test_client()
         with mock.patch.object(
             server,
-            "get_market_breadth_latest",
-            return_value=[],
-            create=True,
+            "_read_qmt_runtime_status",
+            return_value={"enabled": True, "connected": False, "version": "1.0.0"},
         ), mock.patch.object(
             server,
-            "get_dt_pool_v3",
-            return_value=[],
-            create=True,
+            "_get_qmt_overview_breadth",
+            return_value=None,
         ), mock.patch.object(
             server,
-            "fetch_dt_pool_v3",
-            create=True,
-        ), mock.patch.dict(server.os.environ, {"QMT_ENABLED": "true"}, clear=False), mock.patch(
-            "fetcher.xtquant_breadth.connect",
-            return_value=False,
-        ), mock.patch(
-            "fetcher.xtquant_breadth.get_version",
-            return_value="1.0.0",
+            "_get_qmt_limit_down_rows",
+            return_value=[],
         ):
             response = client.get("/api/qmt-overview")
 
@@ -328,7 +314,7 @@ class QmtOverviewApiTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload["success"])
         self.assertEqual(payload["data"]["status"]["connected"], False)
-        self.assertEqual(payload["data"]["focus_list"], [])
+        self.assertEqual(payload["data"]["kpis"]["limit_down_count"], 0)
         self.assertIsNone(payload["data"]["snapshot"]["updated_at"])
 
 

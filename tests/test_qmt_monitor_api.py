@@ -25,7 +25,7 @@ class QmtMonitorApiTests(unittest.TestCase):
             "fetch_time": "2026-06-24 14:35:00",
             "source": "QMT",
             "market": "TOTAL",
-        }), mock.patch.object(server, "_get_qmt_overview_focus_list", return_value=rows):
+        }), mock.patch.object(server, "_get_qmt_limit_down_rows", return_value=rows):
             response = client.get("/api/qmt-limit-down-monitor")
 
         self.assertEqual(response.status_code, 200)
@@ -62,7 +62,7 @@ class QmtMonitorApiTests(unittest.TestCase):
             "fetch_time": "2026-06-24 14:35:00",
             "source": "QMT",
             "market": "TOTAL",
-        }), mock.patch.object(server, "_get_qmt_overview_focus_list", return_value=rows):
+        }), mock.patch.object(server, "_get_qmt_limit_down_rows", return_value=rows):
             response = client.get("/api/qmt-industry-draggers")
 
         self.assertEqual(response.status_code, 200)
@@ -78,7 +78,7 @@ class QmtMonitorApiTests(unittest.TestCase):
             "connected": False,
             "version": "1.0.0",
         }), mock.patch.object(server, "_latest_total_market_breadth_row", return_value=None), mock.patch.object(
-            server, "_get_qmt_overview_focus_list", return_value=[]
+            server, "_get_qmt_limit_down_rows", return_value=[]
         ):
             monitor_response = client.get("/api/qmt-limit-down-monitor")
             dragger_response = client.get("/api/qmt-industry-draggers")

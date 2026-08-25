@@ -86,7 +86,8 @@ class DtPoolV3LimitHelperTests(unittest.TestCase):
         self.assertEqual(compute_down_limit("300001.SZ", "", 10.0, "2026-06-24"), 8.0)
         self.assertEqual(compute_down_limit("688001.SH", "", 10.0, "2026-06-24"), 8.0)
         self.assertEqual(compute_down_limit("430001.BJ", "", 10.0, "2026-06-24"), 7.0)
-        self.assertEqual(compute_down_limit("600000.SH", "ST测试", 10.0, "2026-06-24"), 9.5)
+        # 2026-07-06 起 ST 与主板普通股并轨 (±10%), 简称含 ST 不再影响比例
+        self.assertEqual(compute_down_limit("600000.SH", "ST测试", 10.0, "2026-06-24"), 9.0)
 
 
 class DtPoolV3FetcherTests(unittest.TestCase):
