@@ -170,16 +170,6 @@ CREATE TABLE IF NOT EXISTS dt_pool (
     UNIQUE(trade_date, stock_code)
 );
 
-CREATE TABLE IF NOT EXISTS dt_pool_v2 (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    trade_date    TEXT,
-    stock_code    TEXT,
-    stock_name    TEXT,
-    first_dt_time TEXT,
-    sector        TEXT,
-    UNIQUE(trade_date, stock_code)
-);
-
 CREATE TABLE IF NOT EXISTS dt_pool_v3 (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_date TEXT,
@@ -768,21 +758,6 @@ def clear_dt_pool(trade_date: str) -> None:
         conn.execute("DELETE FROM dt_pool WHERE trade_date = ?", (trade_date,))
 
 
-def insert_dt_pool_v2(trade_date, stock_code, stock_name, first_dt_time, sector) -> None:
-    with _conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO dt_pool_v2 "
-            "(trade_date, stock_code, stock_name, first_dt_time, sector) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (trade_date, stock_code, stock_name, first_dt_time, sector),
-        )
-
-
-def clear_dt_pool_v2(trade_date: str) -> None:
-    with _conn() as conn:
-        conn.execute("DELETE FROM dt_pool_v2 WHERE trade_date = ?", (trade_date,))
-
-
 def insert_dt_pool_v3(trade_date, stock_code, stock_name, last_price, last_close, down_limit, sector) -> None:
     with _conn() as conn:
         conn.execute(
@@ -958,15 +933,6 @@ def get_dt_pool(trade_date=None) -> list[dict]:
         date = trade_date or _latest_trade_date(conn, "dt_pool")
         cur = conn.execute(
             "SELECT * FROM dt_pool WHERE trade_date = ?", (date,)
-        )
-        return _rows_to_dicts(cur)
-
-
-def get_dt_pool_v2(trade_date=None) -> list[dict]:
-    with _conn() as conn:
-        date = trade_date or _latest_trade_date(conn, "dt_pool_v2")
-        cur = conn.execute(
-            "SELECT * FROM dt_pool_v2 WHERE trade_date = ?", (date,)
         )
         return _rows_to_dicts(cur)
 

@@ -140,7 +140,6 @@ from db.storage import (
     get_lhb_data, get_lhb_seat,
     get_zt_pool,
     get_dt_pool,
-    get_dt_pool_v2,
     get_dt_pool_v3,
     get_zbgc_pool,
     get_strong_pool,
@@ -992,16 +991,6 @@ def api_dt_pool():
     try:
         trade_date = _date_param()
         rows = get_dt_pool(trade_date)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/dt-pool-v2")
-def api_dt_pool_v2():
-    try:
-        trade_date = _date_param()
-        rows = get_dt_pool_v2(trade_date)
         return _ok(rows)
     except Exception as exc:
         return _err(exc)

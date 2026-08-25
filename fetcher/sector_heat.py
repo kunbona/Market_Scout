@@ -2,16 +2,13 @@ import logging
 from datetime import date, datetime
 
 import akshare as ak
-import requests
 
 from db.storage import (
     clear_dt_pool,
-    clear_dt_pool_v2,
     clear_strong_pool,
     clear_zbgc_pool,
     clear_zt_pool,
     insert_dt_pool,
-    insert_dt_pool_v2,
     replace_dt_pool_v3,
     insert_sector_flow,
     insert_strong_pool,
@@ -28,7 +25,6 @@ from fetcher.xtquant_limit_down import compute_down_limit
 from quant.security_meta import get_security_meta
 
 logger = logging.getLogger(__name__)
-EASTMONEY_DT_POOL_URL = "https://push2ex.eastmoney.com/getTopicDTPool"
 
 
 def _resolve_qmt_trade_day(target_trade_date: str | None = None) -> tuple[str, str]:
@@ -252,41 +248,6 @@ def fetch_dt_pool() -> None:
             insert_dt_pool(db_date, stock_code, stock_name, first_dt_time, sector)
     except Exception as e:
         logger.warning(f"[sector_heat] fetch_dt_pool failed: {e}")
-
-
-def fetch_dt_pool_v2() -> None:
-    try:
-        trade_day = date.today()
-        trade_date = trade_day.strftime("%Y%m%d")
-        db_date = trade_day.strftime("%Y-%m-%d")
-        params = {
-            "ut": "7eea3edcaed734bea9cbfc24409ed989",
-            "dpt": "wz.ztzt",
-            "Pageindex": "0",
-            "pagesize": "20",
-            "sort": "fund:asc",
-            "date": trade_date,
-        }
-        headers = {
-            "Referer": "https://quote.eastmoney.com/ztb/detail#type=dtgc",
-            "User-Agent": "Mozilla/5.0",
-        }
-        response = requests.get(EASTMONEY_DT_POOL_URL, params=params, headers=headers, timeout=20)
-        response.raise_for_status()
-        payload = response.json()
-        pool = ((payload.get("data") or {}).get("pool") or [])
-
-        clear_dt_pool_v2(db_date)
-        for row in pool:
-            insert_dt_pool_v2(
-                db_date,
-                str(row.get("c", "")).strip(),
-                str(row.get("n", "")).strip(),
-                str(row.get("lbt", "")).strip(),
-                str(row.get("hybk", "")).strip(),
-            )
-    except Exception as e:
-        logger.warning(f"[sector_heat] fetch_dt_pool_v2 failed: {e}")
 
 
 def fetch_dt_pool_v3(target_trade_date: str | None = None) -> None:

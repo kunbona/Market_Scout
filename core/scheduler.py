@@ -23,7 +23,6 @@ from fetcher.lhb_local import fetch_lhb_local
 from fetcher.sector_heat import (
     fetch_zt_pool,
     fetch_dt_pool,
-    fetch_dt_pool_v2,
     fetch_dt_pool_v3,
     fetch_concept_heat,
     fetch_zbgc_pool,
@@ -114,7 +113,6 @@ def start_scheduler() -> None:
     scheduler.add_job(lambda: _auto_run("龙虎榜本地",  fetch_lhb_local),   "cron", hour=18, minute=30)
     scheduler.add_job(lambda: _guarded("涨停池",       fetch_zt_pool),     "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("跌停池",       fetch_dt_pool),     "interval", minutes=5)
-    scheduler.add_job(lambda: _guarded("实验跌停池",   fetch_dt_pool_v2),  "interval", minutes=5)
     scheduler.add_job(lambda: _guarded("QMT跌停池",    fetch_dt_pool_v3),  "interval", minutes=1)
     scheduler.add_job(lambda: _guarded("概念热度",     fetch_concept_heat),"interval", minutes=5)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=0)
@@ -266,7 +264,6 @@ def start_scheduler() -> None:
                 ("行业资金流",     fetch_sector_flow),
                 ("涨停池",         fetch_zt_pool),
                 ("跌停池",         fetch_dt_pool),
-                ("实验跌停池",     fetch_dt_pool_v2),
                 ("QMT跌停池",      fetch_dt_pool_v3),
                 ("概念热度",       fetch_concept_heat),
                 ("概念资金流",     fetch_concept_flow),

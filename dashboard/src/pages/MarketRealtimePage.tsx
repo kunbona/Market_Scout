@@ -223,7 +223,6 @@ export function MarketRealtimePage() {
   const [cf,     setCf]     = useState<CF[]>([]);
   const [zt,     setZt]     = useState<ZT[]>([]);
   const [dt,     setDt]     = useState<DT[]>([]);
-  const [dtV2,   setDtV2]   = useState<DT[]>([]);
   const [dtV3,   setDtV3]   = useState<DTV3[]>([]);
   const [zbgc,   setZbgc]   = useState<ZBGC[]>([]);
   const [lhb,    setLhb]    = useState<LHB[]>([]);
@@ -244,7 +243,6 @@ export function MarketRealtimePage() {
     apiFetch<CF[]>('/api/concept-flow?top_n=50').then(d => setCf(d ?? [])).catch(() => {});
     apiFetch<ZT[]>('/api/zt-pool?date=').then(d => setZt(d ?? [])).catch(() => {});
     apiFetch<DT[]>('/api/dt-pool?date=').then(d => setDt(d ?? [])).catch(() => {});
-    apiFetch<DT[]>('/api/dt-pool-v2?date=').then(d => setDtV2(d ?? [])).catch(() => {});
     apiFetch<DTV3[]>('/api/dt-pool-v3?date=').then(d => setDtV3(d ?? [])).catch(() => {});
     apiFetch<ZBGC[]>('/api/zbgc-pool?date=').then(d => setZbgc(d ?? [])).catch(() => {});
     apiFetch<LHB[]>('/api/lhb?date=').then(d => setLhb(d ?? [])).catch(() => {});
@@ -343,18 +341,10 @@ export function MarketRealtimePage() {
         </div>
 
         <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
-          <div className="text-xs text-gray-400 mb-2">实验跌停</div>
-          <div className="text-2xl font-bold text-green-600">{dtV2.length}</div>
-          <div className="text-xs text-gray-500 mt-1.5">
-            对照旧版 <b className="text-gray-700">{dt.length}</b>
-          </div>
-        </div>
-
-        <div className="kpi-card card-hover bg-white rounded-xl border border-gray-100 p-3">
           <div className="text-xs text-gray-400 mb-2">QMT跌停</div>
           <div className="text-2xl font-bold text-green-600">{dtV3.length}</div>
           <div className="text-xs text-gray-500 mt-1.5">
-            对照实验 <b className="text-gray-700">{dtV2.length}</b>
+            对照旧版 <b className="text-gray-700">{dt.length}</b>
           </div>
         </div>
 
