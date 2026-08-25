@@ -139,6 +139,7 @@ from api.compute import bp as compute_bp
 from api.config import bp as config_bp
 from api.fetch_all import bp as fetch_all_bp
 from api.qmt import bp as qmt_bp
+from api.master_view import bp as master_view_bp
 app.register_blueprint(industry_trend_bp)
 app.register_blueprint(cycle_bp)
 app.register_blueprint(wisburg_bp)
@@ -155,6 +156,7 @@ app.register_blueprint(compute_bp)
 app.register_blueprint(config_bp)
 app.register_blueprint(fetch_all_bp)
 app.register_blueprint(qmt_bp)
+app.register_blueprint(master_view_bp)
 
 
 # ---------------------------------------------------------------------------

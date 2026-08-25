@@ -15,6 +15,7 @@ import { ReviewPage } from './pages/ReviewPage';
 import { IndustryTrendPage } from './pages/IndustryTrendPage';
 import { WatchlistPage } from './pages/WatchlistPage';
 import { AgentPage } from './pages/AgentPage';
+import { MasterViewPage } from './pages/MasterViewPage';
 import { WisburgPage } from './pages/WisburgPage';
 import { useSettings } from './lib/useSettings';
 
@@ -700,7 +701,7 @@ function SettingsPage({ settings, onUpdate }: {
   );
 }
 
-type TabId = 'news' | 'policy' | 'market' | 'qmt' | 'exodia' | 'cycle' | 'review' | 'industry-trend' | 'watchlist' | 'research' | 'wisburg' | 'ai-analysis' | 'settings';
+type TabId = 'news' | 'policy' | 'market' | 'qmt' | 'exodia' | 'cycle' | 'review' | 'industry-trend' | 'watchlist' | 'research' | 'wisburg' | 'ai-analysis' | 'master-view' | 'settings';
 
 interface DataAlert {
   level: 'error' | 'warning';
@@ -777,6 +778,8 @@ export default function App() {
         return <WisburgPage />;
       case 'ai-analysis':
         return <AgentPage />;
+      case 'master-view':
+        return <MasterViewPage />;
       case 'settings':
         return <SettingsPage settings={settings} onUpdate={updateSettings} />;
     }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Activity, BarChart3, BookOpen, Database, FileText, Star, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle, Waves, Globe, LineChart } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Compass, Database, FileText, Star, TrendingUp, Settings, Sparkles, RefreshCw, CheckCircle, XCircle, Waves, Globe, LineChart } from 'lucide-react';
 import { QmtBreakerStatus } from './QmtBreakerStatus';
 
 interface FetchResult { name: string; ok: boolean; error?: string; }
@@ -83,6 +83,7 @@ export function Sidebar({ activeTab, setActiveTab }: { activeTab: string; setAct
   };
 
   const menuItems = [
+    { id: 'master-view', icon: Compass,    label: '总览分析' },
     { id: 'market',      icon: TrendingUp, label: '市场数据' },
     { id: 'qmt',         icon: Activity,   label: 'QMT数据' },
     { id: 'exodia',      icon: Database,   label: '数据更新' },
