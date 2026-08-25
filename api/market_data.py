@@ -2,7 +2,8 @@
 
 只读薄路由合集: 新闻/政策、研报、板块概念资金流、龙虎榜、
 涨跌停池 (zt/dt/dt-v3/zbgc/strong)、市场情绪、连板梯队、涨停密度、
-热度排行/北向。全部纯 DB 读 + _ok/_err 包装, 无模块级状态。
+热度排行/北向、大单/融资/大宗/股东户数/解禁/分红/行业排行/同花顺热股、
+研报 PDF 代理。全部纯 DB 读 + _ok/_err 包装, 无模块级状态。
 
 QMT 实时 5 路由 (qmt-breaker/overview/limit-down-monitor/industry-draggers/
 industry-stats) 与 server.py QMT 缓存枢纽纠缠, 留待枢纽阶段处理。
@@ -341,5 +342,134 @@ def api_xq_hot():
         top_n = int(request.args.get("top_n", 30))
         rows = get_xq_hot_latest(top_n)
         return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------------
+# 大单 / 融资 / 大宗 / 股东户数 / 解禁 / 分红 / 行业排行 / 同花顺热股
+# ---------------------------------------------------------------------------
+
+@bp.route("/big-deal")
+def api_big_deal():
+    try:
+        from db.storage import get_big_deal_latest
+        limit = int(request.args.get("limit", 50))
+        rows = get_big_deal_latest(limit)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/margin")
+def api_margin():
+    try:
+        from db.storage import get_margin_latest
+        top_n = int(request.args.get("top_n", 50))
+        rows = get_margin_latest(top_n)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/block-trade")
+def api_block_trade():
+    try:
+        from db.storage import get_block_trade_latest
+        limit = int(request.args.get("limit", 50))
+        rows = get_block_trade_latest(limit)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/holder-count")
+def api_holder_count():
+    try:
+        from db.storage import get_holder_count_latest
+        top_n = int(request.args.get("top_n", 50))
+        rows = get_holder_count_latest(top_n)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/lockup-expiry")
+def api_lockup_expiry():
+    try:
+        from db.storage import get_lockup_expiry
+        days = int(request.args.get("days", 30))
+        rows = get_lockup_expiry(days)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/dividend")
+def api_dividend():
+    try:
+        from db.storage import get_dividend_latest
+        limit = int(request.args.get("limit", 100))
+        rows = get_dividend_latest(limit)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/industry-ranking")
+def api_industry_ranking():
+    try:
+        from db.storage import get_industry_ranking_latest
+        rows = get_industry_ranking_latest()
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/ths-hot-stocks")
+def api_ths_hot_stocks():
+    try:
+        from db.storage import get_ths_hot_stocks_latest
+        top_n = int(request.args.get("top_n", 50))
+        rows = get_ths_hot_stocks_latest(top_n)
+        return _ok(rows)
+    except Exception as exc:
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------------
+# 研报 PDF 代理 (注入 Referer 绕过东财 403)
+# ---------------------------------------------------------------------------
+
+@bp.route("/research/pdf")
+def api_research_pdf():
+    """代理下载东财研报 PDF，自动注入 Referer 绕过 403。"""
+    import requests as _req
+    from flask import Response, stream_with_context
+    pdf_url = request.args.get("url", "").strip()
+    if not pdf_url:
+        return _err("无效的 PDF 地址", 400)
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(pdf_url)
+    if _parsed.scheme != "https" or _parsed.netloc != "pdf.dfcfw.com":
+        return _err("无效的 PDF 地址", 400)
+    try:
+        r = _req.get(
+            pdf_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://data.eastmoney.com/",
+            },
+            stream=True,
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return _err(f"上游返回 {r.status_code}", 502)
+        filename = pdf_url.split("/")[-1] or "report.pdf"
+        return Response(
+            stream_with_context(r.iter_content(chunk_size=8192)),
+            content_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
     except Exception as exc:
         return _err(exc)

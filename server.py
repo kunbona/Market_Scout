@@ -133,14 +133,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from db.storage import (
     get_dt_pool_v3,
     get_market_breadth_latest,
-    get_big_deal_latest,
-    get_margin_latest,
-    get_block_trade_latest,
-    get_holder_count_latest,
-    get_lockup_expiry,
-    get_dividend_latest,
-    get_industry_ranking_latest,
-    get_ths_hot_stocks_latest,
 )
 from fetcher.qmt_monitors import (
     build_qmt_industry_draggers_payload,
@@ -1093,117 +1085,6 @@ def api_test_qmt_bridge():
             os.environ.pop("QMT_BRIDGE_TOKEN", None)
 
 
-@app.route("/api/big-deal")
-def api_big_deal():
-    try:
-        limit = int(request.args.get("limit", 50))
-        rows = get_big_deal_latest(limit)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/margin")
-def api_margin():
-    try:
-        top_n = int(request.args.get("top_n", 50))
-        rows = get_margin_latest(top_n)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/block-trade")
-def api_block_trade():
-    try:
-        limit = int(request.args.get("limit", 50))
-        rows = get_block_trade_latest(limit)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/holder-count")
-def api_holder_count():
-    try:
-        top_n = int(request.args.get("top_n", 50))
-        rows = get_holder_count_latest(top_n)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/lockup-expiry")
-def api_lockup_expiry():
-    try:
-        days = int(request.args.get("days", 30))
-        rows = get_lockup_expiry(days)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/dividend")
-def api_dividend():
-    try:
-        limit = int(request.args.get("limit", 100))
-        rows = get_dividend_latest(limit)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/industry-ranking")
-def api_industry_ranking():
-    try:
-        rows = get_industry_ranking_latest()
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/ths-hot-stocks")
-def api_ths_hot_stocks():
-    try:
-        top_n = int(request.args.get("top_n", 50))
-        rows = get_ths_hot_stocks_latest(top_n)
-        return _ok(rows)
-    except Exception as exc:
-        return _err(exc)
-
-
-@app.route("/api/research/pdf")
-def api_research_pdf():
-    """代理下载东财研报 PDF，自动注入 Referer 绕过 403。"""
-    import requests as _req
-    from flask import Response, stream_with_context
-    pdf_url = request.args.get("url", "").strip()
-    if not pdf_url:
-        return _err("无效的 PDF 地址", 400)
-    from urllib.parse import urlparse as _urlparse
-    _parsed = _urlparse(pdf_url)
-    if _parsed.scheme != "https" or _parsed.netloc != "pdf.dfcfw.com":
-        return _err("无效的 PDF 地址", 400)
-    try:
-        r = _req.get(
-            pdf_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://data.eastmoney.com/",
-            },
-            stream=True,
-            timeout=20,
-        )
-        if r.status_code != 200:
-            return _err(f"上游返回 {r.status_code}", 502)
-        filename = pdf_url.split("/")[-1] or "report.pdf"
-        return Response(
-            stream_with_context(r.iter_content(chunk_size=8192)),
-            content_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
-        )
-    except Exception as exc:
-        return _err(exc)
 
 
 # ---------------------------------------------------------------------------
