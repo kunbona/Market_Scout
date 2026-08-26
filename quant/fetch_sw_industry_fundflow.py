@@ -30,10 +30,10 @@ import pandas as pd
 
 QUANT = Path(__file__).resolve().parent
 sys.path.insert(0, str(QUANT))
-from fetch_sw_industry_index import SW_INDUSTRY_CODES  # noqa: E402  (同一份 31 行业代码表, 不重复维护)
+# 同一份 31 行业代码表 + npx 解析器 (launchd 精简 PATH 下裸 npx 会挂, 2026-08-26 事故)
+from fetch_sw_industry_index import SW_INDUSTRY_CODES, _find_npx, _npx_env  # noqa: E402
 
 CACHE = QUANT / "data" / "sw_industry_fundflow.parquet"
-NPM = "npx"
 PKG = "westock-data-skillhub@1.0.5"
 CHUNK = 8  # 每次批量查询的代码数
 DEFAULT_START = "2025-08-01"  # 全量起点: 覆盖 120 日窗口 + 余量
@@ -47,9 +47,10 @@ KEEP = {"MainInFlow": "main_in", "MainOutFlow": "main_out",
 def fetch_fundflow(codes: list[str], start: str, end: str) -> pd.DataFrame:
     """批量拉取区间资金流, 解析 markdown 表格 -> DataFrame(date, code, main_*, retail_*)。
     返回列不固定(批量含 symbol 列、早期日期缺部分列), 按表头名取数。"""
-    cmd = [NPM, "-y", PKG, "fund", "flow", ",".join(codes),
+    cmd = [_find_npx(), "-y", PKG, "fund", "flow", ",".join(codes),
            "--start", start, "--end", end]
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=600).stdout
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                         env=_npx_env()).stdout
     lines = [l for l in out.splitlines() if l.strip().startswith("|")]
     # 表头行: 含 date 与 Main 列的行
     header_idx = next((i for i, l in enumerate(lines)

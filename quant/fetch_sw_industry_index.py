@@ -17,12 +17,13 @@
 import subprocess
 import sys
 import argparse
+import os
+import shutil
 from pathlib import Path
 import pandas as pd
 
 QUANT = Path("/Users/kun/Documents/market-radar/quant")
 CACHE = QUANT / "data" / "sw_industry_index.parquet"
-NPM = "npx"
 PKG = "westock-data-skillhub@1.0.5"
 CHUNK = 8  # 每次批量查询的代码数
 
@@ -44,13 +45,58 @@ SW_INDUSTRY_CODES = {
 }
 
 
+_NPX_PATH: str | None = None
+
+
+def _find_npx() -> str:
+    """解析 npx 可执行文件全路径。
+
+    launchd 托管的 server PATH 极简, 裸 'npx' 会 FileNotFoundError
+    (2026-08-26 事故: 刷新子进程全挂, 行业趋势误报'接口未同步')。
+    顺序: shutil.which → nvm/workbuddy 托管目录扫描。
+    """
+    global _NPX_PATH
+    if _NPX_PATH:
+        return _NPX_PATH
+    found = shutil.which("npx")
+    if not found:
+        home = Path.home()
+        candidates = sorted(
+            list(home.glob(".nvm/versions/node/*/bin/npx"))
+            + list(home.glob(".workbuddy/binaries/node/versions/*/bin/npx")),
+            key=lambda p: p.parts[-3],  # 版本号字母序, 取最大
+        )
+        found = str(candidates[-1]) if candidates else None
+    if not found:
+        raise FileNotFoundError("找不到 npx (PATH 与 nvm/workbuddy 目录均无)")
+    _NPX_PATH = found
+    return found
+
+
+def _npx_env() -> dict:
+    """npx 子进程环境: 把 npx 同目录(node) 注入 PATH 头 + 剥代理变量。
+
+    npx 是 node 脚本 (shebang env node), launchd 精简 PATH 下没有 node 也会挂;
+    代理变量会劫持 npx 的包安装请求 (沙箱/历史代理事故同款)。
+    """
+    env = dict(os.environ)
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                "ALL_PROXY", "all_proxy"):
+        env.pop(var, None)
+    npx_dir = str(Path(_find_npx()).parent)
+    if npx_dir not in env.get("PATH", "").split(os.pathsep):
+        env["PATH"] = npx_dir + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def fetch_klines(codes: list[str], limit: int) -> pd.DataFrame:
     """批量拉取日K线, 解析 markdown 表格 -> DataFrame(date, code, open, close, high, low, volume, amount)。
     注意: 批量(>=2个代码)返回含代码列(| ptXXX | date | ...), 单代码返回不含代码列
     (| date | open | last | ...), 两种格式都要兼容。
     volume/amount 单位: 成交量(手/股数, 指数为成分合计)、成交额(元)。"""
-    cmd = [NPM, "-y", PKG, "kline", ",".join(codes), "--period", "day", "--limit", str(limit)]
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=600).stdout
+    cmd = [_find_npx(), "-y", PKG, "kline", ",".join(codes), "--period", "day", "--limit", str(limit)]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                         env=_npx_env()).stdout
     rows = []
     for line in out.splitlines():
         line = line.strip()
