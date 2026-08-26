@@ -33,7 +33,15 @@ interface HistoryItem {
 }
 
 // data_snapshot_json 解析后的形状 (agent/master_view.py run() 落库)
-type MasterSnapshot = MdReport;
+interface MasterSnapshot extends MdReport {
+  digest_used?: { trade_date?: string; sources?: string[] };
+}
+
+// 后端 sources 嵌在 digest_used 里, 展平到顶层供 MdReportView 渲染徽章
+function normalizeSnap(s: MasterSnapshot): MdReport {
+  const { digest_used, ...rest } = s;
+  return { ...rest, sources: digest_used?.sources ?? s.sources };
+}
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 
@@ -207,7 +215,7 @@ function MasterViewPageInner() {
     <div className="space-y-0">
       <TabHeader
         title="总览 AI 分析"
-        subtitle="行业趋势 × 复盘 × 资金流 × 专题分析 — 全数据源顶层交叉分析"
+        subtitle="行业趋势 × 复盘 × 资金流 × 专题 × 智堡海外视角 — 全数据源顶层交叉分析"
         lastUpdate={snapshot?.run_time ? `最近一次 ${snapshot.run_time}` : undefined}
       />
 
@@ -228,7 +236,7 @@ function MasterViewPageInner() {
               <div className="text-xs text-indigo-200 mt-0.5">
                 {running
                   ? (job?.progress || '正在生成中，约需 1-2 分钟...')
-                  : '汇总行业趋势截面(31行业) + 当日复盘 + DM-kun 6专题 + 板块资金流 + 既有AI结论'}
+                  : '汇总行业趋势截面(31行业) + 当日复盘 + DM-kun 6专题 + 板块资金流 + 智堡海外视角 + 既有AI结论'}
               </div>
             </div>
           </div>
@@ -247,7 +255,7 @@ function MasterViewPageInner() {
 
       {/* 正文 */}
       {snapshot ? (
-        <MdReportView r={{ ...snapshot, id: snapshotId ?? undefined, report_title: '总览 AI 分析' }} />
+        <MdReportView r={{ ...normalizeSnap(snapshot), id: snapshotId ?? undefined, report_title: '总览 AI 分析' }} />
       ) : (
         <div className="bg-white rounded-2xl border border-gray-100 p-12 shadow-[var(--shadow-sm)]
                         flex flex-col items-center justify-center gap-3 text-center mb-6">

@@ -33,7 +33,7 @@ CLAUDE_BIN = "/Users/kun/.nvm/versions/node/v24.15.0/bin/claude"
 
 MAX_DM_CHARS = 1600      # 单个 DM-kun tab markdown 截断 (同 review_ai)
 MAX_SNAP_CHARS = 1200    # 单条既有 AI 结论快照截断
-CLAUDE_TIMEOUT = 360     # 秒 (输入比 review_ai 大, 略放宽)
+CLAUDE_TIMEOUT = 480     # 秒 (6 大数据源 ~20K 输入, 360s 曾超时, 2026-08-26 提至 480)
 
 # 行业趋势表喂给 AI 的精简列 (完整表 64 列, 大量是 MA 原值/对比基准, 对结论无用)
 _TREND_KEEP_COLS = [
@@ -60,6 +60,56 @@ def _compact_trend_table(rows: list[dict]) -> list[dict]:
         out.append(item)
     out.sort(key=lambda x: -(x.get("综合分") or 0))
     return out
+
+
+def _latest_wisburg_views() -> dict | None:
+    """智堡(海外投研)视角: 最新 1 条综合 AI 日报 + 最近 3 条单篇 AI 分析。
+
+    智堡内容覆盖全球宏观/利率/地缘/AI 供应链, 与 A 股本土数据互补。
+    直接读 agent_summary 存档 (run_type=wisburg_*), 不重复调智堡 API 和 AI,
+    无存档时返回 None (总览分析照跑, 只是缺这一维度)。
+    """
+    from db.storage import get_agent_summary_by_id, get_agent_summary_history
+    views: dict = {}
+    try:
+        briefs = get_agent_summary_history(limit=1, run_type="wisburg_briefing")
+        if briefs:
+            snap = get_agent_summary_by_id(briefs[0]["id"]) or {}
+            raw = snap.get("data_snapshot_json")
+            if raw:
+                try:
+                    s = json.loads(raw)
+                    md = str(s.get("analysis_md") or "")
+                    if md:
+                        views["briefing"] = {
+                            "run_time": s.get("run_time"),
+                            "count": s.get("count"),
+                            "text": md[:MAX_SNAP_CHARS],
+                        }
+                except Exception:
+                    pass
+        items = []
+        for row in get_agent_summary_history(limit=3, run_type="wisburg_analyze"):
+            snap = get_agent_summary_by_id(row["id"]) or {}
+            raw = snap.get("data_snapshot_json")
+            if not raw:
+                continue
+            try:
+                s = json.loads(raw)
+                md = str(s.get("analysis_md") or "")
+                if md:
+                    items.append({
+                        "title": s.get("title") or row.get("content"),
+                        "run_time": s.get("run_time"),
+                        "text": md[:700],
+                    })
+            except Exception:
+                continue
+        if items:
+            views["analyses"] = items
+    except Exception as exc:
+        logger.warning("[master_view] 智堡存档读取失败: %s", exc)
+    return views or None
 
 
 def _latest_ai_snapshots() -> dict:
@@ -177,6 +227,11 @@ def build_master_digest(trade_date: str | None = None,
     except Exception as exc:
         logger.warning("[master_view] 板块资金流读取失败: %s", exc)
 
+    # 6. 智堡(海外投研)视角: 最新综合日报 + 近期单篇分析存档
+    wb = _latest_wisburg_views()
+    if wb:
+        digest["wisburg_views"] = wb
+
     return digest
 
 
@@ -188,6 +243,9 @@ PROMPT_TEMPLATE = """你是 A 股全市场首席策略分析师。下面是一�
 - dm_kun_analysis: 6 个专题分析 (市场状态/情绪周期/行业拥挤度/行业增强/题材梯队/选股)
 - prior_ai_views: 此前 AI 分析的历史判断 (盘后裁决/信息简报/战略推理), 供对照
 - sector_flow_latest: 板块资金流最新截面
+- wisburg_views: 智堡投研(海外视角)的 AI 分析存档 — briefing=综合 10 类日报
+  (全球宏观/利率/地缘/大宗商品/AI 供应链), analyses=近期单篇深度分析;
+  这是外部世界视角, 用于与 A 股本土数据做内外交叉验证 (可能缺失)
 
 数据 (JSON):
 {digest_json}
@@ -199,7 +257,10 @@ PROMPT_TEMPLATE = """你是 A 股全市场首席策略分析师。下面是一�
    底部反转候选、恶化需回避的行业; 引用跃迁变化 (upgrades/downgrades) 说明结构在改善还是恶化
 3. `## 多源交叉验证` — review/dm_kun/资金流/行业趋势之间哪些信号共振、哪些背离
    (例如行业趋势多头但当日资金流出), 背离时给出你更相信哪边及理由;
-   对照 prior_ai_views, 指出此前判断被证实还是证伪
+   对照 prior_ai_views, 指出此前判断被证实还是证伪;
+   再与 wisburg_views 的海外宏观视角 (利率/地缘/全球资金/大宗商品) 交叉:
+   海外因素对国内主线是顺风、逆风还是无关, 传导路径是什么
+   (数据里没有 wisburg_views 时跳过此点, 不要编造)
 4. `## 主线与机会` — 综合给出 2-3 条主线 (行业+逻辑+持续性判断),
    并结合 dm_kun 的选股/题材梯队给出具体方向
 5. `## 策略与风险` — 仓位建议 (激进/中性/防守三档)、操作节奏、
@@ -287,7 +348,8 @@ def run(trade_date: str | None = None, extra_context: dict | None = None) -> dic
                 "trade_date": digest.get("trade_date"),
                 "sources": [k for k in digest
                             if k in ("industry_trend", "review", "dm_kun_analysis",
-                                     "prior_ai_views", "sector_flow_latest")],
+                                     "prior_ai_views", "sector_flow_latest",
+                                     "wisburg_views")],
             },
             "ok": ok,
         }, ensure_ascii=False, default=str),

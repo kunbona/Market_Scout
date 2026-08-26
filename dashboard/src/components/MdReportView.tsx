@@ -31,9 +31,21 @@ export interface MdReport {
   analysis_md: string;
   trade_date?: string;
   kpis?: ReviewKpis;
+  /** 本次分析实际使用的数据源清单 (master_view 落库的 digest_used.sources) */
+  sources?: string[];
   /** 报告标题（默认"复盘 AI 总结"） */
   report_title?: string;
 }
+
+// 数据源 key → 中文标签
+const SOURCE_LABEL: Record<string, string> = {
+  industry_trend: '行业趋势',
+  review: '当日复盘',
+  dm_kun_analysis: 'DM专题×6',
+  prior_ai_views: '既有AI结论',
+  sector_flow_latest: '板块资金流',
+  wisburg_views: '智堡海外视角',
+};
 
 // ─── Markdown inline 加粗解析 ────────────────────────────────────────────────
 
@@ -243,12 +255,26 @@ export function MdReportView({ r }: { r: MdReport }) {
   return (
     <div className="space-y-4">
       {(r.trade_date || r.run_time) && (
-        <div className="bg-white rounded-2xl border border-gray-100 px-6 py-4 shadow-[var(--shadow-sm)] flex items-center gap-2">
-          <FileText className="w-4 h-4 text-indigo-500" />
-          <span className="text-sm font-semibold text-gray-800">
-            {r.report_title || '复盘 AI 总结'}{r.trade_date ? ` · ${r.trade_date}` : ''}
-          </span>
-          <span className="text-xs text-gray-400 font-mono ml-auto">{r.run_time || r.summary_time}</span>
+        <div className="bg-white rounded-2xl border border-gray-100 px-6 py-4 shadow-[var(--shadow-sm)]">
+          <div className="flex items-center gap-2">
+            <FileText className="w-4 h-4 text-indigo-500" />
+            <span className="text-sm font-semibold text-gray-800">
+              {r.report_title || '复盘 AI 总结'}{r.trade_date ? ` · ${r.trade_date}` : ''}
+            </span>
+            <span className="text-xs text-gray-400 font-mono ml-auto">{r.run_time || r.summary_time}</span>
+          </div>
+          {(r.sources?.length ?? 0) > 0 && (
+            <div className="flex items-center flex-wrap gap-1.5 mt-2.5">
+              <span className="text-[11px] text-gray-400 mr-0.5">数据源</span>
+              {r.sources!.map(s => (
+                <span key={s} className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
+                  s === 'wisburg_views' ? 'bg-violet-100 text-violet-700' : 'bg-indigo-50 text-indigo-600'
+                }`}>
+                  {SOURCE_LABEL[s] ?? s}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {r.kpis && (r.kpis.limit_up != null || r.kpis.up_count != null || r.kpis.trend_headline != null) && (
