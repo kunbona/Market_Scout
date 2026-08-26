@@ -3,6 +3,7 @@ import { apiFetch } from '../lib/api';
 import { TabHeader } from '../components/TabHeader';
 import { FilterTabs } from '../components/FilterTabs';
 import { renderMarkdown } from '../lib/markdown';
+import { Clock, ChevronDown, ChevronUp, History as HistoryIcon } from 'lucide-react';
 
 // ─── 类型 ───────────────────────────────────────────────────
 interface ResourceMeta { key: string; label: string; detail: boolean; desc: string }
@@ -19,6 +20,73 @@ interface AiJob {
   error: string | null;
   started_at: string | null;
   finished_at: string | null;
+}
+// 智堡 AI 分析存档 (agent_summary run_type=wisburg_*)
+interface WisHistoryItem { id: number; summary_time: string; run_type: string; content: string }
+interface WisHistorySnapshot {
+  analysis_md: string;
+  kind?: 'analyze' | 'briefing';
+  resource?: string;
+  title?: string; datetime?: string;
+  count?: number; per_source?: Record<string, number>;
+  run_time?: string; summary_time?: string;
+}
+
+// ─── 历史分析存档面板 ─────────────────────────────────────────
+// 智堡 AI 分析完成后自动落 agent_summary (run_type=wisburg_*), 这里回看。
+function WisHistoryPanel({ onOpen }: { onOpen: (id: number) => void }) {
+  const [items, setItems] = useState<WisHistoryItem[]>([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    apiFetch<WisHistoryItem[]>('/api/wisburg/history')
+      .then(rows => setItems(rows || []))
+      .catch(() => setItems([]));
+  }, []);
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-5">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <HistoryIcon className="w-4 h-4 text-indigo-500" />
+          <span className="text-sm font-semibold text-gray-800">历史分析存档</span>
+          <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{items.length} 条</span>
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+      </button>
+      {open && (
+        <div className="border-t border-gray-100 divide-y divide-gray-50 max-h-72 overflow-y-auto">
+          {items.length === 0 ? (
+            <div className="px-5 py-6 text-center text-sm text-gray-400">
+              暂无存档 — 此后每次 AI 分析/日报完成都会自动存档到这里
+            </div>
+          ) : (
+            items.map(it => (
+              <button
+                key={it.id}
+                onClick={() => onOpen(it.id)}
+                className="w-full flex items-center gap-3 px-5 py-3 hover:bg-gray-50 transition-colors text-left"
+              >
+                <span className={`shrink-0 text-xs px-2 py-0.5 rounded font-semibold ${
+                  it.run_type === 'wisburg_briefing'
+                    ? 'bg-indigo-100 text-indigo-700'
+                    : 'bg-blue-50 text-blue-600'
+                }`}>
+                  {it.run_type === 'wisburg_briefing' ? '日报' : '单篇'}
+                </span>
+                <span className="shrink-0 text-xs font-mono text-gray-500">{it.summary_time}</span>
+                <span className="text-xs text-gray-500 truncate flex-1">{it.content}</span>
+                <Clock className="w-3.5 h-3.5 text-gray-300 shrink-0" />
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── 详情弹层 ───────────────────────────────────────────────
@@ -135,7 +203,16 @@ export function WisburgPage() {
   const [submittedQuery, setSubmittedQuery] = useState('');
   const [detailItem, setDetailItem] = useState<WisItem | null>(null);
   const [aiJob, setAiJob] = useState<AiJob>({ state: 'idle', type: null, result: null, error: null, started_at: null, finished_at: null });
+  const [histSnap, setHistSnap] = useState<WisHistorySnapshot | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 回看历史存档 (复用 agent 历史详情接口, 同一张 agent_summary 表)
+  const openHistory = useCallback(async (id: number) => {
+    try {
+      const d = await apiFetch<WisHistorySnapshot>(`/api/agent/history/${id}`);
+      if (d) setHistSnap(d);
+    } catch { /* ignore */ }
+  }, []);
 
   // 加载数据源元数据
   useEffect(() => {
@@ -232,6 +309,24 @@ export function WisburgPage() {
           {aiJob.state === 'running' ? 'AI 生成中…' : '📊 综合 10 类日报'}
         </button>
       </div>
+
+      {/* 历史分析存档 */}
+      <WisHistoryPanel onOpen={openHistory} />
+
+      {/* 历史存档回看 */}
+      {histSnap && histSnap.analysis_md && (
+        <div className="bg-white rounded-2xl border border-indigo-100 shadow-sm p-5 mb-5">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-semibold text-indigo-700">
+              🕘 {histSnap.kind === 'briefing' ? 'AI 日报存档' : 'AI 单篇分析存档'} ·{' '}
+              {histSnap.title || (histSnap.kind === 'briefing' ? `${histSnap.count ?? ''} 条` : '')}{' '}
+              <span className="text-xs font-normal text-gray-400">{histSnap.run_time || histSnap.summary_time}</span>
+            </p>
+            <button onClick={() => setHistSnap(null)} className="text-xs text-gray-400 hover:text-gray-600">关闭</button>
+          </div>
+          <div dangerouslySetInnerHTML={{ __html: renderMarkdown(histSnap.analysis_md) }} />
+        </div>
+      )}
 
       {/* 数据源 tab */}
       {resources.length > 0 && (

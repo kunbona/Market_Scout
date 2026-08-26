@@ -4,6 +4,7 @@
 数据源: quant.dm_kun._wisburg 直连智堡开放 API (Bearer WISBURG_API_KEY);
 AI: agent.wisburg_ai 调 claude CLI (分析/整理/总结/预测)。
 """
+import json
 import logging
 import threading
 from datetime import datetime
@@ -27,6 +28,55 @@ _WISBURG_AI_JOB = {
 _wisburg_ai_lock = threading.Lock()
 
 
+def _archive_result(kind: str, resource: str, result: dict) -> None:
+    """AI 分析结果落 agent_summary 存档 (历史回看)。失败只告警不影响主流程。
+
+    run_type: wisburg_analyze (单篇) / wisburg_briefing (日报)。
+    2026-08-26 补: 此前智堡分析只存内存 _WISBURG_AI_JOB, 重启/切页即丢,
+    无任何存档 —— 这是用户问"为什么没有记录存档"的根因。
+    """
+    try:
+        from agent.wisburg_ai import RESOURCE_META
+        from db.storage import insert_agent_summary
+        md = result.get("markdown") or ""
+        if not md or md.startswith("⚠️"):
+            return  # 失败结果不存档
+        if kind == "analyze":
+            run_type = "wisburg_analyze"
+            label = RESOURCE_META.get(resource, {}).get("label", resource)
+            title = result.get("title") or "单篇分析"
+            content = f"[{label}] {title}"[:500]
+            snapshot = {
+                "run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "kind": "analyze", "resource": resource,
+                "title": result.get("title"), "datetime": result.get("datetime"),
+                "analysis_md": md, "ok": True,
+            }
+        else:
+            run_type = "wisburg_briefing"
+            if resource == "all":
+                label = "综合 10 类日报"
+            else:
+                label = f"{RESOURCE_META.get(resource, {}).get('label', resource)}日报"
+            content = f"智堡AI日报·{label}"[:500]
+            snapshot = {
+                "run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "kind": "briefing", "resource": resource,
+                "count": result.get("count"),
+                "per_source": result.get("per_source"),
+                "analysis_md": md, "ok": True,
+            }
+        insert_agent_summary(
+            content=content,
+            data_snapshot_json=json.dumps(snapshot, ensure_ascii=False, default=str),
+            run_type=run_type,
+            report_html="",
+        )
+        logger.info("[wisburg-ai] %s 结果已存档 (run_type=%s)", kind, run_type)
+    except Exception as exc:
+        logger.warning("[wisburg-ai] 存档失败 (不影响本次展示): %s", exc)
+
+
 def _wisburg_ai_worker(kind: str, resource: str, **kwargs) -> None:
     """后台跑 AI 分析 (claude 串行 1-3 分钟, 不能阻塞 HTTP)。"""
     from agent.wisburg_ai import analyze_item, build_briefing, build_briefing_all, list_resource
@@ -42,6 +92,7 @@ def _wisburg_ai_worker(kind: str, resource: str, **kwargs) -> None:
             job["result"] = {"markdown": build_briefing(resource, items),
                              "count": len(items), "resource": resource}
         job["state"] = "done"
+        _archive_result(kind, resource, job["result"] or {})
     except Exception as exc:
         job["state"] = "error"
         job["error"] = str(exc)
@@ -135,3 +186,16 @@ def api_wisburg_briefing():
 def api_wisburg_ai_job():
     with _wisburg_ai_lock:
         return _ok(dict(_WISBURG_AI_JOB))
+
+
+@bp.route("/history")
+def api_wisburg_history():
+    """智堡 AI 分析存档列表 (run_type in wisburg_analyze/wisburg_briefing)。"""
+    try:
+        from db.storage import get_agent_summary_history
+        rows = get_agent_summary_history(limit=50, run_type="wisburg_analyze")
+        rows += get_agent_summary_history(limit=50, run_type="wisburg_briefing")
+        rows.sort(key=lambda r: r.get("summary_time") or "", reverse=True)
+        return _ok(rows[:50])
+    except Exception as exc:
+        return _err(exc)

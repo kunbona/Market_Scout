@@ -27,6 +27,9 @@ const RUN_TYPE_LABEL: Record<string, string> = {
   watchlist: '股池分析',
   info_brief:'信息情报简报',
   strategist: '战略推理',
+  master_view:'总览分析',
+  wisburg_analyze: '智堡单篇分析',
+  wisburg_briefing: '智堡AI日报',
 };
 
 export function formatRunTypeLabel(runType: string | null | undefined): string {
