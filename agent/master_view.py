@@ -12,6 +12,8 @@ claude 做顶层交叉分析 → 落 agent_summary 表 (run_type=master_view)。
     3. 板块资金流最新截面 (净流入/流出前 8)
     4. 智堡(海外投研)AI 分析存档 (综合日报 + 单篇深度分析)
     5. 龙虎榜三层快照 (全市场聚合情绪/净买卖前5/背离样本/反复上榜主战场)
+    6. 概念资金流最新截面 (题材粒度净流入前8+净流出前5, 进攻端)
+    7. 解禁日历 (未来14天高占流通比解禁, 防守端)
 
 用法:
   from agent.master_view import run as run_master_view
@@ -200,6 +202,70 @@ def _lhb_snapshot(trade_date: str | None = None) -> dict | None:
     return snap
 
 
+# 概念流里的"伪题材": 股票池/指数成分类标签, 不是真正的题材, 会污染排名
+_CONCEPT_NOISE = ("融资融券", "深股通", "沪股通", "中报预增", "中报预减",
+                  "证金持股", "高股息", "漂亮100", "MSCI", "富时", "标普", "AH股")
+
+
+def _concept_flow_snapshot() -> dict | None:
+    """概念资金流最新截面 (题材粒度的毛细血管, 比行业资金流细一层):
+    净流入前 8 + 净流出前 5, 带领涨股 — 帮 AI 把主线钉到具体题材。
+    net_amount 单位已是亿元 (勿再除 1e8)。过滤股票池类伪题材标签。
+    """
+    from db.storage import get_concept_flow_latest
+    try:
+        rows = get_concept_flow_latest(top_n=400)  # 全截面 ~340 行, 拿全才能取两头
+    except Exception as exc:
+        logger.warning("[master_view] 概念资金流读取失败: %s", exc)
+        return None
+    if not rows:
+        return None
+    clean = [r for r in rows
+             if r.get("concept") and not any(n in r["concept"] for n in _CONCEPT_NOISE)]
+    if not clean:
+        return None
+    clean.sort(key=lambda r: r.get("net_amount") or 0, reverse=True)
+
+    def _fmt(r):
+        item = {"概念": r.get("concept"),
+                "净(亿)": round(r.get("net_amount") or 0),
+                "涨跌%": round(r.get("change_pct") or 0, 1)}
+        if r.get("lead_stock"):
+            item["领涨"] = f"{r.get('lead_stock')} {round(r.get('lead_pct') or 0, 1)}%"
+        return item
+
+    return {"fetch_time": str(rows[0].get("fetch_time") or "")[:19],
+            "top_in": [_fmt(r) for r in clean[:8]],
+            "top_out": [_fmt(r) for r in clean[-5:][::-1]]}
+
+
+def _lockup_calendar(days: int = 14) -> dict | None:
+    """解禁日历 (防守信号): 未来 N 天解禁家数/总额 + 高压力个股。
+    单位注意 (2026-08-28 实测定案): lift_shares=万股、
+    lift_market_cap=万元(除以 1e4 得亿)、lift_ratio=已是百分数(2.77 即 2.77%)。
+    解禁是日期已知的确定性供给冲击。
+    """
+    from db.storage import get_lockup_expiry
+    try:
+        rows = get_lockup_expiry(days=days)
+    except Exception as exc:
+        logger.warning("[master_view] 解禁日历读取失败: %s", exc)
+        return None
+    if not rows:
+        return None
+    total_cap_yi = sum((r.get("lift_market_cap") or 0) for r in rows) / 1e4
+    hot = sorted(rows, key=lambda r: r.get("lift_ratio") or 0, reverse=True)
+    return {"window_days": days,
+            "total": len(rows),
+            "total_cap_yi": round(total_cap_yi),
+            "high_pressure": [
+                {"日期": r.get("free_date"), "股票": r.get("stock_name"),
+                 "解禁(万股)": round(r.get("lift_shares") or 0),
+                 "解禁市值(亿)": round((r.get("lift_market_cap") or 0) / 1e4, 1),
+                 "占流通%": round(r.get("lift_ratio") or 0, 2)}
+                for r in hot[:8]]}
+
+
 def _latest_ai_snapshots() -> dict:
     """最近一次各 run_type 的 AI 结论快照 (让新分析能对照此前判断)."""
     from db.storage import get_agent_summary_latest_snapshot
@@ -325,6 +391,16 @@ def build_master_digest(trade_date: str | None = None,
     if lhb:
         digest["lhb"] = lhb
 
+    # 8. 概念资金流最新截面 (题材粒度, 进攻端: 把主线钉到具体题材)
+    cf = _concept_flow_snapshot()
+    if cf:
+        digest["concept_flow"] = cf
+
+    # 9. 解禁日历 (防守端: 未来 14 天确定性供给冲击)
+    lk = _lockup_calendar(days=14)
+    if lk:
+        digest["lockup_calendar"] = lk
+
     return digest
 
 
@@ -344,6 +420,10 @@ PROMPT_TEMPLATE = """你是 A 股全市场首席策略分析师。下面是一�
   top_buy/top_sell=净买/净卖前 5 (含占成交%=筹码集中度、席位=机构动向),
   divergence=价涨但榜上净卖/价跌但榜上净买的背离样本 (主力出货/低吸预警),
   battles=近 20 日上榜≥3 次的反复博弈股 (累计净买方向判断延续性) (可能缺失)
+- concept_flow: 概念资金流最新截面 (题材粒度, 比行业资金流细一层) —
+  top_in=净流入前 8 题材 (含领涨股), top_out=净流出前 5 (可能缺失)
+- lockup_calendar: 未来 14 天解禁日历 (日期已知的确定性供给冲击) —
+  high_pressure 按占流通比排序, 比例越高抛压越集中 (可能缺失)
 
 数据 (JSON):
 {digest_json}
@@ -365,9 +445,16 @@ PROMPT_TEMPLATE = """你是 A 股全市场首席策略分析师。下面是一�
    battles 里"反复上榜且累计净买为正"的题材延续性最强, 反之警惕断板
    (数据里没有 lhb 时跳过此点, 不要编造)
 4. `## 主线与机会` — 综合给出 2-3 条主线 (行业+逻辑+持续性判断),
-   并结合 dm_kun 的选股/题材梯队给出具体方向
+   并结合 dm_kun 的选股/题材梯队给出具体方向;
+   用 concept_flow 把主线钉到具体题材: 行业趋势多头的行业, 若概念资金流
+   里对应的具体题材(如芯片/存储/机器人)同时净流入居前, 说明资金正从行业
+   级下沉到题材级, 主线更扎实; 反之行业热但题材资金涣散, 则主线偏虚
+   (数据里没有 concept_flow 时跳过此点, 不要编造)
 5. `## 策略与风险` — 仓位建议 (激进/中性/防守三档)、操作节奏、
-   2 个情景推演 (概率+应对)、明确的风险清单
+   2 个情景推演 (概率+应对)、明确的风险清单;
+   风险清单必须纳入 lockup_calendar: 未来 14 天高占流通比的解禁股是日期
+   已知的确定性抛压, 若主线行业/个股恰逢大额解禁, 明确提示回避时点
+   (数据里没有 lockup_calendar 时跳过此点, 不要编造)
 
 约束:
 - 只用数据里有的信息, 不要编造数字; 引用具体数值时与数据一致
@@ -452,7 +539,8 @@ def run(trade_date: str | None = None, extra_context: dict | None = None) -> dic
                 "sources": [k for k in digest
                             if k in ("industry_trend", "review", "dm_kun_analysis",
                                      "prior_ai_views", "sector_flow_latest",
-                                     "wisburg_views", "lhb")],
+                                     "wisburg_views", "lhb", "concept_flow",
+                                     "lockup_calendar")],
             },
             "ok": ok,
         }, ensure_ascii=False, default=str),

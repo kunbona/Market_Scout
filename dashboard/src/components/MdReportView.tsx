@@ -46,6 +46,8 @@ const SOURCE_LABEL: Record<string, string> = {
   sector_flow_latest: '板块资金流',
   wisburg_views: '智堡海外视角',
   lhb: '龙虎榜',
+  concept_flow: '概念资金流',
+  lockup_calendar: '解禁日历',
 };
 
 // ─── Markdown inline 加粗解析 ────────────────────────────────────────────────
