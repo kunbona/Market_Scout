@@ -237,6 +237,28 @@ def start_scheduler() -> None:
                         "[scheduler] 复盘 AI 总结失败", exc_info=True)
             scheduler.add_job(_run_review, "cron", hour=20, minute=30)
 
+    # ── 智堡 AI 日报 (8:00 / 22:00) ──────────────────────────────────────────
+    # 全球宏观内容, 不加 _is_trade_day() 闸门 (周末/节假日也出报)。
+    # 成功后走 api.wisburg._archive_result 落 agent_summary (run_type=wisburg_briefing),
+    # 与页面手动触发共用同一存档链路; ⚠️ 失败结果由 _archive_result 过滤不入库。
+    _wisburg_enabled = os.environ.get("WISBURG_BRIEFING_ENABLED", "true").lower() == "true"
+    if _wisburg_enabled:
+        def _run_wisburg_briefing() -> None:
+            try:
+                from agent.wisburg_ai import build_briefing_all
+                from api.wisburg import _archive_result
+                result = build_briefing_all()
+                _archive_result("briefing", "all", result or {})
+                logging.getLogger(__name__).info(
+                    "[scheduler] 智堡AI日报完成: count=%s",
+                    (result or {}).get("count"))
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "[scheduler] 智堡AI日报失败", exc_info=True)
+
+        scheduler.add_job(lambda: _auto_run("智堡AI日报", _run_wisburg_briefing), "cron", hour=8,  minute=0)
+        scheduler.add_job(lambda: _auto_run("智堡AI日报", _run_wisburg_briefing), "cron", hour=22, minute=0)
+
     scheduler.start()
     atexit.register(scheduler.shutdown)
 
