@@ -45,6 +45,7 @@ const SOURCE_LABEL: Record<string, string> = {
   prior_ai_views: '既有AI结论',
   sector_flow_latest: '板块资金流',
   wisburg_views: '智堡海外视角',
+  lhb: '龙虎榜',
 };
 
 // ─── Markdown inline 加粗解析 ────────────────────────────────────────────────

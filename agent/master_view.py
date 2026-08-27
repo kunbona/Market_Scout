@@ -10,6 +10,8 @@ claude 做顶层交叉分析 → 落 agent_summary 表 (run_type=master_view)。
     2. 既有 AI 结论 (最近一次盘后 chief 裁决 / info_brief / strategist),
        用来做"AI 历史判断 vs 当下数据"的对照
     3. 板块资金流最新截面 (净流入/流出前 8)
+    4. 智堡(海外投研)AI 分析存档 (综合日报 + 单篇深度分析)
+    5. 龙虎榜三层快照 (全市场聚合情绪/净买卖前5/背离样本/反复上榜主战场)
 
 用法:
   from agent.master_view import run as run_master_view
@@ -110,6 +112,92 @@ def _latest_wisburg_views() -> dict | None:
     except Exception as exc:
         logger.warning("[master_view] 智堡存档读取失败: %s", exc)
     return views or None
+
+
+def _inst_from_interpret(interpret: str) -> str:
+    """从 interpret 文本抽机构席位: '4家机构买入，成功率36%' → '4家机构买入'."""
+    import re
+    m = re.search(r"(\d+)\s*家机构(买入|卖出)", interpret or "")
+    return f"{m.group(1)}家机构{m.group(2)}" if m else ""
+
+
+def _lhb_snapshot(trade_date: str | None = None) -> dict | None:
+    """龙虎榜三层快照 (游资/机构行为, 资金流数据替代不了):
+    ① market 全市场聚合: 净买总额/净买净卖家数/机构席位覆盖 — 情绪温度计
+    ② top_buy/top_sell: 净买/净卖前 5, 带净买占成交比(筹码集中度)与机构席位信号
+    ③ divergence: 价涨但榜上净卖 / 价跌但榜上净买 — 背离预警样本
+    ④ battles: 近 20 交易日上榜≥3 次的反复博弈股 (看累计净买方向判断延续性)
+    无数据返回 None (龙虎榜盘后 17:30 才更新, 盘中跑总览时自动回退前一交易日).
+    """
+    from db.storage import get_lhb_data, get_lhb_recent
+    try:
+        rows = get_lhb_data(trade_date) or get_lhb_data(None)
+    except Exception as exc:
+        logger.warning("[master_view] 龙虎榜读取失败: %s", exc)
+        return None
+    if not rows:
+        return None
+
+    snap: dict = {"trade_date": rows[0].get("trade_date")}
+
+    # ① 全市场聚合
+    net_total = sum((r.get("net_buy") or 0) for r in rows)
+    buy_n = sum(1 for r in rows if (r.get("net_buy") or 0) > 0)
+    inst_n = sum(1 for r in rows if _inst_from_interpret(r.get("interpret") or ""))
+    snap["market"] = {
+        "上榜家数": len(rows),
+        "净买总额(亿)": round(net_total / 1e8, 2),
+        "净买家数": buy_n,
+        "净卖家数": len(rows) - buy_n,
+        "含机构席位家数": inst_n,
+    }
+
+    def _fmt(r):
+        item = {
+            "股票": r.get("stock_name"),
+            "净(亿)": round((r.get("net_buy") or 0) / 1e8, 2),
+            "占成交%": round(r.get("net_buy_ratio") or 0, 1),
+            "涨跌%": round(r.get("change_pct") or 0, 1),
+        }
+        inst = _inst_from_interpret(r.get("interpret") or "")
+        if inst:
+            item["席位"] = inst
+        return item
+
+    # ② 净买/净卖前 5
+    ordered = sorted(rows, key=lambda r: r.get("net_buy") or 0, reverse=True)
+    snap["top_buy"] = [_fmt(r) for r in ordered[:5]]
+    sell_side = [_fmt(r) for r in ordered if (r.get("net_buy") or 0) < 0]
+    snap["top_sell"] = sell_side[-5:][::-1] if sell_side else []
+
+    # ③ 背离样本: 价涨+榜上净卖 (出货预警) / 价跌+榜上净买 (低吸信号)
+    diverge = []
+    for r in rows:
+        net, chg = r.get("net_buy") or 0, r.get("change_pct") or 0
+        if (chg > 2 and net < -5e7) or (chg < -2 and net > 5e7):
+            diverge.append({"股票": r.get("stock_name"),
+                            "净(亿)": round(net / 1e8, 2), "涨跌%": round(chg, 1)})
+    if diverge:
+        snap["divergence"] = diverge[:4]
+
+    # ④ 主战场: 近 20 交易日上榜≥3 次, 按次数降序
+    try:
+        agg: dict[str, dict] = {}
+        for r in get_lhb_recent(20):
+            a = agg.setdefault(r.get("stock_code"),
+                               {"name": r.get("stock_name"), "n": 0, "net": 0.0})
+            a["n"] += 1
+            a["net"] += r.get("net_buy") or 0
+        battle = sorted((a for a in agg.values() if a["n"] >= 3),
+                        key=lambda a: -a["n"])
+        if battle:
+            snap["battles"] = [{"股票": a["name"], "上榜次数": a["n"],
+                                "累计净(亿)": round(a["net"] / 1e8, 2)}
+                               for a in battle[:6]]
+    except Exception as exc:
+        logger.warning("[master_view] 龙虎榜主战场聚合失败: %s", exc)
+
+    return snap
 
 
 def _latest_ai_snapshots() -> dict:
@@ -232,6 +320,11 @@ def build_master_digest(trade_date: str | None = None,
     if wb:
         digest["wisburg_views"] = wb
 
+    # 7. 龙虎榜三层快照 (游资/机构个股级行为)
+    lhb = _lhb_snapshot(trade_date)
+    if lhb:
+        digest["lhb"] = lhb
+
     return digest
 
 
@@ -246,6 +339,11 @@ PROMPT_TEMPLATE = """你是 A 股全市场首席策略分析师。下面是一�
 - wisburg_views: 智堡投研(海外视角)的 AI 分析存档 — briefing=综合 10 类日报
   (全球宏观/利率/地缘/大宗商品/AI 供应链), analyses=近期单篇深度分析;
   这是外部世界视角, 用于与 A 股本土数据做内外交叉验证 (可能缺失)
+- lhb: 龙虎榜三层快照 (个股级游资/机构行为, 资金流数据替代不了) —
+  market=全市场聚合(上榜家数/净买总额/净买净卖家数/机构席位覆盖, 即短线情绪温度计),
+  top_buy/top_sell=净买/净卖前 5 (含占成交%=筹码集中度、席位=机构动向),
+  divergence=价涨但榜上净卖/价跌但榜上净买的背离样本 (主力出货/低吸预警),
+  battles=近 20 日上榜≥3 次的反复博弈股 (累计净买方向判断延续性) (可能缺失)
 
 数据 (JSON):
 {digest_json}
@@ -260,7 +358,12 @@ PROMPT_TEMPLATE = """你是 A 股全市场首席策略分析师。下面是一�
    对照 prior_ai_views, 指出此前判断被证实还是证伪;
    再与 wisburg_views 的海外宏观视角 (利率/地缘/全球资金/大宗商品) 交叉:
    海外因素对国内主线是顺风、逆风还是无关, 传导路径是什么
-   (数据里没有 wisburg_views 时跳过此点, 不要编造)
+   (数据里没有 wisburg_views 时跳过此点, 不要编造);
+   最后用 lhb 龙虎榜验证短线资金真实动向: 全市场净买总额与净买卖家数比
+   反映游资进攻意愿, 机构席位覆盖多说明专业资金参与度高;
+   点名 divergence 里的背离样本 (价涨榜净卖=出货预警) 并给出应对;
+   battles 里"反复上榜且累计净买为正"的题材延续性最强, 反之警惕断板
+   (数据里没有 lhb 时跳过此点, 不要编造)
 4. `## 主线与机会` — 综合给出 2-3 条主线 (行业+逻辑+持续性判断),
    并结合 dm_kun 的选股/题材梯队给出具体方向
 5. `## 策略与风险` — 仓位建议 (激进/中性/防守三档)、操作节奏、
@@ -349,7 +452,7 @@ def run(trade_date: str | None = None, extra_context: dict | None = None) -> dic
                 "sources": [k for k in digest
                             if k in ("industry_trend", "review", "dm_kun_analysis",
                                      "prior_ai_views", "sector_flow_latest",
-                                     "wisburg_views")],
+                                     "wisburg_views", "lhb")],
             },
             "ok": ok,
         }, ensure_ascii=False, default=str),

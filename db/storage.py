@@ -918,6 +918,20 @@ def get_lhb_data(trade_date=None) -> list[dict]:
         return _rows_to_dicts(cur)
 
 
+def get_lhb_recent(days: int = 20) -> list[dict]:
+    """最近 N 个交易日的龙虎榜 (按实际有数据的交易日去重, 非自然日)."""
+    with _conn() as conn:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM lhb_data ORDER BY trade_date DESC LIMIT ?",
+            (days,))]
+        if not dates:
+            return []
+        cur = conn.execute(
+            "SELECT * FROM lhb_data WHERE trade_date >= ? ORDER BY trade_date DESC, net_buy DESC",
+            (min(dates),))
+        return _rows_to_dicts(cur)
+
+
 def get_zt_pool(trade_date=None) -> list[dict]:
     with _conn() as conn:
         date = trade_date or _latest_trade_date(conn, "zt_pool")
