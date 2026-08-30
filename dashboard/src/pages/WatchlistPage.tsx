@@ -11,6 +11,7 @@ import {
   Plus,
   Sparkles,
   Star,
+  Target,
   Trash2,
   Upload,
   Zap,
@@ -79,7 +80,7 @@ interface ImportResult {
 interface IntelSources { research: any[]; news: any[]; policy: any[]; wisburg: any[] }
 interface IntelJob {
   state: 'idle' | 'running' | 'done' | 'error';
-  result: { markdown?: string; code?: string; name?: string } | null;
+  result: { markdown?: string; code?: string; name?: string; count?: number; trade_date?: string; run_time?: string } | null;
   error: string | null;
 }
 
@@ -285,6 +286,9 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
   const [realtimeJob, setRealtimeJob] = useState<{ state: string; result: any; error: string | null }>({ state: 'idle', result: null, error: null });
   const [realtimeCheckups, setRealtimeCheckups] = useState<Record<string, any>>({});
   const rtPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 影响推演 job（市场数据 → 个股 影响映射 + 情景推演）
+  const [impactJob, setImpactJob] = useState<IntelJob>({ state: 'idle', result: null, error: null });
+  const impactPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let done = 0;
@@ -370,6 +374,43 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
     }
   };
 
+  // 影响推演：市场数据(行业趋势/龙虎榜/解禁/总览结论) → 个股影响评估+情景推演
+  const startImpactPoll = () => {
+    if (impactPollRef.current) clearInterval(impactPollRef.current);
+    impactPollRef.current = setInterval(async () => {
+      const j = await safeFetch<IntelJob>('/api/watchlist/impact-job');
+      if (j) {
+        setImpactJob(j);
+        if (j.state !== 'running' && impactPollRef.current) { clearInterval(impactPollRef.current); impactPollRef.current = null; }
+      }
+    }, 3000);
+  };
+
+  const handleImpact = async () => {
+    setImpactJob({ state: 'running', result: null, error: null });
+    try {
+      await fetch('/api/watchlist/impact', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stocks: stocks.map(s => ({ code: s.code, name: s.name, note: s.note })) }),
+      });
+      startImpactPoll();
+    } catch (e: any) {
+      setImpactJob({ state: 'error', result: null, error: e.message || '影响推演启动失败' });
+    }
+  };
+
+  // 打开时回看最近一次落库的推演结果
+  useEffect(() => {
+    safeFetch<{ analysis_md: string; run_time?: string; trade_date?: string } | null>('/api/watchlist/impact-latest')
+      .then(snap => {
+        if (snap?.analysis_md) {
+          setImpactJob({ state: 'done', result: { markdown: snap.analysis_md, run_time: snap.run_time, trade_date: snap.trade_date }, error: null });
+        }
+      })
+      .catch(() => {});
+    return () => { if (impactPollRef.current) clearInterval(impactPollRef.current); };
+  }, []);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6" onClick={onClose}>
       <div
@@ -406,6 +447,16 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
               {aiAll.state === 'running' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
               {aiAll.state === 'running' ? 'AI 整理中…' : 'AI 全池整理'}
             </button>
+            <button
+              onClick={handleImpact}
+              disabled={impactJob.state === 'running'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
+                         bg-purple-100 text-purple-700 hover:bg-purple-200 ring-1 ring-purple-300
+                         transition-colors disabled:opacity-50"
+            >
+              {impactJob.state === 'running' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Target className="w-3.5 h-3.5" />}
+              {impactJob.state === 'running' ? '影响推演中…' : '影响推演'}
+            </button>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">✕</button>
           </div>
         </div>
@@ -435,6 +486,26 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
           {aiAll.state === 'error' && aiAll.error && (
             <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
               ⚠️ AI 整理失败：{aiAll.error}
+            </div>
+          )}
+
+          {/* 影响推演结果（市场数据 → 个股 影响映射 + 情景推演） */}
+          {impactJob.state === 'running' && (
+            <div className="mb-4 p-4 bg-purple-50/50 border border-purple-100 rounded-xl text-sm text-purple-600 animate-pulse">
+              🎯 claude 正在做市场数据 → 个股影响映射与情景推演（约 3-5 分钟）…
+            </div>
+          )}
+          {impactJob.state === 'done' && impactJob.result?.markdown && (
+            <div className="mb-4 bg-purple-50/40 border border-purple-100 rounded-xl p-4">
+              <p className="text-xs font-semibold text-purple-600 mb-2">
+                🎯 影响推演 — 市场数据 → 股池个股（{impactJob.result.trade_date ? `数据截面 ${impactJob.result.trade_date}` : '最新'}{impactJob.result.run_time ? ` · 生成于 ${impactJob.result.run_time}` : ''}）
+              </p>
+              <div dangerouslySetInnerHTML={{ __html: renderMarkdown(impactJob.result.markdown) }} />
+            </div>
+          )}
+          {impactJob.state === 'error' && impactJob.error && (
+            <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
+              ⚠️ 影响推演失败：{impactJob.error}
             </div>
           )}
 

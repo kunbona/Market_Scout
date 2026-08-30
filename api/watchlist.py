@@ -654,6 +654,270 @@ def api_watchlist_intel_ai_all_job():
         return _ok(dict(_WATCHLIST_INTEL_ALL_JOB))
 
 
+# ── 个股影响推演（市场数据 → 股池个股 影响映射 + 情景推演）───────────────────
+
+_WATCHLIST_IMPACT_JOB = {
+    "state": "idle",        # idle | running | done | error
+    "result": None,         # {markdown, count, trade_date}
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+_watchlist_impact_lock = threading.Lock()
+
+
+def _impact_digest_collect(stocks: list[dict]) -> dict:
+    """构建"市场数据 → 个股"影响映射 digest。
+
+    每只个股挂四路市场侧数据:
+    ① 行业趋势: 个股申万一级行业的最新截面(分类/综合分/资金流Δ/动能) — 主映射
+    ② 龙虎榜: 近 20 交易日该股是否上榜(游资/机构行为)
+    ③ 解禁: 未来 30 天是否有解禁(确定性供给冲击)
+    ④ 当日行情: QMT tick 涨跌幅(可降级)
+    另附最新"总览分析"结论摘要作为全局背景。
+    """
+    import json as _json
+    from db.storage import (
+        get_industry_trend_dates, get_industry_trend_daily,
+        get_lhb_recent, get_lockup_expiry,
+        get_agent_summary_latest_snapshot,
+    )
+
+    # 1) 最新行业截面: {行业: row}
+    ind_row_map: dict[str, dict] = {}
+    trend_date = None
+    dates = get_industry_trend_dates()
+    if dates:
+        trend_date = dates[0]  # DESC, 第一个=最新
+        try:
+            pl = _json.loads(get_industry_trend_daily(trend_date)["payload"])
+            ind_row_map = {r["行业"]: r for r in pl.get("table", [])}
+        except Exception:
+            pass
+
+    # 2) 龙虎榜近 20 交易日, 按代码聚合
+    lhb_by_code: dict[str, list] = {}
+    try:
+        for r in get_lhb_recent(20):
+            c = str(r.get("stock_code") or "").strip()
+            if c:
+                lhb_by_code.setdefault(c, []).append({
+                    "日期": r.get("trade_date"),
+                    "净买(亿)": round((r.get("net_buy") or 0) / 1e8, 2),
+                    "涨跌%": round(r.get("change_pct") or 0, 1),
+                    "解读": (r.get("interpret") or "")[:80],
+                })
+    except Exception:
+        pass
+
+    # 3) 解禁日历未来 30 天, 按名称索引(该表无代码列)
+    lockup_by_name: dict[str, dict] = {}
+    try:
+        for r in get_lockup_expiry(days=30):
+            nm = str(r.get("stock_name") or "").strip()
+            if nm:
+                lockup_by_name[nm] = {
+                    "解禁日": r.get("free_date"),
+                    "解禁市值(亿)": round((r.get("lift_market_cap") or 0) / 1e4, 1),
+                    "占流通%": round(r.get("lift_ratio") or 0, 2),
+                }
+    except Exception:
+        pass
+
+    # 4) 当日行情(QMT, 周末/离线时降级跳过)
+    quotes: dict = {}
+    try:
+        from fetcher.qmt_data_api import get_full_tick_snapshot
+        ticks = get_full_tick_snapshot([s["code"] for s in stocks]) or {}
+        for code, tick in ticks.items():
+            lp, lc = tick.get("last_price"), tick.get("last_close")
+            if lp and lc:
+                quotes[code] = round((lp - lc) / lc * 100, 2)
+    except Exception:
+        pass
+
+    # 5) 总览分析最新结论(全局背景, 截断控体积)
+    market_view = ""
+    try:
+        snap = get_agent_summary_latest_snapshot("master_view")
+        if snap:
+            market_view = str(snap.get("analysis_md") or "")[:1800]
+    except Exception:
+        pass
+
+    profiles = []
+    for s in stocks:
+        code = str(s.get("code") or "").strip()
+        name = str(s.get("name") or "").strip()
+        if not code:
+            continue
+        # 行业归属(申万): 本地量价 parquet 的 industry_l1/l2/l3
+        ind_l1 = ind_l2 = ind_l3 = ""
+        try:
+            from quant.security_meta import get_security_meta
+            meta = get_security_meta(code)
+            ind_l1 = meta.get("industry_l1") or ""
+            ind_l2 = meta.get("industry_l2") or ""
+            ind_l3 = meta.get("industry_l3") or ""
+        except Exception:
+            pass
+        ind_row = ind_row_map.get(ind_l1) or {}
+        item = {
+            "代码": code, "名称": name, "备注": str(s.get("note") or "")[:50],
+            "行业": f"{ind_l1}/{ind_l2}/{ind_l3}".strip("/"),
+        }
+        if ind_row:
+            item["行业趋势"] = {
+                "分类": ind_row.get("分类"),
+                "综合分": ind_row.get("综合分"),
+                "动能分": ind_row.get("当日动能"),
+                "当日涨幅%": ind_row.get("当日涨幅%"),
+                "5日涨幅": ind_row.get("5日涨幅"),
+                "20日涨幅": ind_row.get("20日涨幅"),
+                "资金流Δ": ind_row.get("资金流Δ"),
+                "当日净占比%": ind_row.get("当日净占比%"),
+                "量能比": ind_row.get("量能比"),
+            }
+        if code in lhb_by_code:
+            item["龙虎榜近20日"] = lhb_by_code[code]
+        if name in lockup_by_name:
+            item["未来30日解禁"] = lockup_by_name[name]
+        if code in quotes:
+            item["当日涨跌%"] = quotes[code]
+        profiles.append(item)
+
+    return {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "trend_date": trend_date,
+        "market_view": market_view,
+        "stocks": profiles,
+    }
+
+
+def _watchlist_impact_worker(stocks: list[dict]) -> None:
+    """后台: 构建影响映射 digest → claude 生成影响评估+情景推演 → 落库。"""
+    import json as _json
+    from agent.wisburg_ai import call_claude
+    from db.storage import insert_agent_summary
+    job = _WATCHLIST_IMPACT_JOB
+    try:
+        digest = _impact_digest_collect(stocks)
+        if not digest["stocks"]:
+            raise RuntimeError("没有可分析的关注股票")
+
+        prompt = f"""你是一位资深投研分析师。用户有一个关注股池, 下面是每只个股挂接的市场侧数据(所属行业趋势 / 龙虎榜 / 解禁 / 当日行情), 以及最新的全市场总览分析。请做"市场数据 → 个股影响映射与情景推演"。
+
+## 一、全市场总览结论(最新)
+{digest['market_view'] or '(暂无)'}
+
+## 二、股池个股市场侧数据({len(digest['stocks'])} 只)
+{_json.dumps(digest['stocks'], ensure_ascii=False, indent=1)}
+
+请输出 markdown(不要代码块包裹), 严格按以下结构:
+
+## 全局环境对股池的影响
+一段话: 当前市场环境(强弱/风格/主线)对这个股池整体是顺风还是逆风, 哪些个股方向与市场主线共振、哪些背离。
+
+## 个股影响与推演
+对每只股票单独一节, 格式为 `### 名称(代码)`, 每节包含:
+1. **影响评估** — 一句话判断: 受益 / 承压 / 中性, 及核心理由(必须基于所给数据: 行业趋势、资金流、龙虎榜、解禁等)
+2. **情景推演** — 三个子项:
+   - 乐观情景: 什么条件触发 + 可能的演绎路径
+   - 中性情景: 最可能的路径
+   - 悲观情景: 什么信号出现要警惕 + 可能的演绎路径
+3. **关键观察信号** — 2-3 个接下来最值得盯的具体信号(如行业资金流转正/龙虎榜机构席位/解禁日临近等)
+
+## 推演总结
+一张优先级清单: 按"市场共振度 + 风险暴露"给股池排个序, 谁最值得重点跟踪、谁需要警惕、谁可以放一放。
+
+约束:
+- 只用给定数据里的信息, 不要编造数字; 没有龙虎榜/解禁数据的个股不要假装有
+- 情景推演要具体到触发条件, 不要空泛的"如果市场好就涨"
+- 每只股票 120-200 字; 总长度控制在 2500 字以内
+- 第一个字符必须是 `#`"""
+
+        md = call_claude(prompt, timeout=480)
+        ok = not md.startswith("⚠️")
+        # 正文裁剪开场白
+        if ok:
+            idx = md.find("\n## ")
+            if idx > 0 and md[:idx].strip() and not md.strip().startswith("#"):
+                md = md[idx:].lstrip()
+
+        insert_agent_summary(
+            content=f"股池影响推演 ({len(digest['stocks'])} 只)",
+            data_snapshot_json=_json.dumps({
+                "trade_date": digest["trend_date"],
+                "run_time": digest["generated_at"],
+                "analysis_md": md,
+                "count": len(digest["stocks"]),
+                "codes": [p["代码"] for p in digest["stocks"]],
+                "ok": ok,
+            }, ensure_ascii=False),
+            run_type="watchlist_impact",
+        )
+        job["result"] = {"markdown": md, "count": len(digest["stocks"]),
+                         "trade_date": digest["trend_date"]}
+        job["state"] = "done" if ok else "error"
+        if not ok:
+            job["error"] = md[:300]
+    except Exception as exc:
+        job["state"] = "error"
+        job["error"] = str(exc)
+        logger.exception("[watchlist-impact] 影响推演失败")
+    finally:
+        job["finished_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+@bp.route("/impact", methods=["POST"])
+def api_watchlist_impact():
+    """股池影响推演(后台任务, 轮询 /api/watchlist/impact-job)。
+    body: {stocks: [{code,name,note}]} 缺省从指定池(或全部池)自动取。"""
+    try:
+        body = request.get_json(silent=True) or {}
+        stocks = body.get("stocks") or []
+        if not stocks:
+            from db.storage import get_watchlist
+            pool = (body.get("pool") or "").strip() or None
+            stocks = [{"code": it["code"], "name": it.get("name") or "",
+                       "note": it.get("note") or ""}
+                      for it in get_watchlist(pool)]
+        stocks = [s for s in stocks if (s.get("code") or "").strip()]
+        if not stocks:
+            return _err("股池为空, 无股票可分析", 400)
+        with _watchlist_impact_lock:
+            if _WATCHLIST_IMPACT_JOB["state"] == "running":
+                return _ok({"started": False, "state": "running"})
+            _WATCHLIST_IMPACT_JOB.update(
+                state="running", result=None, error=None,
+                started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None,
+            )
+            threading.Thread(target=_watchlist_impact_worker, args=(stocks,),
+                             daemon=True, name="watchlist-impact").start()
+        return _ok({"started": True, "state": "running", "count": len(stocks)})
+    except Exception as exc:
+        return _err(exc)
+
+
+@bp.route("/impact-job")
+def api_watchlist_impact_job():
+    with _watchlist_impact_lock:
+        return _ok(dict(_WATCHLIST_IMPACT_JOB))
+
+
+@bp.route("/impact-latest")
+def api_watchlist_impact_latest():
+    """最近一次影响推演结果(落库), 供打开页面时直接回看。"""
+    try:
+        from db.storage import get_agent_summary_latest_snapshot
+        snap = get_agent_summary_latest_snapshot("watchlist_impact")
+        if not snap or not snap.get("analysis_md"):
+            return _ok(None)
+        return _ok(snap)
+    except Exception as exc:
+        return _err(exc)
+
+
 # ── iFinD 实时体检（复用股池动态分析的数据源，不用等 agent 跑）────────
 
 _IFIND_CFG: dict | None = None
