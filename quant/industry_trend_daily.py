@@ -480,9 +480,10 @@ def get_score_heatmap(days: int = 20) -> dict:
     行业顺序按最新日综合分降序。
     ma = 每个行业截至最新存档日的 5/20/60 日综合分均值 (用全量存档窗口算,
     不受 days 展示窗口限制; 存档不足 60 日时 ma60=None)。
-    breakouts = {行业: {日期: ["ma20"/"ma60"]}} — 展示窗口内综合分自下向上
-    穿越 20/60 日滚动均线的突破日 (昨日≤均线且今日>均线); 滚动均线用全量
-    存档计算, 无未来函数, 展示窗口最早一日也能算出完整均线。
+    breakouts = {行业: {日期: {"up": [...], "dn": [...]}}} — 展示窗口内综合分
+    穿越 5/20/60 日滚动均线的日子: up=上穿(突破, 昨日≤均线且今日>均线),
+    dn=下穿(跌破, 昨日≥均线且今日<均线), 值为被穿越均线列表 ["ma5"/"ma20"/"ma60"]。
+    滚动均线用全量存档计算, 无未来函数, 展示窗口最早一日也能算出完整均线。
     """
     from db.storage import get_industry_trend_dates, get_industry_trend_daily
     all_dates = get_industry_trend_dates()          # 降序, 最多 120 日
@@ -529,10 +530,10 @@ def get_score_heatmap(days: int = 20) -> dict:
         if item:
             ma[ind] = item
 
-    # 突破检测: 展示窗口内综合分自下向上穿越 20/60 日滚动均线
-    # (昨日 ≤ 滚动均线 且 今日 > 滚动均线)。滚动均线=截至该日的最近 N 个
-    # 有效值均值, 用全量历史算, 无未来函数; 只标 20/60 两级 (5日噪音大)。
-    breakouts: dict[str, dict[str, list[str]]] = {}
+    # 均线穿越检测: 展示窗口内综合分上穿(突破)/下穿(跌破) 5/20/60 日滚动均线。
+    # 滚动均线=截至该日的最近 N 个有效值均值, 用全量历史算, 无未来函数。
+    # 结构: {行业: {日期: {"up": [均线标签...], "dn": [...]}}}
+    breakouts: dict[str, dict[str, dict[str, list[str]]]] = {}
     for ind in industries:
         series = [ind_scores[ind].get(d) for d in ma_dates]  # 升序全量
         valid_idx = [i for i, v in enumerate(series) if v is not None]
@@ -545,7 +546,7 @@ def get_score_heatmap(days: int = 20) -> dict:
             return sum(series[i] for i in idx[-win:]) / win
 
         date_pos = {d: i for i, d in enumerate(ma_dates)}
-        ind_marks: dict[str, list[str]] = {}
+        ind_marks: dict[str, dict[str, list[str]]] = {}
         for j in range(1, len(dates)):
             d_today, d_prev = dates[j], dates[j - 1]
             today, prev = ind_scores[ind].get(d_today), ind_scores[ind].get(d_prev)
@@ -554,16 +555,18 @@ def get_score_heatmap(days: int = 20) -> dict:
             p_today, p_prev = date_pos.get(d_today), date_pos.get(d_prev)
             if p_today is None or p_prev is None:
                 continue
-            labels = []
-            for win, label in ((20, "ma20"), (60, "ma60")):
+            up, dn = [], []
+            for win, label in ((5, "ma5"), (20, "ma20"), (60, "ma60")):
                 ma_t = _rolling_ma(p_today, win)
                 ma_p = _rolling_ma(p_prev, win)
                 if ma_t is None or ma_p is None:
                     continue
                 if prev <= ma_p and today > ma_t:
-                    labels.append(label)
-            if labels:
-                ind_marks[d_today] = labels
+                    up.append(label)
+                elif prev >= ma_p and today < ma_t:
+                    dn.append(label)
+            if up or dn:
+                ind_marks[d_today] = {"up": up, "dn": dn}
         if ind_marks:
             breakouts[ind] = ind_marks
 
