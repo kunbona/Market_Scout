@@ -740,7 +740,7 @@ function DetailTab({ data, selIndustry, onRowClick }: {
 // ─── 子页⑤: 综合分热力图 (日期 × 行业, ECharts heatmap) ────────────────────
 
 function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
-  const [data, setData] = useState<{ dates: string[]; industries: string[]; scores: (number | null)[][]; ma?: Record<string, { ma5?: number; ma20?: number; ma60?: number }> } | null>(null);
+  const [data, setData] = useState<{ dates: string[]; industries: string[]; scores: (number | null)[][]; ma?: Record<string, { ma5?: number; ma20?: number; ma60?: number }>; breakouts?: Record<string, Record<string, string[]>> } | null>(null);
   const [loading, setLoading] = useState(true);
   // 点击格子选中的行业 (弹出分数+均线面板, 而非直接跳详情)
   const [sel, setSel] = useState<{ ind: string; dt: string; score: number } | null>(null);
@@ -748,7 +748,7 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
   const catMeta = useCatMeta();
 
   useEffect(() => {
-    apiFetch<{ dates: string[]; industries: string[]; scores: (number | null)[][]; ma?: Record<string, { ma5?: number; ma20?: number; ma60?: number }> }>(
+    apiFetch<{ dates: string[]; industries: string[]; scores: (number | null)[][]; ma?: Record<string, { ma5?: number; ma20?: number; ma60?: number }>; breakouts?: Record<string, Record<string, string[]>> }>(
       '/api/industry-trend/heatmap?days=40')
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -817,8 +817,13 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
             ma.ma20 != null ? `20日均 ${ma.ma20.toFixed(1)}` : null,
             ma.ma60 != null ? `60日均 ${ma.ma60.toFixed(1)}` : null,
           ].filter(Boolean).join(' · ');
+          const marks = data.breakouts?.[ind]?.[dt];
+          const boLine = marks?.length
+            ? '<br/><b style="color:#2563eb">✦ 突破均线: ' +
+              marks.map(m => (m === 'ma60' ? '60日均 ★' : '20日均 ✦')).join(' + ') + '</b>'
+            : '';
           return `${ind} | ${dt} | <b>${cat || '--'}</b><br/>综合分: <b>${p.data[2].toFixed(1)}</b>` +
-            (maLine ? `<br/>${maLine}` : '');
+            (maLine ? `<br/>${maLine}` : '') + boLine;
         },
       },
       grid: { left: 78, right: 60, top: 10, bottom: 40 },
@@ -851,19 +856,27 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
           fontSize: 7,
           formatter: (p: any) => {
             const ind = data.industries[p.data[1]];
+            const dt = data.dates[p.data[0]];
             const v = p.data[2].toFixed(0);
+            // 均线突破标记: ✦=上穿20日均, ★=上穿60日均 (两者可同日并存)
+            const marks = data.breakouts?.[ind]?.[dt];
+            const bo = (marks?.includes('ma20') ? '{bo20|✦}' : '') +
+                       (marks?.includes('ma60') ? '{bo60|★}' : '');
             // 最新日异动格子: 大箭头+数字(箭头 12px 醒目)
             if (p.data[0] === data.dates.length - 1) {
-              if (alerts.has(`${ind}|up`)) return `{arrowUp|▲}${v}`;
-              if (alerts.has(`${ind}|down`)) return `{arrowDn|▼}${v}`;
+              if (alerts.has(`${ind}|up`)) return `{arrowUp|▲}${bo}${v}`;
+              if (alerts.has(`${ind}|down`)) return `{arrowDn|▼}${bo}${v}`;
             }
-            return v;
+            return bo ? `${bo}${v}` : v;
           },
           color: '#333',
           rich: {
             // 亮红/亮绿 + 白描边: 与同色系渐变底色区分, 任何背景都醒目
             arrowUp: { color: '#ff2b2b', fontSize: 13, fontWeight: 'bold' as const, textBorderColor: '#ffffff', textBorderWidth: 2 },
             arrowDn: { color: '#00c853', fontSize: 13, fontWeight: 'bold' as const, textBorderColor: '#ffffff', textBorderWidth: 2 },
+            // 突破标记: 蓝=20日均线, 金=60日均线, 白描边保证任何底色可读
+            bo20: { color: '#2563eb', fontSize: 9, fontWeight: 'bold' as const, textBorderColor: '#ffffff', textBorderWidth: 1.5 },
+            bo60: { color: '#d97706', fontSize: 11, fontWeight: 'bold' as const, textBorderColor: '#ffffff', textBorderWidth: 1.5 },
           },
         },
         emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(0,0,0,0.3)' } },
@@ -889,12 +902,15 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
 
   // 点击选中行业后展示的"分数 + 均线"面板
   const selMa = sel ? (data.ma?.[sel.ind] || {}) : {};
+  const selBo = sel ? (data.breakouts?.[sel.ind]?.[sel.dt] || []) : [];
 
   return (
     <Card title={`综合分热力图 — 最近 ${data.dates.length} 个交易日 × ${data.industries.length} 行业 (点击格子看分数与均线)`}>
       <CatStatCards items={catStats} scoreLabel="综合分" />
       <div className="text-xs text-gray-400 mb-2">
         红=强(综合分≥70) · 灰=中(50-70) · 绿=弱(&lt;50) · 行业按最新日综合分降序 · 综合分=SI 80% + 当日动能 20% · y轴色点=板块类别
+        <br />
+        <span className="text-blue-600 font-medium">✦ 当日突破 20 日均线</span> · <span className="text-amber-600 font-medium">★ 当日突破 60 日均线</span> (昨日≤均线且今日&gt;均线) · ▲/▼=最新日异动
       </div>
       <div ref={ref} style={{ width: '100%', height: 520 }} />
 
@@ -906,6 +922,11 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
           </div>
           <div className="text-sm">
             当日综合分 <span className="font-bold text-gray-900 text-base">{sel.score.toFixed(1)}</span>
+            {selBo.length > 0 && (
+              <span className="ml-2 px-1.5 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                ✦ 当日突破均线: {selBo.map(m => (m === 'ma60' ? '60日 ★' : '20日 ✦')).join(' + ')}
+              </span>
+            )}
           </div>
           {([['ma5', '5日均'], ['ma20', '20日均'], ['ma60', '60日均']] as const).map(([k, label]) => {
             const v = selMa[k];
