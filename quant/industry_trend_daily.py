@@ -36,7 +36,8 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 QUANT = Path(__file__).parent
-TREND_CSV = QUANT / "industry_ma_trend.csv"          # 默认输出(最新交易日)
+# 注: 曾定义 TREND_CSV = industry_ma_trend.csv 用于"复用免重跑", 因该文件无日期
+# 戳导致存档污染(2026-08-30 事故), 已废除; 见 _csv_for 的教训注释。
 SW_CACHE = QUANT / "data" / "sw_industry_index.parquet"
 
 # 与 industry_ma_trend.py 排序 order 完全一致(勿单独改)
@@ -130,11 +131,15 @@ def _recompute_csv(trade_date: str, timeout: int = 900) -> Path:
 
 
 def _csv_for(trade_date: str, force_recompute: bool) -> Path:
-    """取该交易日的 50 列截面 CSV: 默认输出命中则直接用, 否则子进程重算。"""
-    if not force_recompute and TREND_CSV.exists():
-        # 默认输出就是最新交易日时直接复用, 免重跑
-        if resolve_trade_date(None) == trade_date:
-            return TREND_CSV
+    """取该交易日的 50 列截面 CSV: 永远子进程重算 (每次 1-3 分钟)。
+
+    ⚠️ 历史教训 (2026-08-30 定案): 此函数曾有"复用 TREND_CSV 免重跑"优化——
+    只要请求日 == 日历最新交易日就直接返回 industry_ma_trend.csv, 不校验文件
+    内容是哪天的截面。该文件是手工产物、无日期戳, 一旦残留旧内容
+    (08-24 01:36 残留了 08-21 截面), 之后每晚复盘级联都会拿旧文件盖当天
+    日期存档 → 08-24~08-28 五天涨幅/位置/动能全冻结, RPS 排名雷同。
+    "省 1-3 分钟"的收益远不值得一个无法自校验的缓存, 永远重算。
+    """
     return _recompute_csv(trade_date)
 
 
