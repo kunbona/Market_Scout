@@ -568,8 +568,10 @@ _watchlist_intel_all_lock = threading.Lock()
 
 
 def _watchlist_intel_all_worker(stocks: list[dict]) -> None:
-    """后台聚合全池情报喂 claude，生成全池横向整理分析（约 1-3 分钟）。"""
+    """后台聚合全池情报喂 claude，生成全池横向整理分析（约 1-3 分钟），完成后落库供回看。"""
+    import json as _json
     from agent.wisburg_ai import call_claude
+    from db.storage import insert_agent_summary
     job = _WATCHLIST_INTEL_ALL_JOB
     try:
         parts = []
@@ -615,7 +617,24 @@ def _watchlist_intel_all_worker(stocks: list[dict]) -> None:
 约束：只用给定资料里的信息，不编造；每条结论尽量标注股票；总长 800-1500 字。"""
 
         md = call_claude(prompt)
-        job["result"] = {"markdown": md, "count": len(parts)}
+        run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # 落库供回看（与影响推演同模式：content 存标题，全文进 snapshot）
+        try:
+            insert_agent_summary(
+                content=f"全池情报整理 ({len(parts)} 只)",
+                data_snapshot_json=_json.dumps({
+                    "trade_date": datetime.now().strftime("%Y-%m-%d"),
+                    "run_time": run_time,
+                    "analysis_md": md,
+                    "count": len(parts),
+                    "codes": [str(s.get("code") or "").strip() for s in stocks],
+                    "ok": True,
+                }, ensure_ascii=False),
+                run_type="watchlist_intel_all",
+            )
+        except Exception:
+            logger.exception("[watchlist-intel-all] 落库失败（不影响本次结果）")
+        job["result"] = {"markdown": md, "count": len(parts), "run_time": run_time}
         job["state"] = "done"
     except Exception as exc:
         job["state"] = "error"
@@ -652,6 +671,19 @@ def api_watchlist_intel_ai_all():
 def api_watchlist_intel_ai_all_job():
     with _watchlist_intel_all_lock:
         return _ok(dict(_WATCHLIST_INTEL_ALL_JOB))
+
+
+@bp.route("/intel/ai-all-latest")
+def api_watchlist_intel_ai_all_latest():
+    """最近一次全池情报整理结果(落库), 供打开页面时直接回看。"""
+    try:
+        from db.storage import get_agent_summary_latest_snapshot
+        snap = get_agent_summary_latest_snapshot("watchlist_intel_all")
+        if not snap or not snap.get("analysis_md"):
+            return _ok(None)
+        return _ok(snap)
+    except Exception as exc:
+        return _err(exc)
 
 
 # ── 个股影响推演（市场数据 → 股池个股 影响映射 + 情景推演）───────────────────

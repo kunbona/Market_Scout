@@ -289,6 +289,8 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
   // 影响推演 job（市场数据 → 个股 影响映射 + 情景推演）
   const [impactJob, setImpactJob] = useState<IntelJob>({ state: 'idle', result: null, error: null });
   const impactPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // AI 分析区当前激活的 tab：全池情报整理 | 影响推演
+  const [aiTab, setAiTab] = useState<'intel' | 'impact'>('intel');
 
   useEffect(() => {
     let done = 0;
@@ -399,16 +401,26 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
     }
   };
 
-  // 打开时回看最近一次落库的推演结果
+  // 打开时回看最近一次落库的两路 AI 分析（全池情报整理 + 影响推演）
   useEffect(() => {
-    safeFetch<{ analysis_md: string; run_time?: string; trade_date?: string } | null>('/api/watchlist/impact-latest')
+    safeFetch<{ analysis_md: string; run_time?: string; trade_date?: string; count?: number } | null>('/api/watchlist/intel/ai-all-latest')
       .then(snap => {
         if (snap?.analysis_md) {
-          setImpactJob({ state: 'done', result: { markdown: snap.analysis_md, run_time: snap.run_time, trade_date: snap.trade_date }, error: null });
+          setAiAll({ state: 'done', result: { markdown: snap.analysis_md, run_time: snap.run_time, trade_date: snap.trade_date, count: snap.count }, error: null });
         }
       })
       .catch(() => {});
-    return () => { if (impactPollRef.current) clearInterval(impactPollRef.current); };
+    safeFetch<{ analysis_md: string; run_time?: string; trade_date?: string; count?: number } | null>('/api/watchlist/impact-latest')
+      .then(snap => {
+        if (snap?.analysis_md) {
+          setImpactJob({ state: 'done', result: { markdown: snap.analysis_md, run_time: snap.run_time, trade_date: snap.trade_date, count: snap.count }, error: null });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      if (impactPollRef.current) clearInterval(impactPollRef.current);
+      if (aiAllPollRef.current) clearInterval(aiAllPollRef.current);
+    };
   }, []);
 
   return (
@@ -437,26 +449,6 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
                 ? `实时体检 ${realtimeJob.result?.done ?? 0}/${realtimeJob.result?.count ?? stocks.length}…`
                 : '⚡ 实时体检'}
             </button>
-            <button
-              onClick={handleAiAll}
-              disabled={aiAll.state === 'running'}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
-                         bg-indigo-100 text-indigo-700 hover:bg-indigo-200 ring-1 ring-indigo-300
-                         transition-colors disabled:opacity-50"
-            >
-              {aiAll.state === 'running' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-              {aiAll.state === 'running' ? 'AI 整理中…' : 'AI 全池整理'}
-            </button>
-            <button
-              onClick={handleImpact}
-              disabled={impactJob.state === 'running'}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
-                         bg-purple-100 text-purple-700 hover:bg-purple-200 ring-1 ring-purple-300
-                         transition-colors disabled:opacity-50"
-            >
-              {impactJob.state === 'running' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Target className="w-3.5 h-3.5" />}
-              {impactJob.state === 'running' ? '影响推演中…' : '影响推演'}
-            </button>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">✕</button>
           </div>
         </div>
@@ -471,43 +463,120 @@ function IntelOverviewModal({ stocks, onClose }: { stocks: WatchlistItem[]; onCl
             </div>
           )}
 
-          {/* AI 全池整理结果 */}
-          {aiAll.state === 'running' && (
-            <div className="mb-4 p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-sm text-indigo-600 animate-pulse">
-              🤖 claude 正在做全池横向整理（约 1-3 分钟）…
+          {/* ── AI 分析区（双 tab：全池情报整理 | 影响推演）────────────────────── */}
+          <div className="mb-4 bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <div className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-50 border-b border-gray-100 flex-wrap">
+              <span className="text-xs font-semibold text-gray-700 mr-1">🤖 AI 分析</span>
+              <button
+                onClick={() => setAiTab('intel')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                  aiTab === 'intel'
+                    ? 'bg-indigo-100 text-indigo-700 ring-1 ring-indigo-300'
+                    : 'text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                🧠 全池情报整理
+                {aiAll.state === 'running' && <Loader2 className="w-3 h-3 animate-spin" />}
+              </button>
+              <button
+                onClick={() => setAiTab('impact')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                  aiTab === 'impact'
+                    ? 'bg-purple-100 text-purple-700 ring-1 ring-purple-300'
+                    : 'text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                🎯 影响推演
+                {impactJob.state === 'running' && <Loader2 className="w-3 h-3 animate-spin" />}
+              </button>
+              <div className="ml-auto flex items-center gap-2">
+                {aiTab === 'intel' ? (
+                  <>
+                    {aiAll.result?.run_time && aiAll.state === 'done' && (
+                      <span className="text-[10px] text-gray-400">
+                        生成于 {aiAll.result.run_time}
+                      </span>
+                    )}
+                    <button
+                      onClick={handleAiAll}
+                      disabled={aiAll.state === 'running'}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold
+                                 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 ring-1 ring-indigo-300
+                                 transition-colors disabled:opacity-50"
+                    >
+                      {aiAll.state === 'running' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                      {aiAll.state === 'running' ? '整理中…' : '重新生成'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {impactJob.result?.run_time && impactJob.state === 'done' && (
+                      <span className="text-[10px] text-gray-400">
+                        {impactJob.result.trade_date ? `数据截面 ${impactJob.result.trade_date} · ` : ''}
+                        生成于 {impactJob.result.run_time}
+                      </span>
+                    )}
+                    <button
+                      onClick={handleImpact}
+                      disabled={impactJob.state === 'running'}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold
+                                 bg-purple-100 text-purple-700 hover:bg-purple-200 ring-1 ring-purple-300
+                                 transition-colors disabled:opacity-50"
+                    >
+                      {impactJob.state === 'running' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Target className="w-3 h-3" />}
+                      {impactJob.state === 'running' ? '推演中…' : '重新生成'}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          )}
-          {aiAll.state === 'done' && aiAll.result?.markdown && (
-            <div className="mb-4 bg-indigo-50/40 border border-indigo-100 rounded-xl p-4">
-              <p className="text-xs font-semibold text-indigo-600 mb-2">🤖 AI 全池整理</p>
-              <div dangerouslySetInnerHTML={{ __html: renderMarkdown(aiAll.result.markdown) }} />
-            </div>
-          )}
-          {aiAll.state === 'error' && aiAll.error && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
-              ⚠️ AI 整理失败：{aiAll.error}
-            </div>
-          )}
 
-          {/* 影响推演结果（市场数据 → 个股 影响映射 + 情景推演） */}
-          {impactJob.state === 'running' && (
-            <div className="mb-4 p-4 bg-purple-50/50 border border-purple-100 rounded-xl text-sm text-purple-600 animate-pulse">
-              🎯 claude 正在做市场数据 → 个股影响映射与情景推演（约 3-5 分钟）…
+            <div className="p-4">
+              {aiTab === 'intel' ? (
+                <>
+                  {aiAll.state === 'idle' && (
+                    <div className="py-6 text-center text-xs text-gray-300">
+                      暂无整理结果，点右上角「重新生成」开始（约 1-3 分钟）
+                    </div>
+                  )}
+                  {aiAll.state === 'running' && (
+                    <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl text-sm text-indigo-600 animate-pulse">
+                      🧠 claude 正在做全池横向整理（约 1-3 分钟）…
+                    </div>
+                  )}
+                  {aiAll.state === 'done' && aiAll.result?.markdown && (
+                    <div dangerouslySetInnerHTML={{ __html: renderMarkdown(aiAll.result.markdown) }} />
+                  )}
+                  {aiAll.state === 'error' && aiAll.error && (
+                    <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
+                      ⚠️ AI 整理失败：{aiAll.error}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  {impactJob.state === 'idle' && (
+                    <div className="py-6 text-center text-xs text-gray-300">
+                      暂无推演结果，点右上角「重新生成」开始（约 3-5 分钟）
+                    </div>
+                  )}
+                  {impactJob.state === 'running' && (
+                    <div className="p-4 bg-purple-50/50 border border-purple-100 rounded-xl text-sm text-purple-600 animate-pulse">
+                      🎯 claude 正在做市场数据 → 个股影响映射与情景推演（约 3-5 分钟）…
+                    </div>
+                  )}
+                  {impactJob.state === 'done' && impactJob.result?.markdown && (
+                    <div dangerouslySetInnerHTML={{ __html: renderMarkdown(impactJob.result.markdown) }} />
+                  )}
+                  {impactJob.state === 'error' && impactJob.error && (
+                    <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
+                      ⚠️ 影响推演失败：{impactJob.error}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
-          )}
-          {impactJob.state === 'done' && impactJob.result?.markdown && (
-            <div className="mb-4 bg-purple-50/40 border border-purple-100 rounded-xl p-4">
-              <p className="text-xs font-semibold text-purple-600 mb-2">
-                🎯 影响推演 — 市场数据 → 股池个股（{impactJob.result.trade_date ? `数据截面 ${impactJob.result.trade_date}` : '最新'}{impactJob.result.run_time ? ` · 生成于 ${impactJob.result.run_time}` : ''}）
-              </p>
-              <div dangerouslySetInnerHTML={{ __html: renderMarkdown(impactJob.result.markdown) }} />
-            </div>
-          )}
-          {impactJob.state === 'error' && impactJob.error && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
-              ⚠️ 影响推演失败：{impactJob.error}
-            </div>
-          )}
+          </div>
 
           <div className="space-y-3">
             {list.map(x => {
