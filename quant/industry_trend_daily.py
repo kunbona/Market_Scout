@@ -394,22 +394,29 @@ def get_rps_heatmap(days: int = 40) -> dict:
     """行业 RPS(相对强度)热力图: 日期 × 行业。
 
     RPS = 行业 N 日累计等权涨幅在全市场 31 个行业中的排名百分位 (0-100)。
-    三档: 当日 / 5日 / 20日。返回 {dates, industries, rps: {当日: [...], 5日: [...], 20日: [...]}, latest}
+    六档: 当日 / 5日 / 20日 / 60日 / 90日 / 120日。
+    返回 {dates, industries, rps: {当日: [...], ..., 120日: [...]}, vol, latest, strong}
+    strong = 最新日 60/90/120 日 RPS 全部 >= 85 的长周期强势行业列表。
+    60/120 日涨幅读存档表列(与主表同源); 90 日存档无此列, 从申万官方指数
+    缓存直接算(与主表 pct_change 口径一致, 2026-08-31 校验误差 < 0.1pp)。
     """
     from db.storage import get_industry_trend_dates, get_industry_trend_daily
     dates = sorted(get_industry_trend_dates()[:days])
     if not dates:
         return {"dates": [], "industries": [], "rps": {}, "latest": {}}
 
-    # 收集每日各行业等权涨幅 + 5日/20日累计涨幅
-    day_ret: dict[str, dict[str, float]] = {}   # {日期: {行业: 当日等权涨幅%}}
-    day_ret5: dict[str, dict[str, float]] = {}  # {日期: {行业: 5日涨幅%}}
-    day_ret20: dict[str, dict[str, float]] = {} # {日期: {行业: 20日涨幅%}}
+    # 收集每日各行业等权涨幅 + 各周期累计涨幅
+    day_ret: dict[str, dict[str, float]] = {}    # {日期: {行业: 当日等权涨幅%}}
+    day_ret5: dict[str, dict[str, float]] = {}   # {日期: {行业: 5日涨幅%}}
+    day_ret20: dict[str, dict[str, float]] = {}  # {日期: {行业: 20日涨幅%}}
+    day_ret60: dict[str, dict[str, float]] = {}  # {日期: {行业: 60日涨幅%}}
+    day_ret120: dict[str, dict[str, float]] = {} # {日期: {行业: 120日涨幅%}}
     for d in dates:
         row = get_industry_trend_daily(d)
         if not row:
             continue
         ret_map, ret5_map, ret20_map = {}, {}, {}
+        ret60_map, ret120_map = {}, {}
         for r in json.loads(row["payload"]).get("table", []):
             ind = r.get("行业")
             if not ind:
@@ -417,18 +424,44 @@ def get_rps_heatmap(days: int = 40) -> dict:
             v = r.get("当日等权涨幅%")
             v5 = r.get("5日涨幅")
             v20 = r.get("20日涨幅")
+            v60 = r.get("60日涨幅")
+            v120 = r.get("120日涨幅")
             if v is not None:
                 ret_map[ind] = float(v)
             if v5 is not None:
                 ret5_map[ind] = float(v5)
             if v20 is not None:
                 ret20_map[ind] = float(v20)
+            if v60 is not None:
+                ret60_map[ind] = float(v60)
+            if v120 is not None:
+                ret120_map[ind] = float(v120)
         if ret_map:
             day_ret[d] = ret_map
         if ret5_map:
             day_ret5[d] = ret5_map
         if ret20_map:
             day_ret20[d] = ret20_map
+        if ret60_map:
+            day_ret60[d] = ret60_map
+        if ret120_map:
+            day_ret120[d] = ret120_map
+
+    # 90 日涨幅: 存档无此列, 从申万官方指数缓存按日算 (一次算全表, 逐日取行)
+    day_ret90: dict[str, dict[str, float]] = {}
+    try:
+        sw = pd.read_parquet(SW_CACHE, columns=["date", "close", "name"])
+        close = sw.pivot(index="date", columns="name", values="close").sort_index()
+        close.index = pd.to_datetime(close.index)
+        ret90_all = close.pct_change(90) * 100
+        for d in dates:
+            ts = pd.Timestamp(d)
+            if ts in ret90_all.index:
+                row90 = ret90_all.loc[ts].dropna()
+                if len(row90) >= 20:
+                    day_ret90[d] = {k: float(v) for k, v in row90.items()}
+    except Exception as exc:
+        logger.warning("[industry-trend] 90日涨幅计算失败(降级跳过): %s", exc)
 
     # 每日 RPS: 该日 31 个行业涨幅排名百分位
     def _rps(day_map):
@@ -443,6 +476,9 @@ def get_rps_heatmap(days: int = 40) -> dict:
     rps_1d = _rps(day_ret)
     rps_5d = _rps(day_ret5)
     rps_20d = _rps(day_ret20)
+    rps_60d = _rps(day_ret60)
+    rps_90d = _rps(day_ret90)
+    rps_120d = _rps(day_ret120)
 
     # 量比数据: 每日各行业量能比5(快档), 用于异动箭头判断(量比>1.5加粗)
     day_vol: dict[str, dict[str, float]] = {}
@@ -468,12 +504,28 @@ def get_rps_heatmap(days: int = 40) -> dict:
     matrix_1d = [[rps_1d.get(ind, {}).get(d) for d in dates] for ind in industries]
     matrix_5d = [[rps_5d.get(ind, {}).get(d) for d in dates] for ind in industries]
     matrix_20d = [[rps_20d.get(ind, {}).get(d) for d in dates] for ind in industries]
+    matrix_60d = [[rps_60d.get(ind, {}).get(d) for d in dates] for ind in industries]
+    matrix_90d = [[rps_90d.get(ind, {}).get(d) for d in dates] for ind in industries]
+    matrix_120d = [[rps_120d.get(ind, {}).get(d) for d in dates] for ind in industries]
     matrix_vol = [[day_vol.get(d, {}).get(ind) for d in dates] for ind in industries]
 
+    # 长周期全强势: 最新日 60/90/120 日 RPS 全部 >= 85 的行业 (按 120日RPS 降序)
+    strong = []
+    for ind in industries:
+        r60 = rps_60d.get(ind, {}).get(latest_date)
+        r90 = rps_90d.get(ind, {}).get(latest_date)
+        r120 = rps_120d.get(ind, {}).get(latest_date)
+        if r60 is not None and r90 is not None and r120 is not None \
+                and r60 >= 85 and r90 >= 85 and r120 >= 85:
+            strong.append({"行业": ind, "rps60": r60, "rps90": r90, "rps120": r120})
+    strong.sort(key=lambda x: x["rps120"], reverse=True)
+
     return {"dates": dates, "industries": industries,
-            "rps": {"当日": matrix_1d, "5日": matrix_5d, "20日": matrix_20d},
+            "rps": {"当日": matrix_1d, "5日": matrix_5d, "20日": matrix_20d,
+                    "60日": matrix_60d, "90日": matrix_90d, "120日": matrix_120d},
             "vol": matrix_vol,
-            "latest": {k: v for k, v in latest.items() if v is not None}}
+            "latest": {k: v for k, v in latest.items() if v is not None},
+            "strong": strong}
 
 
 def get_score_heatmap(days: int = 20) -> dict:

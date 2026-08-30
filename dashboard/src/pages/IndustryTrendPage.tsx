@@ -984,14 +984,14 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
 // ─── 子页⑥: RPS 热力图 (行业相对强度, 日期 × 行业) ────────────────────────
 
 function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
-  const [data, setData] = useState<{ dates: string[]; industries: string[]; rps: Record<string, (number | null)[][]>; vol: (number | null)[][] } | null>(null);
-  const [period, setPeriod] = useState<'当日' | '5日' | '20日'>('5日');
+  const [data, setData] = useState<{ dates: string[]; industries: string[]; rps: Record<string, (number | null)[][]>; vol: (number | null)[][]; strong?: { 行业: string; rps60: number; rps90: number; rps120: number }[] } | null>(null);
+  const [period, setPeriod] = useState<'当日' | '5日' | '20日' | '60日' | '90日' | '120日'>('5日');
   const [loading, setLoading] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
   const catMeta = useCatMeta();
 
   useEffect(() => {
-    apiFetch<{ dates: string[]; industries: string[]; rps: Record<string, (number | null)[][]>; vol: (number | null)[][] }>(
+    apiFetch<{ dates: string[]; industries: string[]; rps: Record<string, (number | null)[][]>; vol: (number | null)[][]; strong?: { 行业: string; rps60: number; rps90: number; rps120: number }[] }>(
       '/api/industry-trend/rps-heatmap?days=40')
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -1140,9 +1140,9 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
     <Card title={`行业 RPS(相对强度)热力图 — 最近 ${data.dates.length} 个交易日 × ${data.industries.length} 行业 (点击行业看详情)`}>
       <CatStatCards items={catStats} scoreLabel={`${period}RPS`} />
       {/* 周期切换 */}
-      <div className="flex items-center gap-1 mb-3 text-xs">
+      <div className="flex items-center gap-1 mb-3 text-xs flex-wrap">
         <span className="text-gray-400 mr-1">周期:</span>
-        {(['当日', '5日', '20日'] as const).map(p => (
+        {(['当日', '5日', '20日', '60日', '90日', '120日'] as const).map(p => (
           <button key={p} onClick={() => setPeriod(p)}
             className={`px-2.5 py-1 rounded-md transition-colors ${period === p
               ? 'bg-blue-600 text-white font-medium'
@@ -1150,6 +1150,23 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
             {p} RPS
           </button>
         ))}
+      </div>
+      {/* 长周期全强势行业: 最新日 60/90/120 日 RPS 全部 ≥ 85 */}
+      <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs">
+        <span className="font-semibold text-red-700">长周期全强势 (60/90/120 日 RPS 全≥85)：</span>
+        {(data?.strong?.length ?? 0) > 0 ? (
+          <span className="ml-1">
+            {data!.strong!.map(s => (
+              <button key={s.行业} onClick={() => onSelect(s.行业)}
+                className="inline-flex items-center gap-1 mr-2 px-2 py-0.5 rounded bg-white border border-red-200 text-red-700 hover:bg-red-100 font-medium">
+                {s.行业}
+                <span className="text-red-400 font-normal">60日{s.rps60.toFixed(0)} / 90日{s.rps90.toFixed(0)} / 120日{s.rps120.toFixed(0)}</span>
+              </button>
+            ))}
+          </span>
+        ) : (
+          <span className="ml-1 text-gray-400">当前无行业同时满足 (需三档全部 ≥85)</span>
+        )}
       </div>
       <div className="text-xs text-gray-400 mb-2">
         RPS = 行业{period}累计涨幅在全市场 31 个行业中的排名百分位(0-100) · 红=强(RPS≥80) · 灰=中(50-80) · 绿=弱(&lt;50) · 行业按最新日 5日RPS 降序 · y轴色点=板块类别
