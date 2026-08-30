@@ -474,19 +474,23 @@ def get_rps_heatmap(days: int = 40) -> dict:
 def get_score_heatmap(days: int = 20) -> dict:
     """综合分热力图数据: 日期 × 行业 矩阵。
 
-    返回 {dates: [...], industries: [...], scores: [[...], ...], latest: {行业: 综合分}}
+    返回 {dates: [...], industries: [...], scores: [[...], ...], latest: {行业: 综合分},
+          ma: {行业: {ma5, ma20, ma60}}}
     scores[i][j] = 第 i 个行业在第 j 个日期的综合分 (None=该日无数据)。
     行业顺序按最新日综合分降序。
+    ma = 每个行业截至最新存档日的 5/20/60 日综合分均值 (用全量存档窗口算,
+    不受 days 展示窗口限制; 存档不足 60 日时 ma60=None)。
     """
     from db.storage import get_industry_trend_dates, get_industry_trend_daily
-    dates = get_industry_trend_dates()[:days]
-    dates = sorted(dates)
+    all_dates = get_industry_trend_dates()          # 降序, 最多 120 日
+    ma_dates = sorted(all_dates)                    # 升序全量 (算均线用)
+    dates = sorted(all_dates[:days])                # 升序展示窗口
     if not dates:
-        return {"dates": [], "industries": [], "scores": [], "latest": {}}
+        return {"dates": [], "industries": [], "scores": [], "latest": {}, "ma": {}}
 
-    # 收集所有行业 + 每日综合分
+    # 收集所有行业 + 每日综合分 (全量窗口, 一次循环复用: 矩阵 + 均线同源)
     ind_scores: dict[str, dict[str, float]] = {}   # {行业: {日期: 综合分}}
-    for d in dates:
+    for d in ma_dates:
         row = get_industry_trend_daily(d)
         if not row:
             continue
@@ -504,14 +508,27 @@ def get_score_heatmap(days: int = 20) -> dict:
     industries = sorted(ind_scores.keys(),
                         key=lambda x: latest.get(x) or 0, reverse=True)
 
-    # 矩阵: scores[i][j] = 第 i 行业在第 j 日期
+    # 矩阵: scores[i][j] = 第 i 行业在第 j 日期 (仅展示窗口)
     matrix = []
     for ind in industries:
         row_scores = [ind_scores[ind].get(d) for d in dates]
         matrix.append(row_scores)
 
+    # 均线: 截至最新存档日的 5/20/60 日均值 (尾窗口取最近 N 个有效值)
+    ma: dict[str, dict] = {}
+    for ind in industries:
+        series = [ind_scores[ind].get(d) for d in ma_dates]  # 升序全量
+        valid = [v for v in series if v is not None]
+        item = {}
+        for win, key in ((5, "ma5"), (20, "ma20"), (60, "ma60")):
+            if len(valid) >= win:
+                item[key] = round(sum(valid[-win:]) / win, 1)
+        if item:
+            ma[ind] = item
+
     return {"dates": dates, "industries": industries, "scores": matrix,
-            "latest": {k: v for k, v in latest.items() if v is not None}}
+            "latest": {k: v for k, v in latest.items() if v is not None},
+            "ma": ma}
 
 
 # ─── 板块类别映射: 申万一级 31 行业 → 6 大投资类别 (与前端 INDUSTRY_CATEGORY 同步) ───

@@ -740,13 +740,15 @@ function DetailTab({ data, selIndustry, onRowClick }: {
 // ─── 子页⑤: 综合分热力图 (日期 × 行业, ECharts heatmap) ────────────────────
 
 function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
-  const [data, setData] = useState<{ dates: string[]; industries: string[]; scores: (number | null)[][] } | null>(null);
+  const [data, setData] = useState<{ dates: string[]; industries: string[]; scores: (number | null)[][]; ma?: Record<string, { ma5?: number; ma20?: number; ma60?: number }> } | null>(null);
   const [loading, setLoading] = useState(true);
+  // 点击格子选中的行业 (弹出分数+均线面板, 而非直接跳详情)
+  const [sel, setSel] = useState<{ ind: string; dt: string; score: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const catMeta = useCatMeta();
 
   useEffect(() => {
-    apiFetch<{ dates: string[]; industries: string[]; scores: (number | null)[][] }>(
+    apiFetch<{ dates: string[]; industries: string[]; scores: (number | null)[][]; ma?: Record<string, { ma5?: number; ma20?: number; ma60?: number }> }>(
       '/api/industry-trend/heatmap?days=40')
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -809,7 +811,14 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
           const ind = data.industries[p.data[1]];
           const dt = data.dates[p.data[0]];
           const cat = catMeta.map[ind];
-          return `${ind} | ${dt} | <b>${cat || '--'}</b><br/>综合分: <b>${p.data[2].toFixed(1)}</b>`;
+          const ma = data.ma?.[ind] || {};
+          const maLine = [
+            ma.ma5 != null ? `5日均 ${ma.ma5.toFixed(1)}` : null,
+            ma.ma20 != null ? `20日均 ${ma.ma20.toFixed(1)}` : null,
+            ma.ma60 != null ? `60日均 ${ma.ma60.toFixed(1)}` : null,
+          ].filter(Boolean).join(' · ');
+          return `${ind} | ${dt} | <b>${cat || '--'}</b><br/>综合分: <b>${p.data[2].toFixed(1)}</b>` +
+            (maLine ? `<br/>${maLine}` : '');
         },
       },
       grid: { left: 78, right: 60, top: 10, bottom: 40 },
@@ -864,7 +873,10 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       const chart = echarts.init(ref.current!);
       chart.setOption(option);
       chart.on('click', (p: any) => {
-        if (p.data) onSelect(data.industries[p.data[1]]);
+        if (p.data) {
+          // 点击格子: 选中行业 + 记录当日分数, 弹出均线面板 (不再直接跳详情)
+          setSel({ ind: data.industries[p.data[1]], dt: data.dates[p.data[0]], score: p.data[2] });
+        }
       });
       const ro = new ResizeObserver(() => chart.resize());
       ro.observe(ref.current!);
@@ -875,13 +887,54 @@ function HeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
   if (loading) return <div className="text-gray-400 text-sm py-12 text-center">加载热力图…</div>;
   if (!data?.dates?.length) return <div className="text-gray-400 text-sm py-12 text-center">暂无历史数据</div>;
 
+  // 点击选中行业后展示的"分数 + 均线"面板
+  const selMa = sel ? (data.ma?.[sel.ind] || {}) : {};
+
   return (
-    <Card title={`综合分热力图 — 最近 ${data.dates.length} 个交易日 × ${data.industries.length} 行业 (点击行业看详情)`}>
+    <Card title={`综合分热力图 — 最近 ${data.dates.length} 个交易日 × ${data.industries.length} 行业 (点击格子看分数与均线)`}>
       <CatStatCards items={catStats} scoreLabel="综合分" />
       <div className="text-xs text-gray-400 mb-2">
         红=强(综合分≥70) · 灰=中(50-70) · 绿=弱(&lt;50) · 行业按最新日综合分降序 · 综合分=SI 80% + 当日动能 20% · y轴色点=板块类别
       </div>
       <div ref={ref} style={{ width: '100%', height: 520 }} />
+
+      {sel && (
+        <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 flex items-center gap-6 flex-wrap">
+          <div className="text-sm font-semibold text-gray-800">
+            {sel.ind}
+            <span className="ml-2 text-xs font-normal text-gray-400">{sel.dt}</span>
+          </div>
+          <div className="text-sm">
+            当日综合分 <span className="font-bold text-gray-900 text-base">{sel.score.toFixed(1)}</span>
+          </div>
+          {([['ma5', '5日均'], ['ma20', '20日均'], ['ma60', '60日均']] as const).map(([k, label]) => {
+            const v = selMa[k];
+            const diff = v != null ? sel.score - v : null;
+            return (
+              <div key={k} className="text-sm text-gray-600">
+                {label} <span className="font-semibold text-gray-800">{v != null ? v.toFixed(1) : '—'}</span>
+                {diff != null && (
+                  <span className={`ml-1 text-xs ${diff >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {diff >= 0 ? '+' : ''}{diff.toFixed(1)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          <div className="ml-auto flex gap-2">
+            <button
+              onClick={() => { onSelect(sel.ind); setSel(null); }}
+              className="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700">
+              查看行业详情 →
+            </button>
+            <button
+              onClick={() => setSel(null)}
+              className="px-3 py-1 text-xs rounded border border-gray-300 text-gray-500 hover:bg-gray-100">
+              关闭
+            </button>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
