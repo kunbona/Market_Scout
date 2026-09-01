@@ -106,6 +106,12 @@ def build_snapshot(n_jobs: int | None = None) -> Path:
     """并行读全部源 CSV 一遍 → 写 parquet + meta。返回 parquet 路径。"""
     t0 = time.time()
     src = _source_dir()
+    # 竞态修复 (2026-09-02): mtime 必须在读盘前记录。
+    # 旧实现读完盘才记 mtime, 若构建期间 fetcher 正在写新数据, meta 会记到
+    # 新 mtime 但 parquet 里是旧数据 → _is_fresh 永远判新鲜, 新数据永不入库
+    # (事故: 09-01 20:30 构建读到 08-31 仅 63 只的半成品截面)。
+    # 记读前 mtime 后: 构建期间源有更新 → 当前 mtime > meta → 判陈旧 → 下次消费自动重建。
+    source_mtime_before = _source_max_mtime()
     files = sorted(str(p) for p in src.glob("*.csv"))
     if not files:
         raise RuntimeError(f"源目录没有 CSV: {src}")
@@ -148,7 +154,7 @@ def build_snapshot(n_jobs: int | None = None) -> Path:
         "n_stocks": int(full["股票代码"].nunique()),
         "n_rows": int(len(full)),
         "keep_rows": KEEP_ROWS,
-        "source_max_mtime": _source_max_mtime(),
+        "source_max_mtime": source_mtime_before,
     }
     _META.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("[snapshot] 构建完成: %d 只 / %d 行 / 数据日期 %s / 耗时 %.1fs%s",
