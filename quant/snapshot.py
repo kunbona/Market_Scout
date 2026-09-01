@@ -141,6 +141,36 @@ def build_snapshot(n_jobs: int | None = None) -> Path:
     del frames
     full = full.sort_values(["交易日期", "股票代码"], kind="stable").reset_index(drop=True)
 
+    # 截面完整性闸门 (2026-09-02): 最新截面疑似半成品时拒绝写快照。
+    # 防两种事故残留: ① 抓取写到一半被打断 (如复盘前手动重启服务杀掉抓取),
+    # 当日截面只剩零星几十只, 之后源文件不再更新 → 半成品被当终态固化;
+    # ② 读取期间源正在被覆写导致当日数据残缺。
+    # 判定: 最新截面家数 < 1000 且 显著小于前一日 (≤40%) → 不写盘、删临时文件,
+    # 不写 meta → 消费端判定陈旧 → 下次自动重试; 现有快照保持不动。
+    try:
+        _dstr = full["交易日期"].astype(str).str[:10]
+        _latest_date = _dstr.max()
+        _n_latest = int((_dstr == _latest_date).sum())
+        _prev_dates = sorted(_dstr.unique())
+        _prev_dates = [d for d in _prev_dates if d < _latest_date]
+        _suspicious = False
+        if _prev_dates and _n_latest < 1000:
+            _n_prev = int((_dstr == _prev_dates[-1]).sum())
+            if _n_prev > 0 and _n_latest <= 0.4 * _n_prev:
+                _suspicious = True
+        if _suspicious:
+            logger.error(
+                "[snapshot] 疑似不完整截面, 拒绝写入: %s 仅 %d 只 (前一日 %d 只)。"
+                "可能抓取未完成或源数据正在写入, 保留旧快照, 下次消费时自动重试",
+                _latest_date, _n_latest, _n_prev)
+            raise RuntimeError(
+                f"快照构建中止: 最新截面 {_latest_date} 仅 {_n_latest} 只, "
+                f"疑似源数据不完整 (前一日 {_n_prev} 只)")
+    except RuntimeError:
+        raise
+    except Exception:
+        logger.exception("[snapshot] 截面完整性检查异常, 放行")
+
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     tmp = _PARQUET.with_suffix(".parquet.tmp")
     full.to_parquet(tmp, engine="pyarrow", compression="snappy",
