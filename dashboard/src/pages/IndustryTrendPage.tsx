@@ -1047,19 +1047,32 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
     }).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   }, [data, period, catMeta]);
 
+  // 行业行序: 按「当前所选周期在最新日的 RPS」降序 — 切换周期时行序跟随重排,
+  // 当期最强行业永远在最上面, 强弱梯队一眼看清 (后端默认只按最新日 5日RPS 排,
+  // 前端按所选周期二次排序; null 值沉底)
+  const sortedIndustries = useMemo(() => {
+    if (!data?.dates?.length) return [] as string[];
+    const matrix = data.rps[period] || [];
+    const n = data.dates.length - 1;
+    const valOf = new Map(data.industries.map((ind, i): [string, number | null | undefined] => [ind, matrix[i]?.[n]]));
+    return [...data.industries].sort((a, b) => ((valOf.get(b) ?? -1) - (valOf.get(a) ?? -1)));
+  }, [data, period]);
+
   useEffect(() => {
     if (!ref.current || !data?.dates?.length) return;
     const matrix = data.rps[period] || [];
+    const rowIdx = new Map(data.industries.map((ind, i): [string, number] => [ind, i]));
     const hmData: [number, number, number][] = [];
-    matrix.forEach((row, i) => {
-      row.forEach((v, j) => {
-        if (v != null) hmData.push([j, i, v]);
+    sortedIndustries.forEach((ind, yi) => {
+      const row = matrix[rowIdx.get(ind)!];
+      row?.forEach((v, j) => {
+        if (v != null) hmData.push([j, yi, v]);
       });
     });
     const option = {
       tooltip: {
         formatter: (p: any) => {
-          const ind = data.industries[p.data[1]];
+          const ind = sortedIndustries[p.data[1]];
           const dt = data.dates[p.data[0]];
           const cat = catMeta.map[ind];
           return `${ind} | ${dt} | <b>${cat || '--'}</b><br/>${period} RPS: <b>${p.data[2].toFixed(1)}</b>`;
@@ -1073,7 +1086,7 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       },
       yAxis: {
         type: 'category' as const,
-        data: data.industries,
+        data: sortedIndustries,
         axisLabel: {
           fontSize: 9,
           rich: catAxisRich(catMeta.order),
@@ -1094,7 +1107,7 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
           show: true,
           fontSize: 7,
           formatter: (p: any) => {
-            const ind = data.industries[p.data[1]];
+            const ind = sortedIndustries[p.data[1]];
             const v = p.data[2].toFixed(0);
             // 最新日异动格子: 大箭头+数字(箭头 12px, 量比>1.5 14px)
             if (p.data[0] === data.dates.length - 1) {
@@ -1125,13 +1138,14 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
       const chart = echarts.init(ref.current!);
       chart.setOption(option);
       chart.on('click', (p: any) => {
-        if (p.data) onSelect(data.industries[p.data[1]]);
+        if (p.data) onSelect(sortedIndustries[p.data[1]]);
       });
       const ro = new ResizeObserver(() => chart.resize());
       ro.observe(ref.current!);
       return () => { ro.disconnect(); chart.dispose(); };
     });
-  }, [data, period, alerts, catMeta]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, period, alerts, catMeta, sortedIndustries]);
 
   if (loading) return <div className="text-gray-400 text-sm py-12 text-center">加载 RPS 热力图…</div>;
   if (!data?.dates?.length) return <div className="text-gray-400 text-sm py-12 text-center">暂无历史数据</div>;
@@ -1169,7 +1183,7 @@ function RpsHeatmapTab({ onSelect }: { onSelect: (ind: string) => void }) {
         )}
       </div>
       <div className="text-xs text-gray-400 mb-2">
-        RPS = 行业{period}累计涨幅在全市场 31 个行业中的排名百分位(0-100) · 红=强(RPS≥80) · 灰=中(50-80) · 绿=弱(&lt;50) · 行业按最新日 5日RPS 降序 · y轴色点=板块类别
+        RPS = 行业{period}累计涨幅在全市场 31 个行业中的排名百分位(0-100) · 红=强(RPS≥80) · 灰=中(50-80) · 绿=弱(&lt;50) · 行业按最新日{period}RPS 降序(切换周期随行重排) · y轴色点=板块类别
       </div>
       <div ref={ref} style={{ width: '100%', height: 520 }} />
     </Card>
