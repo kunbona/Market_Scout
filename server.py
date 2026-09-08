@@ -123,6 +123,38 @@ app.json.sort_keys = False
 # 我们自己的 serve_spa 会显式 send_from_directory(DIST, ...) 并加 cache 头.
 CORS(app)
 
+
+# ── NaN/Infinity 安全 JSON 序列化 (2026-09-08, QMT 页面 JSON.parse 报错) ─────
+# Flask 3.x jsonify 默认用 stdlib json.dumps, 遇到 float('nan') / inf 会原样输出
+# "NaN" / "Infinity" —— 这不是合法 JSON, 前端 JSON.parse 直接抛
+# "Unexpected token 'N' ... is not valid JSON"。
+# 来源: QMT bridge / xtquant 返回的数据里夹带 NaN (如资金流向字段 n_inflow),
+# 经 _sanitize 透传后被 jsonify 序列化进响应体。
+# 修复: 注册自定义 JSON provider, 序列化前递归把 NaN/Infinity 清洗成 null。
+import math as _math
+from flask.json.provider import DefaultJSONProvider as _DefaultJSONProvider
+
+
+def _clean_nan(obj):
+    """递归清洗 dict/list 中的 NaN/Infinity, 转成 None (JSON null)。"""
+    if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_nan(v) for v in obj]
+    return obj
+
+
+class _NanSafeJSONProvider(_DefaultJSONProvider):
+    """在 DefaultJSONProvider 基础上, 序列化前清洗 NaN/Infinity。"""
+
+    def dumps(self, obj, **kwargs):
+        return super().dumps(_clean_nan(obj), **kwargs)
+
+
+app.json = _NanSafeJSONProvider(app)
+
 # ── Blueprint 注册 (按域拆分自本文件, 一次一域) ─────────────────────────────
 from api.industry_trend import bp as industry_trend_bp
 from api.cycle import bp as cycle_bp
